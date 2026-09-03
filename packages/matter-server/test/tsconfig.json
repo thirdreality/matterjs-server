@@ -14,6 +14,9 @@
             "path": "../../custom-clusters/src"
         },
         {
+            "path": "../../mqtt-bridge/src"
+        },
+        {
             "path": "../../ws-client/src"
         },
         {
