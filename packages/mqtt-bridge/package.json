@@ -30,7 +30,7 @@
     },
     "dependencies": {
         "@matter-server/ws-controller": "*",
-        "@matter/main": "0.17.9",
+        "@matter/main": "0.17.7",
         "mqtt": "^5.15.2"
     },
     "devDependencies": {
