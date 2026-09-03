@@ -10,6 +10,7 @@ import "./pre-init.js";
 import "@matter-server/custom-clusters";
 // Standard imports
 import { BleProxyHandler, ProxyBle } from "@matter-server/ble-proxy";
+import { MqttBridge } from "@matter-server/mqtt-bridge";
 import {
     ConfigStorage,
     Environment,
@@ -98,6 +99,7 @@ logger.info(
 
 let controller: MatterController;
 let server: WebServer;
+let mqttBridge: MqttBridge | undefined;
 let config: ConfigStorage;
 let legacyData: LegacyData;
 let legacyDataWriter: LegacyDataWriter | undefined;
@@ -243,6 +245,16 @@ async function start() {
     }
 
     await server.start();
+
+    if (cliOptions.mqttUrl) {
+        mqttBridge = new MqttBridge(controller.commandHandler, {
+            url: cliOptions.mqttUrl,
+            prefix: cliOptions.mqttPrefix,
+            clientId: cliOptions.mqttClientId,
+            serverVersion: MATTER_SERVER_VERSION,
+        });
+        await mqttBridge.start();
+    }
 }
 
 async function stop() {
@@ -262,6 +274,11 @@ async function stop() {
         // start() failed - that's fine, we still need to clean up
     }
 
+    try {
+        await mqttBridge?.stop();
+    } catch (err) {
+        console.warn("Failed to stop MQTT bridge:", err);
+    }
     try {
         await server?.stop();
     } catch (err) {

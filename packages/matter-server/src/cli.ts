@@ -76,6 +76,11 @@ export interface CliOptions {
 
     // Thread Border Router configuration
     disableThreadDiagnostics: boolean;
+
+    // MQTT bridge configuration
+    mqttUrl: string | null;
+    mqttPrefix: string;
+    mqttClientId: string;
 }
 
 function parseIntOption(value: string): number {
@@ -238,6 +243,22 @@ export function parseCliArgs(argv?: string[]): CliOptions {
                 .default(false)
                 .env("PRODUCTION_MODE"),
         )
+        .addOption(
+            new Option(
+                "--mqtt-url <url>",
+                "Enable the MQTT bridge (matter2mqtt) and connect it to this broker, e.g. mqtt://user:password@localhost:1883",
+            ).env("MQTT_URL"),
+        )
+        .addOption(
+            new Option("--mqtt-prefix <prefix>", "Topic prefix for the MQTT bridge")
+                .default("matter2mqtt")
+                .env("MQTT_PREFIX"),
+        )
+        .addOption(
+            new Option("--mqtt-client-id <id>", "MQTT client id used by the bridge")
+                .default("matter2mqtt")
+                .env("MQTT_CLIENT_ID"),
+        )
         // Deprecated options - still accepted for backwards compatibility
         .addOption(
             new Option("--log-level-sdk <level>", "Matter SDK logging level (deprecated, no longer used)")
@@ -309,6 +330,9 @@ export function parseCliArgs(argv?: string[]): CliOptions {
         disableDashboard: opts.disableDashboard,
         productionMode: opts.productionMode,
         disableThreadDiagnostics: opts.disableThreadDiagnostics,
+        mqttUrl: opts.mqttUrl ?? null,
+        mqttPrefix: opts.mqttPrefix,
+        mqttClientId: opts.mqttClientId,
     };
 }
 

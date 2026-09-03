@@ -15,6 +15,7 @@
         "packages/ws-client",
         "packages/dashboard",
         "packages/ble-proxy",
+        "packages/mqtt-bridge",
         "packages/matter-server"
     ],
     "type": "module",

@@ -17,6 +17,9 @@
             "path": "packages/ble-proxy"
         },
         {
+            "path": "packages/mqtt-bridge"
+        },
+        {
             "path": "packages/matter-server"
         }
     ]

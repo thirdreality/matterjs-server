@@ -7,6 +7,10 @@ This page shows a detailed overview of the changes between versions without the 
 	## **WORK IN PROGRESS**
 -->
 
+## **WORK IN PROGRESS**
+
+- Feature: (ThirdReality) New `@matter-server/mqtt-bridge` package (matter2mqtt): publishes bridge status, device list, availability and OnOff state to an MQTT broker using a zigbee2mqtt-style topic layout, and routes `<device>/set` OnOff commands to the controller. Enabled via new CLI flags `--mqtt-url`, `--mqtt-prefix` and `--mqtt-client-id`; without `--mqtt-url` the server behaves as before
+
 ## 1.3.3 (2026-07-28)
 
 - Enhancement: (pkese) Dashboard network graphs space nodes by signal quality (Thread LQI, Wi-Fi RSSI) instead of using one fixed edge length
