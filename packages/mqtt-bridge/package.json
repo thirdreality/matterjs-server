@@ -1,0 +1,42 @@
+{
+    "name": "@matter-server/mqtt-bridge",
+    "version": "0.0.0-git",
+    "description": "MQTT bridge for matter.js server - exposes Matter devices via MQTT (matter2mqtt)",
+    "homepage": "https://github.com/thirdreality/matterjs-server",
+    "bugs": {
+        "url": "https://github.com/thirdreality/matterjs-server/issues"
+    },
+    "author": "ThirdReality",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/thirdreality/matterjs-server.git"
+    },
+    "files": [
+        "dist/**/*",
+        "src/**/*",
+        "LICENSE",
+        "README.md"
+    ],
+    "type": "module",
+    "main": "dist/esm/index.js",
+    "publishConfig": {
+        "access": "public"
+    },
+    "scripts": {
+        "clean": "nacho-build clean",
+        "build": "nacho-build",
+        "build-clean": "nacho-build --clean",
+        "test": "matter-test --force-exit"
+    },
+    "dependencies": {
+        "@matter-server/ws-controller": "*",
+        "@matter/main": "0.17.9",
+        "mqtt": "^5.15.2"
+    },
+    "devDependencies": {
+        "@types/node": "^26.1.2"
+    },
+    "engines": {
+        "node": ">=22.13.0"
+    }
+}

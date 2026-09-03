@@ -43,11 +43,19 @@
         "@matter-server/ble-proxy": "*",
         "@matter-server/custom-clusters": "*",
         "@matter-server/dashboard": "*",
+        "@matter-server/mqtt-bridge": "*",
         "@matter-server/ws-controller": "*",
         "@matter/main": "0.17.9",
         "commander": "^15.0.0",
         "express": "^5.2.1"
     },
+    "bundleDependencies": [
+        "@matter-server/ble-proxy",
+        "@matter-server/custom-clusters",
+        "@matter-server/dashboard",
+        "@matter-server/mqtt-bridge",
+        "@matter-server/ws-controller"
+    ],
     "devDependencies": {
         "@matter-server/ws-client": "*",
         "@matter/nodejs": "0.17.9",
