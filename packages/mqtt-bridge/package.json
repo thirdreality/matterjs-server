@@ -19,6 +19,17 @@
     ],
     "type": "module",
     "main": "dist/esm/index.js",
+    "exports": {
+        ".": {
+            "dev-types": {
+                "types": "./src/index.ts"
+            },
+            "import": {
+                "types": "./dist/esm/index.d.ts",
+                "default": "./dist/esm/index.js"
+            }
+        }
+    },
     "publishConfig": {
         "access": "public"
     },
