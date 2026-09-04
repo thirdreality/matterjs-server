@@ -12,10 +12,11 @@ import {
 } from "@matter-server/ws-controller";
 import { Logger, NodeId, ObserverGroup } from "@matter/main";
 import { ClusterId, EndpointNumber } from "@matter/main/types";
+import { deviceStateOf, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
 import { lightCapabilitiesOf } from "./LightCapabilities.js";
 import { MqttConnection } from "./MqttConnection.js";
-import { ONOFF_CLUSTER_ID, onOffEndpointsOf, onOffStatePayload, onOffValueOf } from "./OnOffState.js";
-import { parseSetMessage } from "./SetCommands.js";
+import { onOffEndpointsOf, onOffValueOf } from "./OnOffState.js";
+import { messageOf, parseSetObject, splitByEndpointSuffix } from "./SetCommands.js";
 import { Topics } from "./Topics.js";
 
 const logger = Logger.get("MqttBridge");
@@ -39,6 +40,8 @@ export interface MqttBridgeOptions {
 interface DeviceEntry {
     nodeId: NodeId;
     onOffEndpoints: number[];
+    /** Endpoints contributing properties to the published device state. */
+    relevantEndpoints: number[];
 }
 
 /**
@@ -155,22 +158,22 @@ export class MqttBridge {
     #handleAttributeChanged(
         nodeId: NodeId,
         path: { endpointId: number; clusterId: number; attributeId: number },
-        value: unknown,
+        _value: unknown,
     ): void {
-        if (path.clusterId !== ONOFF_CLUSTER_ID || path.attributeId !== 0 || typeof value !== "boolean") {
+        if (!isStateAttribute(path.clusterId, path.attributeId)) {
             return;
         }
         const device = nodeId.toString();
         let entry = this.#devices.get(device);
-        if (entry === undefined || !entry.onOffEndpoints.includes(path.endpointId)) {
+        if (entry === undefined || !entry.relevantEndpoints.includes(path.endpointId)) {
             // Unknown device or endpoint: the structure changed ahead of any structure event
             entry = this.#refreshDevice(nodeId);
             this.#publishDevices();
-            if (entry === undefined || !entry.onOffEndpoints.includes(path.endpointId)) {
+            if (entry === undefined) {
                 return;
             }
         }
-        this.#publishOnOffState(entry, path.endpointId, value);
+        this.#publishDeviceState(entry);
     }
 
     #handleMessage(topic: string, payload: string): void {
@@ -200,16 +203,22 @@ export class MqttBridge {
             logger.warn(`Cannot resolve capabilities for "${parsed.device}"`);
             return;
         }
-        const caps = lightCapabilitiesOf(attributes, endpoint);
-        const result = parseSetMessage(payload, parsed.attribute, caps, onOffValueOf(attributes, endpoint));
-        if (result === undefined) {
+        const message = messageOf(payload, parsed.attribute);
+        if (message === undefined) {
             logger.warn(`Ignoring unsupported set payload for "${parsed.device}": ${payload}`);
             return;
         }
-        for (const warning of result.warnings) {
-            logger.warn(`Set for "${parsed.device}": ${warning}`);
+        for (const [targetEndpoint, subMessage] of splitByEndpointSuffix(message, entry.onOffEndpoints, endpoint)) {
+            const caps = lightCapabilitiesOf(attributes, targetEndpoint);
+            const result = parseSetObject(subMessage, caps, onOffValueOf(attributes, targetEndpoint));
+            if (result === undefined) {
+                continue;
+            }
+            for (const warning of result.warnings) {
+                logger.warn(`Set for "${parsed.device}": ${warning}`);
+            }
+            void this.#runCommands(entry, targetEndpoint, result.commands);
         }
-        void this.#runCommands(entry, endpoint, result.commands);
     }
 
     /** Execute parsed set commands in order; a failing command is logged and does not stop the rest. */
@@ -235,27 +244,28 @@ export class MqttBridge {
         }
     }
 
-    /** zigbee2mqtt-style `get`: re-publish the current state from the attribute cache. */
-    #handleGet(entry: DeviceEntry, endpoint?: number): void {
+    /** zigbee2mqtt-style `get`: re-publish the full current state from the attribute cache. */
+    #handleGet(entry: DeviceEntry, _endpoint?: number): void {
+        this.#publishDeviceState(entry);
+    }
+
+    /** Publish the merged zigbee2mqtt-style device state to the single `<node>` topic. */
+    #publishDeviceState(entry: DeviceEntry): void {
         const device = entry.nodeId.toString();
         let details: MatterNodeData;
         try {
             details = this.#commandHandler.getNodeDetails(entry.nodeId);
         } catch {
-            logger.warn(`Cannot read state for get request on "${device}"`);
+            logger.warn(`Cannot read state for "${device}"`);
             return;
         }
-        const endpoints = endpoint === undefined ? entry.onOffEndpoints : [endpoint];
-        for (const ep of endpoints) {
-            if (!entry.onOffEndpoints.includes(ep)) {
-                logger.warn(`Device "${device}" has no OnOff support on endpoint ${ep}`);
-                continue;
-            }
-            const value = onOffValueOf(details.attributes, ep);
-            if (value !== undefined) {
-                this.#publishOnOffState(entry, ep, value);
-            }
+        const state = deviceStateOf(details.attributes, entry.relevantEndpoints, endpoint =>
+            lightCapabilitiesOf(details.attributes, endpoint),
+        );
+        if (Object.keys(state).length === 0) {
+            return;
         }
+        this.#connection.publish(this.#topics.deviceState(device), JSON.stringify(state), true);
     }
 
     /**
@@ -274,14 +284,15 @@ export class MqttBridge {
         }
 
         const onOffEndpoints = onOffEndpointsOf(details.attributes);
+        const relevantEndpoints = relevantEndpointsOf(details.attributes);
         const previous = this.#devices.get(device);
-        const entry: DeviceEntry = { nodeId, onOffEndpoints };
+        const entry: DeviceEntry = { nodeId, onOffEndpoints, relevantEndpoints };
         this.#devices.set(device, entry);
 
-        // The single/multi endpoint topic layout may change with the endpoint list; clear
-        // retained state at the previous locations so no stale topic survives
-        if (previous !== undefined && !sameLayout(previous.onOffEndpoints, onOffEndpoints)) {
-            this.#clearStateTopics(device, previous.onOffEndpoints);
+        // Migration/cleanup: state now lives on the single `<node>` topic; clear any retained
+        // per-endpoint state topics from earlier layouts
+        for (const endpoint of new Set([...relevantEndpoints, ...(previous?.relevantEndpoints ?? [])])) {
+            this.#connection.clearRetained(this.#topics.deviceState(device, endpoint));
         }
 
         this.#connection.publish(
@@ -289,12 +300,7 @@ export class MqttBridge {
             details.available ? "online" : "offline",
             true,
         );
-        for (const endpoint of onOffEndpoints) {
-            const value = onOffValueOf(details.attributes, endpoint);
-            if (value !== undefined) {
-                this.#publishOnOffState(entry, endpoint, value);
-            }
-        }
+        this.#publishDeviceState(entry);
         return entry;
     }
 
@@ -304,24 +310,11 @@ export class MqttBridge {
             return;
         }
         this.#devices.delete(device);
-        this.#clearStateTopics(device, entry.onOffEndpoints);
-        this.#connection.clearRetained(this.#topics.deviceAvailability(device));
-    }
-
-    #publishOnOffState(entry: DeviceEntry, endpoint: number, on: boolean): void {
-        const device = entry.nodeId.toString();
-        const topic =
-            entry.onOffEndpoints.length <= 1
-                ? this.#topics.deviceState(device)
-                : this.#topics.deviceState(device, endpoint);
-        this.#connection.publish(topic, onOffStatePayload(on), true);
-    }
-
-    #clearStateTopics(device: string, endpoints: number[]): void {
         this.#connection.clearRetained(this.#topics.deviceState(device));
-        for (const endpoint of endpoints) {
+        for (const endpoint of entry.relevantEndpoints) {
             this.#connection.clearRetained(this.#topics.deviceState(device, endpoint));
         }
+        this.#connection.clearRetained(this.#topics.deviceAvailability(device));
     }
 
     #publishDevices(): void {
@@ -356,10 +349,6 @@ export class MqttBridge {
             true,
         );
     }
-}
-
-function sameLayout(a: number[], b: number[]): boolean {
-    return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 function stringAttribute(attributes: AttributesData, path: string): string | undefined {

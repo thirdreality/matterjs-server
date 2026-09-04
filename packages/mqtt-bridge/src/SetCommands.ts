@@ -56,7 +56,15 @@ export function parseSetMessage(
     if (message === undefined) {
         return undefined;
     }
+    return parseSetObject(message, caps, currentOn);
+}
 
+/** Parse an already-normalized message object into Matter commands. */
+export function parseSetObject(
+    message: Record<string, unknown>,
+    caps: LightCapabilities,
+    currentOn?: boolean,
+): ParsedSetMessage | undefined {
     const warnings: string[] = [];
     const transitionTime = transitionTimeOf(message, warnings);
 
@@ -95,8 +103,36 @@ export function parseSetMessage(
     return { commands, warnings };
 }
 
+/**
+ * Split a message by the zigbee2mqtt `_<endpoint>` property suffix: `{state_1:"ON"}` targets
+ * endpoint 1. Unsuffixed keys go to the default endpoint. Suffixes not in `endpoints` are
+ * treated as part of the property name (matching z2m, which only strips known endpoint names).
+ */
+export function splitByEndpointSuffix(
+    message: Record<string, unknown>,
+    endpoints: number[],
+    defaultEndpoint: number,
+): Map<number, Record<string, unknown>> {
+    const result = new Map<number, Record<string, unknown>>();
+    const add = (endpoint: number, key: string, value: unknown) => {
+        const sub = result.get(endpoint) ?? {};
+        sub[key] = value;
+        result.set(endpoint, sub);
+    };
+    for (const [key, value] of Object.entries(message)) {
+        const match = key.match(/^(.*?)_(\d+)$/);
+        const suffixEndpoint = match === null ? undefined : parseInt(match[2], 10);
+        if (match !== null && suffixEndpoint !== undefined && endpoints.includes(suffixEndpoint)) {
+            add(suffixEndpoint, match[1], value);
+        } else {
+            add(defaultEndpoint, key, value);
+        }
+    }
+    return result;
+}
+
 /** Normalize the payload to a message object (zigbee2mqtt publish.ts parseMessage). */
-function messageOf(payload: string, attribute: string | undefined): Record<string, unknown> | undefined {
+export function messageOf(payload: string, attribute: string | undefined): Record<string, unknown> | undefined {
     if (attribute !== undefined) {
         try {
             return { [attribute]: JSON.parse(payload) };
