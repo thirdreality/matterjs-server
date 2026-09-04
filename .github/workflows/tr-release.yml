@@ -1,0 +1,57 @@
+# ThirdReality release: build the matter-server fork tarball and attach it to a
+# GitHub Release. The tarball is consumed by LinuxBox-Installer's build.sh
+# (thirdreality-matter2mqtt deb) via download + sha256 verification.
+#
+# This workflow lives on the default branch (main) so GitHub registers it; the
+# actual build logic lives in .github/scripts/tr-build-tarball.sh on the source
+# ref being released, so each release branch carries its own build recipe.
+name: TR Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 1.4.0-tr.1)"
+        required: true
+      ref:
+        description: "Source branch or tag to release"
+        required: true
+        default: "tr/feature/mqtt-bridge"
+
+jobs:
+  release:
+    # Guard: never run on further forks of this fork
+    if: github.repository == 'thirdreality/matterjs-server'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install and build (npm ci runs the prepare build)
+        run: npm ci
+
+      - name: Build release tarball
+        run: .github/scripts/tr-build-tarball.sh "${{ inputs.version }}" dist-release
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          target=$(git rev-parse HEAD)
+          gh release create "v${{ inputs.version }}" \
+            --target "$target" \
+            --title "matter-server ${{ inputs.version }}" \
+            --notes "ThirdReality matter-server fork release (source: ${{ inputs.ref }} @ $target).
+
+          Install: \`npm install matter-server-${{ inputs.version }}.tgz\` — bundles the @matter-server/* workspace packages (incl. mqtt-bridge). Consumed by LinuxBox-Installer/thirdreality-matter2mqtt." \
+            "dist-release/matter-server-${{ inputs.version }}.tgz" \
+            "dist-release/matter-server-${{ inputs.version }}.tgz.sha256"
