@@ -11,9 +11,11 @@ import {
     type MatterNodeData,
 } from "@matter-server/ws-controller";
 import { Logger, NodeId, ObserverGroup } from "@matter/main";
-import { EndpointNumber } from "@matter/main/types";
+import { ClusterId, EndpointNumber } from "@matter/main/types";
+import { lightCapabilitiesOf } from "./LightCapabilities.js";
 import { MqttConnection } from "./MqttConnection.js";
-import { ONOFF_CLUSTER_ID, onOffEndpointsOf, onOffStatePayload, onOffValueOf, parseSetCommand } from "./OnOffState.js";
+import { ONOFF_CLUSTER_ID, onOffEndpointsOf, onOffStatePayload, onOffValueOf } from "./OnOffState.js";
+import { parseSetMessage } from "./SetCommands.js";
 import { Topics } from "./Topics.js";
 
 const logger = Logger.get("MqttBridge");
@@ -185,36 +187,52 @@ export class MqttBridge {
             this.#handleGet(entry, parsed.endpoint);
             return;
         }
-        if (parsed.attribute !== undefined && parsed.attribute !== "state") {
-            logger.warn(`Ignoring set for unsupported attribute "${parsed.attribute}" of "${parsed.device}"`);
-            return;
-        }
-        const command = parseSetCommand(payload);
-        if (command === undefined) {
-            logger.warn(`Ignoring unsupported set payload for "${parsed.device}": ${payload}`);
-            return;
-        }
         const endpoint = parsed.endpoint ?? entry.onOffEndpoints[0];
         if (endpoint === undefined || !entry.onOffEndpoints.includes(endpoint)) {
             logger.warn(`Device "${parsed.device}" has no OnOff support on endpoint ${endpoint ?? "(none)"}`);
             return;
         }
 
-        logger.info(`MQTT command for node ${this.#commandHandler.formatNode(entry.nodeId)}/${endpoint}: ${command}`);
-        this.#commandHandler
-            .handleInvoke({
-                nodeId: entry.nodeId,
-                endpointId: EndpointNumber(endpoint),
-                clusterId: ONOFF_CLUSTER_ID,
-                commandName: command,
-                data: {},
-            })
-            .catch(error =>
-                logger.warn(
-                    `Command "${command}" failed for node ${this.#commandHandler.formatNode(entry.nodeId)}:`,
-                    error,
-                ),
-            );
+        let attributes;
+        try {
+            attributes = this.#commandHandler.getNodeDetails(entry.nodeId).attributes;
+        } catch {
+            logger.warn(`Cannot resolve capabilities for "${parsed.device}"`);
+            return;
+        }
+        const caps = lightCapabilitiesOf(attributes, endpoint);
+        const result = parseSetMessage(payload, parsed.attribute, caps, onOffValueOf(attributes, endpoint));
+        if (result === undefined) {
+            logger.warn(`Ignoring unsupported set payload for "${parsed.device}": ${payload}`);
+            return;
+        }
+        for (const warning of result.warnings) {
+            logger.warn(`Set for "${parsed.device}": ${warning}`);
+        }
+        void this.#runCommands(entry, endpoint, result.commands);
+    }
+
+    /** Execute parsed set commands in order; a failing command is logged and does not stop the rest. */
+    async #runCommands(
+        entry: DeviceEntry,
+        endpoint: number,
+        commands: { clusterId: number; commandName: string; data: Record<string, unknown> }[],
+    ): Promise<void> {
+        const node = this.#commandHandler.formatNode(entry.nodeId);
+        for (const command of commands) {
+            logger.info(`MQTT command for node ${node}/${endpoint}: ${command.commandName}`);
+            try {
+                await this.#commandHandler.handleInvoke({
+                    nodeId: entry.nodeId,
+                    endpointId: EndpointNumber(endpoint),
+                    clusterId: ClusterId(command.clusterId),
+                    commandName: command.commandName,
+                    data: command.data,
+                });
+            } catch (error) {
+                logger.warn(`Command "${command.commandName}" failed for node ${node}:`, error);
+            }
+        }
     }
 
     /** zigbee2mqtt-style `get`: re-publish the current state from the attribute cache. */

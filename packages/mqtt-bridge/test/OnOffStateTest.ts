@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { onOffEndpointsOf, onOffStatePayload, onOffValueOf, parseSetCommand } from "../src/OnOffState.js";
+import { onOffEndpointsOf, onOffStatePayload, onOffValueOf } from "../src/OnOffState.js";
 
 describe("OnOffState", () => {
     describe("onOffEndpointsOf", () => {
@@ -41,33 +41,6 @@ describe("OnOffState", () => {
         it("serializes the state", () => {
             expect(onOffStatePayload(true)).to.equal('{"state":"ON"}');
             expect(onOffStatePayload(false)).to.equal('{"state":"OFF"}');
-        });
-    });
-
-    describe("parseSetCommand", () => {
-        it("parses bare strings case-insensitively", () => {
-            expect(parseSetCommand("ON")).to.equal("on");
-            expect(parseSetCommand("off")).to.equal("off");
-            expect(parseSetCommand(" Toggle ")).to.equal("toggle");
-        });
-
-        it("parses JSON objects with a state member", () => {
-            expect(parseSetCommand('{"state":"ON"}')).to.equal("on");
-            expect(parseSetCommand('{"state":"toggle"}')).to.equal("toggle");
-            expect(parseSetCommand('{"state":false}')).to.equal("off");
-        });
-
-        it("parses JSON strings and booleans", () => {
-            expect(parseSetCommand('"OFF"')).to.equal("off");
-            expect(parseSetCommand("true")).to.equal("on");
-            expect(parseSetCommand("false")).to.equal("off");
-        });
-
-        it("rejects unsupported payloads", () => {
-            expect(parseSetCommand("")).to.equal(undefined);
-            expect(parseSetCommand("42")).to.equal(undefined);
-            expect(parseSetCommand('{"brightness":10}')).to.equal(undefined);
-            expect(parseSetCommand("banana")).to.equal(undefined);
         });
     });
 });
