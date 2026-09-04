@@ -4,20 +4,25 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/** A parsed `<prefix>/<device>[/<endpoint>]/set` topic. */
-export interface SetTopic {
+/** A parsed inbound command topic (`set`, `set/<attribute>` or `get`). */
+export interface InboundTopic {
     device: string;
     endpoint?: number;
+    kind: "set" | "get";
+    /** For `set/<attribute>` topics: the attribute the bare payload addresses. */
+    attribute?: string;
 }
 
 /**
  * Builds and parses the matter2mqtt topic layout under a configurable prefix.
  *
- * Layout:
+ * Layout (zigbee2mqtt style):
  * - `<prefix>/bridge/state|info|devices` — bridge-level topics
  * - `<prefix>/<device>` — device state (single relevant endpoint)
  * - `<prefix>/<device>/<endpoint>` — device state (multi-endpoint devices)
- * - `<prefix>/<device>[/<endpoint>]/set` — inbound commands
+ * - `<prefix>/<device>[/<endpoint>]/set` — inbound commands (JSON payload)
+ * - `<prefix>/<device>[/<endpoint>]/set/<attribute>` — inbound command, bare payload
+ * - `<prefix>/<device>[/<endpoint>]/get` — request a re-publish of the current state
  */
 export class Topics {
     readonly #prefix: string;
@@ -53,32 +58,47 @@ export class Topics {
         return `${this.#prefix}/${device}/availability`;
     }
 
-    /** Subscription filters covering both set topic variants. */
-    get setFilters(): string[] {
-        return [`${this.#prefix}/+/set`, `${this.#prefix}/+/+/set`];
+    /** Subscription filters covering all inbound command topic variants (disjoint set). */
+    get commandFilters(): string[] {
+        const p = this.#prefix;
+        return [`${p}/+/set`, `${p}/+/+/set`, `${p}/+/set/+`, `${p}/+/+/set/+`, `${p}/+/get`, `${p}/+/+/get`];
     }
 
     /**
-     * Parse an inbound set topic. Returns undefined for topics that are not
+     * Parse an inbound command topic. Returns undefined for topics that are not
      * device commands (including anything under `bridge/`).
      */
-    parseSetTopic(topic: string): SetTopic | undefined {
+    parseInbound(topic: string): InboundTopic | undefined {
         if (!topic.startsWith(`${this.#prefix}/`)) {
             return undefined;
         }
         const segments = topic.slice(this.#prefix.length + 1).split("/");
-        if (segments[segments.length - 1] !== "set") {
+        const last = segments[segments.length - 1];
+        const beforeLast = segments[segments.length - 2];
+
+        let kind: "set" | "get";
+        let attribute: string | undefined;
+        let rest: string[];
+        if (last === "set" || last === "get") {
+            kind = last;
+            rest = segments.slice(0, -1);
+        } else if (beforeLast === "set" && last !== undefined && last !== "") {
+            kind = "set";
+            attribute = last;
+            rest = segments.slice(0, -2);
+        } else {
             return undefined;
         }
-        const [device, middle] = segments;
+
+        const [device, endpointSegment] = rest;
         if (device === undefined || device === "" || device === "bridge") {
             return undefined;
         }
-        if (segments.length === 2) {
-            return { device };
+        if (rest.length === 1) {
+            return { device, kind, attribute };
         }
-        if (segments.length === 3 && middle !== undefined && /^\d+$/.test(middle)) {
-            return { device, endpoint: parseInt(middle, 10) };
+        if (rest.length === 2 && endpointSegment !== undefined && /^\d+$/.test(endpointSegment)) {
+            return { device, endpoint: parseInt(endpointSegment, 10), kind, attribute };
         }
         return undefined;
     }

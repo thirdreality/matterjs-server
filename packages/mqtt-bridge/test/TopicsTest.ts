@@ -37,27 +37,81 @@ describe("Topics", () => {
             expect(topics.deviceAvailability("5")).to.equal("matter2mqtt/5/availability");
         });
 
-        it("provides set subscription filters", () => {
-            expect(topics.setFilters).to.deep.equal(["matter2mqtt/+/set", "matter2mqtt/+/+/set"]);
+        it("provides command subscription filters", () => {
+            expect(topics.commandFilters).to.deep.equal([
+                "matter2mqtt/+/set",
+                "matter2mqtt/+/+/set",
+                "matter2mqtt/+/set/+",
+                "matter2mqtt/+/+/set/+",
+                "matter2mqtt/+/get",
+                "matter2mqtt/+/+/get",
+            ]);
         });
     });
 
-    describe("parseSetTopic", () => {
+    describe("parseInbound", () => {
         it("parses a device set topic", () => {
-            expect(topics.parseSetTopic("matter2mqtt/5/set")).to.deep.equal({ device: "5" });
+            expect(topics.parseInbound("matter2mqtt/5/set")).to.deep.equal({
+                device: "5",
+                kind: "set",
+                attribute: undefined,
+            });
         });
 
         it("parses an endpoint set topic", () => {
-            expect(topics.parseSetTopic("matter2mqtt/5/2/set")).to.deep.equal({ device: "5", endpoint: 2 });
+            expect(topics.parseInbound("matter2mqtt/5/2/set")).to.deep.equal({
+                device: "5",
+                endpoint: 2,
+                kind: "set",
+                attribute: undefined,
+            });
         });
 
-        it("rejects non-set and bridge topics", () => {
-            expect(topics.parseSetTopic("matter2mqtt/5")).to.equal(undefined);
-            expect(topics.parseSetTopic("matter2mqtt/bridge/set")).to.equal(undefined);
-            expect(topics.parseSetTopic("matter2mqtt/5/x/set")).to.equal(undefined);
-            expect(topics.parseSetTopic("matter2mqtt/5/2/3/set")).to.equal(undefined);
-            expect(topics.parseSetTopic("other/5/set")).to.equal(undefined);
-            expect(topics.parseSetTopic("matter2mqtt//set")).to.equal(undefined);
+        it("parses set/<attribute> topics", () => {
+            expect(topics.parseInbound("matter2mqtt/5/set/state")).to.deep.equal({
+                device: "5",
+                kind: "set",
+                attribute: "state",
+            });
+            expect(topics.parseInbound("matter2mqtt/5/2/set/state")).to.deep.equal({
+                device: "5",
+                endpoint: 2,
+                kind: "set",
+                attribute: "state",
+            });
+            expect(topics.parseInbound("matter2mqtt/5/set/brightness")).to.deep.equal({
+                device: "5",
+                kind: "set",
+                attribute: "brightness",
+            });
+        });
+
+        it("parses get topics", () => {
+            expect(topics.parseInbound("matter2mqtt/5/get")).to.deep.equal({
+                device: "5",
+                kind: "get",
+                attribute: undefined,
+            });
+            expect(topics.parseInbound("matter2mqtt/5/2/get")).to.deep.equal({
+                device: "5",
+                endpoint: 2,
+                kind: "get",
+                attribute: undefined,
+            });
+        });
+
+        it("rejects non-command and bridge topics", () => {
+            expect(topics.parseInbound("matter2mqtt/5")).to.equal(undefined);
+            expect(topics.parseInbound("matter2mqtt/bridge/set")).to.equal(undefined);
+            expect(topics.parseInbound("matter2mqtt/bridge/get")).to.equal(undefined);
+            expect(topics.parseInbound("matter2mqtt/bridge/set/state")).to.equal(undefined);
+            expect(topics.parseInbound("matter2mqtt/5/x/set")).to.equal(undefined);
+            expect(topics.parseInbound("matter2mqtt/5/2/3/set")).to.equal(undefined);
+            expect(topics.parseInbound("matter2mqtt/5/x/get")).to.equal(undefined);
+            expect(topics.parseInbound("matter2mqtt/5/2/3/set/state")).to.equal(undefined);
+            expect(topics.parseInbound("other/5/set")).to.equal(undefined);
+            expect(topics.parseInbound("matter2mqtt//set")).to.equal(undefined);
+            expect(topics.parseInbound("matter2mqtt/5/get/state")).to.equal(undefined);
         });
     });
 });

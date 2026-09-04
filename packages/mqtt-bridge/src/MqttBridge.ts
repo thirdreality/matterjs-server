@@ -18,6 +18,11 @@ import { Topics } from "./Topics.js";
 
 const logger = Logger.get("MqttBridge");
 
+/** zigbee2mqtt-style bridge state payload: `{"state":"online"}`. */
+function bridgeStatePayload(state: "online" | "offline"): string {
+    return JSON.stringify({ state });
+}
+
 export interface MqttBridgeOptions {
     /** Broker URL, e.g. `mqtt://user:password@localhost:1883`. */
     url: string;
@@ -59,7 +64,7 @@ export class MqttBridge {
         this.#connection = new MqttConnection({
             url: options.url,
             clientId: options.clientId ?? "matter2mqtt",
-            will: { topic: this.#topics.bridgeState, payload: "offline" },
+            will: { topic: this.#topics.bridgeState, payload: bridgeStatePayload("offline") },
         });
     }
 
@@ -70,7 +75,7 @@ export class MqttBridge {
         this.#started = true;
 
         this.#connection.connect((topic, payload) => this.#handleMessage(topic, payload));
-        this.#connection.subscribe(this.#topics.setFilters);
+        this.#connection.subscribe(this.#topics.commandFilters);
 
         // The Matter stack is otherwise only started once a WebSocket client connects
         await this.#commandHandler.start();
@@ -131,7 +136,7 @@ export class MqttBridge {
         }
         this.#publishDevices();
         this.#publishBridgeInfo();
-        this.#connection.publish(this.#topics.bridgeState, "online", true);
+        this.#connection.publish(this.#topics.bridgeState, bridgeStatePayload("online"), true);
 
         logger.notice(`MQTT bridge started with prefix "${this.#topics.prefix}"`);
     }
@@ -142,7 +147,7 @@ export class MqttBridge {
         }
         this.#started = false;
         this.#observers.close();
-        await this.#connection.close({ topic: this.#topics.bridgeState, payload: "offline" });
+        await this.#connection.close({ topic: this.#topics.bridgeState, payload: bridgeStatePayload("offline") });
     }
 
     #handleAttributeChanged(
@@ -167,13 +172,21 @@ export class MqttBridge {
     }
 
     #handleMessage(topic: string, payload: string): void {
-        const parsed = this.#topics.parseSetTopic(topic);
+        const parsed = this.#topics.parseInbound(topic);
         if (parsed === undefined) {
             return;
         }
         const entry = this.#devices.get(parsed.device);
         if (entry === undefined) {
             logger.warn(`Ignoring command for unknown device "${parsed.device}"`);
+            return;
+        }
+        if (parsed.kind === "get") {
+            this.#handleGet(entry, parsed.endpoint);
+            return;
+        }
+        if (parsed.attribute !== undefined && parsed.attribute !== "state") {
+            logger.warn(`Ignoring set for unsupported attribute "${parsed.attribute}" of "${parsed.device}"`);
             return;
         }
         const command = parseSetCommand(payload);
@@ -202,6 +215,29 @@ export class MqttBridge {
                     error,
                 ),
             );
+    }
+
+    /** zigbee2mqtt-style `get`: re-publish the current state from the attribute cache. */
+    #handleGet(entry: DeviceEntry, endpoint?: number): void {
+        const device = entry.nodeId.toString();
+        let details: MatterNodeData;
+        try {
+            details = this.#commandHandler.getNodeDetails(entry.nodeId);
+        } catch {
+            logger.warn(`Cannot read state for get request on "${device}"`);
+            return;
+        }
+        const endpoints = endpoint === undefined ? entry.onOffEndpoints : [endpoint];
+        for (const ep of endpoints) {
+            if (!entry.onOffEndpoints.includes(ep)) {
+                logger.warn(`Device "${device}" has no OnOff support on endpoint ${ep}`);
+                continue;
+            }
+            const value = onOffValueOf(details.attributes, ep);
+            if (value !== undefined) {
+                this.#publishOnOffState(entry, ep, value);
+            }
+        }
     }
 
     /**
