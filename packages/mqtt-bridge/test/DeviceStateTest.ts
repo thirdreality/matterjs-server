@@ -101,13 +101,19 @@ describe("DeviceState", () => {
     });
 
     describe("deviceStateOf", () => {
-        it("suffixes properties per endpoint for multi-endpoint devices", () => {
+        it("keeps properties plain when each capability lives on its own endpoint", () => {
             const state = deviceStateOf(NIGHT_LIGHT, [1, 2, 3], capsOf);
-            expect(state.state_1).to.equal("ON");
-            expect(state.brightness_1).to.equal(200);
-            expect(state.illuminance_2).to.equal(136);
-            expect(state.occupancy_3).to.equal(true);
-            expect(state.state).to.equal(undefined);
+            expect(state.state).to.equal("ON");
+            expect(state.brightness).to.equal(200);
+            expect(state.illuminance).to.equal(136);
+            expect(state.occupancy).to.equal(true);
+            expect(state.state_1).to.equal(undefined);
+        });
+
+        it("suffixes only the properties that collide across endpoints", () => {
+            const attributes = { "1/6/0": true, "2/6/0": false, "3/1030/0": 1 };
+            const state = deviceStateOf(attributes, [1, 2, 3], ep => lightCapabilitiesOf(attributes, ep));
+            expect(state).to.deep.equal({ state_1: "ON", state_2: "OFF", occupancy: true });
         });
 
         it("uses plain properties for a single relevant endpoint", () => {

@@ -18,7 +18,7 @@ matter-server --mqtt-url mqtt://user:password@localhost:1883 --mqtt-prefix matte
 | `<prefix>/bridge/info` | publish, retained | server version, BLE proxy state |
 | `<prefix>/bridge/devices` | publish, retained | JSON array of known devices |
 | `<prefix>/<node>/availability` | publish, retained | `online` / `offline` |
-| `<prefix>/<node>` | publish, retained | full merged state JSON, e.g. `{"state":"ON","brightness":200,"color_mode":"hs","color":{"hue":240,"saturation":100},"color_temp":250}`; sensors add `occupancy`, `illuminance` (lx), `temperature`, `humidity`, `battery`, `contact`; multi-endpoint devices use the zigbee2mqtt `_<endpoint>` property suffix (e.g. `state_1`) |
+| `<prefix>/<node>` | publish, retained | full merged state JSON, e.g. `{"state":"ON","brightness":200,"color_mode":"hs","color":{"hue":240,"saturation":100},"color_temp":250}`; sensors add `occupancy`, `illuminance` (lx), `temperature`, `humidity`, `battery`, `contact`; a property provided by several endpoints (e.g. a dual relay) gets the zigbee2mqtt `_<endpoint>` suffix (`state_1`), unique properties stay plain |
 | `<prefix>/<node>/set` | subscribe | `{"state":"ON"\|"OFF"\|"TOGGLE"}` or bare string |
 | `<prefix>/<node>/set/state` | subscribe | bare payload form: `ON` / `OFF` / `TOGGLE` |
 | `<prefix>/<node>/get` | subscribe | re-publishes the current state (payload ignored) |

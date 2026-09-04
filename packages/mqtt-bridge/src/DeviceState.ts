@@ -178,8 +178,9 @@ export function endpointStateOf(
 }
 
 /**
- * Assemble the full zigbee2mqtt-style device state: single relevant endpoint publishes
- * plain properties, multiple endpoints use the z2m `_<endpoint>` property suffix.
+ * Assemble the full zigbee2mqtt-style device state. Properties are plain as long as they
+ * are unique across endpoints; only a property that several endpoints provide (a true
+ * multi-instance device, e.g. a dual relay) gets the z2m `_<endpoint>` suffix.
  * `battery` is device-level (first PowerSource occurrence, usually endpoint 0).
  */
 export function deviceStateOf(
@@ -187,12 +188,19 @@ export function deviceStateOf(
     endpoints: number[],
     capsOf: (endpoint: number) => LightCapabilities,
 ): Record<string, unknown> {
+    const perEndpoint = endpoints.map(
+        endpoint => [endpoint, endpointStateOf(attributes, endpoint, capsOf(endpoint))] as const,
+    );
+    const occurrences = new Map<string, number>();
+    for (const [, state] of perEndpoint) {
+        for (const key of Object.keys(state)) {
+            occurrences.set(key, (occurrences.get(key) ?? 0) + 1);
+        }
+    }
     const device: Record<string, unknown> = {};
-    const multi = endpoints.length > 1;
-    for (const endpoint of endpoints) {
-        const state = endpointStateOf(attributes, endpoint, capsOf(endpoint));
+    for (const [endpoint, state] of perEndpoint) {
         for (const [key, value] of Object.entries(state)) {
-            device[multi ? `${key}_${endpoint}` : key] = value;
+            device[(occurrences.get(key) ?? 0) > 1 ? `${key}_${endpoint}` : key] = value;
         }
     }
 
