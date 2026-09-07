@@ -53,15 +53,19 @@ describe("DeviceState", () => {
     });
 
     describe("endpointStateOf", () => {
-        it("assembles light state in hs mode with enhanced hue precision", () => {
-            expect(endpointStateOf(NIGHT_LIGHT, 1, capsOf(1))).to.deep.equal({
-                state: "ON",
-                brightness: 200,
-                color_mode: "hs",
-                // enhancedCurrentHue 43690/65535 = 240°, saturation 254/254 = 100
-                color: { hue: 240, saturation: 100 },
-                color_temp: 250,
-            });
+        it("assembles light state in hs mode with enhanced hue precision and xy for HA", () => {
+            const state = endpointStateOf(NIGHT_LIGHT, 1, capsOf(1));
+            const color = state.color as Record<string, number>;
+            // enhancedCurrentHue 43690/65535 = 240°, saturation 254/254 = 100
+            expect(color.hue).to.equal(240);
+            expect(color.saturation).to.equal(100);
+            // x/y companion keys (HA's JSON light reads short keys only): blue region
+            expect(color.x).to.be.lessThan(0.2);
+            expect(color.y).to.be.lessThan(0.1);
+            expect(state.state).to.equal("ON");
+            expect(state.brightness).to.equal(200);
+            expect(state.color_mode).to.equal("hs");
+            expect(state.color_temp).to.equal(250);
         });
 
         it("uses xy representation in xy color mode", () => {

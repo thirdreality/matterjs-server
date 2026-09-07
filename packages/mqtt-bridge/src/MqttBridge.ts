@@ -13,6 +13,7 @@ import {
 import { Logger, NodeId, ObserverGroup } from "@matter/main";
 import { ClusterId, EndpointNumber } from "@matter/main/types";
 import { deviceStateOf, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
+import { discoveryMessagesOf } from "./Discovery.js";
 import { lightCapabilitiesOf } from "./LightCapabilities.js";
 import { MqttConnection } from "./MqttConnection.js";
 import { onOffEndpointsOf, onOffValueOf } from "./OnOffState.js";
@@ -42,6 +43,8 @@ interface DeviceEntry {
     onOffEndpoints: number[];
     /** Endpoints contributing properties to the published device state. */
     relevantEndpoints: number[];
+    /** Retained HA discovery topics published for this device, for cleanup on removal. */
+    discoveryTopics: string[];
 }
 
 /**
@@ -305,7 +308,7 @@ export class MqttBridge {
         const onOffEndpoints = onOffEndpointsOf(details.attributes);
         const relevantEndpoints = relevantEndpointsOf(details.attributes);
         const previous = this.#devices.get(device);
-        const entry: DeviceEntry = { nodeId, onOffEndpoints, relevantEndpoints };
+        const entry: DeviceEntry = { nodeId, onOffEndpoints, relevantEndpoints, discoveryTopics: [] };
         this.#devices.set(device, entry);
 
         // Migration/cleanup: state now lives on the single `<node>` topic; clear any retained
@@ -314,6 +317,7 @@ export class MqttBridge {
             this.#connection.clearRetained(this.#topics.deviceState(device, endpoint));
         }
 
+        this.#publishDiscovery(entry, details, previous?.discoveryTopics ?? []);
         this.#connection.publish(
             this.#topics.deviceAvailability(device),
             details.available ? "online" : "offline",
@@ -323,12 +327,41 @@ export class MqttBridge {
         return entry;
     }
 
+    /** Publish retained HA discovery for the device; clear topics that disappeared. */
+    #publishDiscovery(entry: DeviceEntry, details: MatterNodeData, previousTopics: string[]): void {
+        const device = entry.nodeId.toString();
+        const { attributes } = details;
+        const messages = discoveryMessagesOf(
+            {
+                device,
+                vendorName: stringAttribute(attributes, "0/40/1"),
+                productName: stringAttribute(attributes, "0/40/3"),
+                serialNumber: stringAttribute(attributes, "0/40/15"),
+                serverVersion: this.#serverVersion,
+            },
+            attributes,
+            entry.relevantEndpoints,
+            endpoint => lightCapabilitiesOf(attributes, endpoint),
+            this.#topics,
+        );
+        entry.discoveryTopics = messages.map(m => m.topic);
+        for (const stale of previousTopics.filter(topic => !entry.discoveryTopics.includes(topic))) {
+            this.#connection.clearRetained(stale);
+        }
+        for (const message of messages) {
+            this.#connection.publish(message.topic, message.payload, true);
+        }
+    }
+
     #removeDevice(device: string): void {
         const entry = this.#devices.get(device);
         if (entry === undefined) {
             return;
         }
         this.#devices.delete(device);
+        for (const topic of entry.discoveryTopics) {
+            this.#connection.clearRetained(topic);
+        }
         this.#connection.clearRetained(this.#topics.deviceState(device));
         for (const endpoint of entry.relevantEndpoints) {
             this.#connection.clearRetained(this.#topics.deviceState(device, endpoint));

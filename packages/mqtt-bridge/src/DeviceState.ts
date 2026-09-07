@@ -13,6 +13,7 @@ import {
     RelativeHumidityMeasurement,
     TemperatureMeasurement,
 } from "@matter/main/clusters";
+import { hsvToXY } from "./ColorMath.js";
 import { COLOR_CLUSTER_ID, LEVEL_CLUSTER_ID, ONOFF_CLUSTER_ID, type LightCapabilities } from "./LightCapabilities.js";
 
 const OCCUPANCY_CLUSTER_ID = OccupancySensing.Cluster.id;
@@ -67,6 +68,78 @@ export function relevantEndpointsOf(attributes: AttributesData): number[] {
         }
     }
     return [...endpoints].sort((a, b) => a - b);
+}
+
+/** Sensor clusters present on an endpoint (attribute 0 cached, value may still be unknown). */
+export interface SensorPresence {
+    occupancy: boolean;
+    illuminance: boolean;
+    temperature: boolean;
+    humidity: boolean;
+    contact: boolean;
+}
+
+export function sensorPresenceOf(attributes: AttributesData, endpoint: number): SensorPresence {
+    const has = (cluster: number) => attributes[`${endpoint}/${cluster}/0`] !== undefined;
+    return {
+        occupancy: has(OCCUPANCY_CLUSTER_ID),
+        illuminance: has(ILLUMINANCE_CLUSTER_ID),
+        temperature: has(TEMPERATURE_CLUSTER_ID),
+        humidity: has(HUMIDITY_CLUSTER_ID),
+        contact: has(BOOLEAN_STATE_CLUSTER_ID),
+    };
+}
+
+/**
+ * Property names an endpoint can contribute to the device state, based on capabilities
+ * rather than current values, so suffix decisions and discovery templates stay stable.
+ */
+export function endpointPropertyKeysOf(
+    attributes: AttributesData,
+    endpoint: number,
+    caps: LightCapabilities,
+): string[] {
+    const keys: string[] = [];
+    if (caps.onOff) {
+        keys.push("state");
+    }
+    if (caps.brightness) {
+        keys.push("brightness");
+    }
+    if (caps.colorTemp || caps.hueSaturation || caps.xy) {
+        keys.push("color_mode");
+    }
+    if (caps.hueSaturation || caps.xy) {
+        keys.push("color");
+    }
+    if (caps.colorTemp) {
+        keys.push("color_temp");
+    }
+    const sensors = sensorPresenceOf(attributes, endpoint);
+    for (const [key, present] of Object.entries(sensors)) {
+        if (present) {
+            keys.push(key);
+        }
+    }
+    return keys;
+}
+
+/**
+ * Resolves the published property name per endpoint: plain while unique across the device,
+ * the zigbee2mqtt `_<endpoint>` suffix when several endpoints provide the same property.
+ */
+export function propertyNameResolver(
+    attributes: AttributesData,
+    endpoints: number[],
+    capsOf: (endpoint: number) => LightCapabilities,
+): (endpoint: number, key: string) => string {
+    const occurrences = new Map<string, number>();
+    for (const endpoint of endpoints) {
+        for (const key of endpointPropertyKeysOf(attributes, endpoint, capsOf(endpoint))) {
+            occurrences.set(key, (occurrences.get(key) ?? 0) + 1);
+        }
+    }
+    return (endpoint, key) => ((occurrences.get(key) ?? 0) > 1 ? `${key}_${endpoint}` : key);
 }
 
 function numberOf(
@@ -124,6 +197,13 @@ export function endpointStateOf(
             }
             if (saturation !== undefined) {
                 color.saturation = Math.round((saturation / 254) * 100);
+            }
+            if (color.hue !== undefined && color.saturation !== undefined) {
+                // Home Assistant's MQTT JSON light only reads the short color keys (h/s, x/y);
+                // ship x/y alongside like zigbee2mqtt's color sync does
+                const { x, y } = hsvToXY(color.hue, color.saturation);
+                color.x = x;
+                color.y = y;
             }
             if (Object.keys(color).length > 0) {
                 state.color = color;
@@ -188,19 +268,12 @@ export function deviceStateOf(
     endpoints: number[],
     capsOf: (endpoint: number) => LightCapabilities,
 ): Record<string, unknown> {
-    const perEndpoint = endpoints.map(
-        endpoint => [endpoint, endpointStateOf(attributes, endpoint, capsOf(endpoint))] as const,
-    );
-    const occurrences = new Map<string, number>();
-    for (const [, state] of perEndpoint) {
-        for (const key of Object.keys(state)) {
-            occurrences.set(key, (occurrences.get(key) ?? 0) + 1);
-        }
-    }
+    const nameOf = propertyNameResolver(attributes, endpoints, capsOf);
     const device: Record<string, unknown> = {};
-    for (const [endpoint, state] of perEndpoint) {
+    for (const endpoint of endpoints) {
+        const state = endpointStateOf(attributes, endpoint, capsOf(endpoint));
         for (const [key, value] of Object.entries(state)) {
-            device[(occurrences.get(key) ?? 0) > 1 ? `${key}_${endpoint}` : key] = value;
+            device[nameOf(endpoint, key)] = value;
         }
     }
 
