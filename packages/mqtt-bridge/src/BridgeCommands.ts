@@ -21,10 +21,26 @@ const MAX_COMMISSION_NODE_ID_ATTEMPTS = 5;
 /** Commands whose single value may arrive as a bare (non-JSON) payload, e.g. from HA text entities. */
 const BARE_PAYLOAD_KEYS: Record<string, string> = {
     commission: "code",
+    commission_mode: "mode",
     wifi_ssid: "ssid",
     wifi_password: "password",
     thread_dataset: "dataset",
 };
+
+/**
+ * Options of the HA commission-mode select, mapped onto commission parameters.
+ * The network type auto-negotiates via the NetworkCommissioning cluster, so Auto
+ * (offer all stored credentials) covers the common case.
+ */
+const COMMISSION_MODES: Record<string, { network?: "wifi" | "thread"; networkOnly?: boolean }> = {
+    Auto: {},
+    WiFi: { network: "wifi" },
+    Thread: { network: "thread" },
+    "Existing (IP)": { networkOnly: true },
+};
+
+export const COMMISSION_MODE_NAMES: readonly string[] = Object.keys(COMMISSION_MODES);
+export const DEFAULT_COMMISSION_MODE = "Auto";
 
 export interface BridgeCommandContext {
     commandHandler: ControllerCommandHandler;
@@ -32,6 +48,8 @@ export interface BridgeCommandContext {
     controller: MatterController;
     /** Half-entered WiFi credentials from the single-value HA text entities. */
     wifiInput?: { ssid?: string; password?: string };
+    /** Selected HA commission mode; applies when a commission request carries only a code. */
+    commissionMode?: string;
 }
 
 export interface BridgeCommandResponse {
@@ -56,6 +74,15 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
         }
         await config.setWifiCredentials(ConfigStorage.DEFAULT_CREDENTIAL_ID, ssid, credentials);
         return { ssid };
+    },
+
+    /** Select how a bare-code commission request is routed (the HA select entity). */
+    commission_mode: async ({ mode }, ctx) => {
+        if (typeof mode !== "string" || COMMISSION_MODES[mode] === undefined) {
+            throw new Error(`"mode" must be one of: ${COMMISSION_MODE_NAMES.join(", ")}`);
+        }
+        ctx.commissionMode = mode;
+        return { mode };
     },
 
     /** Set the WiFi SSID half; persisted once the password half is known too. */
@@ -95,15 +122,23 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
      * ("add existing device"); `network: "wifi" | "thread"` restricts to one
      * credential type and fails early when it is not stored yet.
      */
-    commission: async ({ code, network_only, network }, ctx) => {
+    commission: async (args, ctx) => {
+        const code = args.code;
         if (typeof code !== "string" || code.length === 0) {
             throw new Error('expected {"code": "<QR or manual pairing code>"}');
+        }
+        let network = args.network;
+        let networkOnly = args.network_only === true;
+        if (args.network === undefined && args.network_only === undefined) {
+            // Bare code (the HA text entity): apply the card's selected commission mode
+            const mode = COMMISSION_MODES[ctx.commissionMode ?? DEFAULT_COMMISSION_MODE];
+            network = mode?.network;
+            networkOnly = mode?.networkOnly === true;
         }
         if (network !== undefined && network !== "wifi" && network !== "thread") {
             throw new Error('"network" must be "wifi" or "thread"');
         }
         const { commandHandler, config, controller } = ctx;
-        const networkOnly = network_only === true;
         const isQrCode = code.startsWith("MT:");
 
         let wifiCredentials;

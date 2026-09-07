@@ -5,6 +5,7 @@
  */
 
 import type { AttributesData } from "@matter-server/ws-controller";
+import { COMMISSION_MODE_NAMES } from "./BridgeCommands.js";
 import { endpointPropertyKeysOf, propertyNameResolver, sensorPresenceOf } from "./DeviceState.js";
 import type { LightCapabilities } from "./LightCapabilities.js";
 import type { Topics } from "./Topics.js";
@@ -113,41 +114,30 @@ export function bridgeDiscoveryMessagesOf(serverVersion: string | undefined, top
                 origin,
             }),
         },
-        // The three commissioning entries: paste a pairing code into the matching box.
-        // Result on bridge/response/commission and, human-readable, on the status sensor.
         {
-            topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/add_wifi_device/config`,
+            // Routes a bare-code commission: Auto offers all stored credentials (the network
+            // type auto-negotiates), WiFi/Thread force one, Existing (IP) joins over network
+            topic: `${DISCOVERY_PREFIX}/select/matter2mqtt_bridge/commission_mode/config`,
             payload: JSON.stringify({
-                name: "Add WiFi device",
-                unique_id: "matter2mqtt_bridge_add_wifi_device",
-                command_topic: `${topics.prefix}/bridge/request/commission`,
-                command_template: '{"code":"{{ value }}","network":"wifi"}',
-                state_topic: topics.bridgeCommissionCode,
+                name: "Commission mode",
+                unique_id: "matter2mqtt_bridge_commission_mode",
+                command_topic: `${topics.prefix}/bridge/request/commission_mode`,
+                state_topic: topics.bridgeCommissionMode,
+                options: COMMISSION_MODE_NAMES,
                 availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
                 device,
                 origin,
             }),
         },
         {
-            topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/add_thread_device/config`,
+            // Paste a pairing code to commission following the selected mode; result on
+            // bridge/response/commission and, human-readable, on the status sensor
+            topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/commission_code/config`,
             payload: JSON.stringify({
-                name: "Add Thread device",
-                unique_id: "matter2mqtt_bridge_add_thread_device",
+                name: "Commission code",
+                unique_id: "matter2mqtt_bridge_commission_code",
                 command_topic: `${topics.prefix}/bridge/request/commission`,
-                command_template: '{"code":"{{ value }}","network":"thread"}',
-                state_topic: topics.bridgeCommissionCode,
-                availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
-                device,
-                origin,
-            }),
-        },
-        {
-            topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/add_existing_device/config`,
-            payload: JSON.stringify({
-                name: "Add existing device",
-                unique_id: "matter2mqtt_bridge_add_existing_device",
-                command_topic: `${topics.prefix}/bridge/request/commission`,
-                command_template: '{"code":"{{ value }}","network_only":true}',
+                command_template: '{"code":"{{ value }}"}',
                 state_topic: topics.bridgeCommissionCode,
                 availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
                 device,

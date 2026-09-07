@@ -139,6 +139,33 @@ describe("BridgeCommands", () => {
         expect(request.manualCode).to.equal("34970112332");
     });
 
+    it("routes a bare code through the selected commission mode", async () => {
+        const { ctx, calls } = mockContext();
+        const select = await executeBridgeCommand("commission_mode", "Existing (IP)", ctx);
+        expect(select.status).to.equal("ok");
+        expect(select.data).to.deep.equal({ mode: "Existing (IP)" });
+        await executeBridgeCommand("commission", "34970112332", ctx);
+        const request = (calls.find(c => c.method === "commissionNode") as Call).args[0] as Record<string, unknown>;
+        expect(request.onNetworkOnly).to.equal(true);
+        expect(request.wifiCredentials).to.equal(undefined);
+    });
+
+    it("lets explicit commission parameters override the selected mode", async () => {
+        const { ctx, calls } = mockContext();
+        await executeBridgeCommand("commission_mode", "Existing (IP)", ctx);
+        await executeBridgeCommand("commission", '{"code":"MT:ABC","network_only":false}', ctx);
+        const request = (calls.find(c => c.method === "commissionNode") as Call).args[0] as Record<string, unknown>;
+        expect(request.onNetworkOnly).to.equal(false);
+        expect(request.wifiCredentials).to.deep.equal({ wifiSsid: "NET", wifiCredentials: "PASS" });
+    });
+
+    it("rejects unknown commission modes", async () => {
+        const { ctx } = mockContext();
+        const response = await executeBridgeCommand("commission_mode", "Zigbee", ctx);
+        expect(response.status).to.equal("error");
+        expect(response.error).to.contain("Auto");
+    });
+
     it("restricts credentials to the requested network type", async () => {
         const { ctx, calls } = mockContext();
         await executeBridgeCommand("commission", '{"code":"MT:ABC","network":"wifi"}', ctx);

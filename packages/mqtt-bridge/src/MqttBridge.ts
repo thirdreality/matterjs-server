@@ -13,7 +13,12 @@ import {
 } from "@matter-server/ws-controller";
 import { Logger, NodeId, ObserverGroup } from "@matter/main";
 import { ClusterId, EndpointNumber } from "@matter/main/types";
-import { CREDENTIAL_COMMAND_NAMES, executeBridgeCommand, type BridgeCommandContext } from "./BridgeCommands.js";
+import {
+    CREDENTIAL_COMMAND_NAMES,
+    DEFAULT_COMMISSION_MODE,
+    executeBridgeCommand,
+    type BridgeCommandContext,
+} from "./BridgeCommands.js";
 import { deviceStateOf, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
 import { bridgeDiscoveryMessagesOf, discoveryMessagesOf } from "./Discovery.js";
 import { lightCapabilitiesOf } from "./LightCapabilities.js";
@@ -292,6 +297,9 @@ export class MqttBridge {
             // Also on error: resets the HA text entities back to the stored truth
             this.#publishCredentialState();
         }
+        if (command === "commission_mode") {
+            this.#publishCommissionMode();
+        }
         if (command === "commission") {
             const summary =
                 response.status === "ok"
@@ -324,7 +332,17 @@ export class MqttBridge {
         this.#publishDevices();
         this.#publishBridgeInfo();
         this.#publishCredentialState();
+        this.#publishCommissionMode();
         this.#connection.publish(this.#topics.bridgeState, bridgeStatePayload("online"), true);
+    }
+
+    /** Retained mode of the HA commission select; a fresh process starts back at Auto. */
+    #publishCommissionMode(): void {
+        if (this.#commandContext === undefined) {
+            return;
+        }
+        const mode = this.#commandContext.commissionMode ?? DEFAULT_COMMISSION_MODE;
+        this.#connection.publish(this.#topics.bridgeCommissionMode, mode, true);
     }
 
     /** Retained credential feedback for the HA bridge card; secrets only ever appear masked. */

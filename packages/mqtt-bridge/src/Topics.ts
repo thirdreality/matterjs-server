@@ -96,6 +96,11 @@ export class Topics {
         return `${this.#prefix}/bridge/commission_code`;
     }
 
+    /** Retained state of the HA commission-mode select entity. */
+    get bridgeCommissionMode(): string {
+        return `${this.#prefix}/bridge/commission_mode`;
+    }
+
     /** Retained state of the HA WiFi-SSID text entity (the stored/pending SSID). */
     get bridgeWifiSsid(): string {
         return `${this.#prefix}/bridge/wifi_ssid`;
