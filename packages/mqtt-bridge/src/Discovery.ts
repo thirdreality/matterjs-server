@@ -28,6 +28,51 @@ export interface DiscoveryMessage {
 }
 
 /**
+ * Discovery for the bridge itself: connectivity and version, zigbee2mqtt-style.
+ * M2's commissioning command entities (permit join etc.) will join this device.
+ */
+export function bridgeDiscoveryMessagesOf(serverVersion: string | undefined, topics: Topics): DiscoveryMessage[] {
+    const device = {
+        identifiers: ["matter2mqtt_bridge"],
+        name: "Matter2MQTT Bridge",
+        manufacturer: "ThirdReality",
+        model: "matter2mqtt",
+        sw_version: serverVersion,
+    };
+    const origin = { name: "matter2mqtt", sw_version: serverVersion };
+    return [
+        {
+            topic: `${DISCOVERY_PREFIX}/binary_sensor/matter2mqtt_bridge/connection_state/config`,
+            payload: JSON.stringify({
+                name: "Connection state",
+                unique_id: "matter2mqtt_bridge_connection_state",
+                state_topic: topics.bridgeState,
+                value_template: "{{ value_json.state }}",
+                payload_on: "online",
+                payload_off: "offline",
+                device_class: "connectivity",
+                entity_category: "diagnostic",
+                device,
+                origin,
+            }),
+        },
+        {
+            topic: `${DISCOVERY_PREFIX}/sensor/matter2mqtt_bridge/version/config`,
+            payload: JSON.stringify({
+                name: "Version",
+                unique_id: "matter2mqtt_bridge_version",
+                state_topic: topics.bridgeInfo,
+                value_template: "{{ value_json.version }}",
+                entity_category: "diagnostic",
+                availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
+                device,
+                origin,
+            }),
+        },
+    ];
+}
+
+/**
  * Generate the Home Assistant MQTT discovery messages for one device, derived from its
  * endpoint capabilities: light (JSON schema) or switch for OnOff endpoints, binary_sensor
  * and sensor entities for the sensor clusters. Messages are published retained; the topics

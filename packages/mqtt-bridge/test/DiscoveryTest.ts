@@ -5,7 +5,7 @@
  */
 
 import { hsvToXY } from "../src/ColorMath.js";
-import { discoveryMessagesOf } from "../src/Discovery.js";
+import { bridgeDiscoveryMessagesOf, discoveryMessagesOf } from "../src/Discovery.js";
 import { lightCapabilitiesOf } from "../src/LightCapabilities.js";
 import { Topics } from "../src/Topics.js";
 
@@ -54,6 +54,24 @@ describe("ColorMath", () => {
         const { x, y } = hsvToXY(0, 0);
         expect(Math.abs(x - 0.3227)).to.be.lessThan(0.02);
         expect(Math.abs(y - 0.329)).to.be.lessThan(0.02);
+    });
+});
+
+describe("bridgeDiscoveryMessagesOf", () => {
+    it("announces the bridge device with connectivity and version", () => {
+        const messages = bridgeDiscoveryMessagesOf("1.4.0-tr.1", topics);
+        expect(messages.map(m => m.topic)).to.deep.equal([
+            "homeassistant/binary_sensor/matter2mqtt_bridge/connection_state/config",
+            "homeassistant/sensor/matter2mqtt_bridge/version/config",
+        ]);
+        const connection = JSON.parse(messages[0].payload);
+        expect(connection.state_topic).to.equal("matter2mqtt/bridge/state");
+        expect(connection.payload_on).to.equal("online");
+        expect(connection.device_class).to.equal("connectivity");
+        expect(connection.device.identifiers).to.deep.equal(["matter2mqtt_bridge"]);
+        const version = JSON.parse(messages[1].payload);
+        expect(version.value_template).to.equal("{{ value_json.version }}");
+        expect(version.device.sw_version).to.equal("1.4.0-tr.1");
     });
 });
 

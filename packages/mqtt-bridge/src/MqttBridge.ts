@@ -13,7 +13,7 @@ import {
 import { Logger, NodeId, ObserverGroup } from "@matter/main";
 import { ClusterId, EndpointNumber } from "@matter/main/types";
 import { deviceStateOf, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
-import { discoveryMessagesOf } from "./Discovery.js";
+import { bridgeDiscoveryMessagesOf, discoveryMessagesOf } from "./Discovery.js";
 import { lightCapabilitiesOf } from "./LightCapabilities.js";
 import { MqttConnection } from "./MqttConnection.js";
 import { onOffEndpointsOf, onOffValueOf } from "./OnOffState.js";
@@ -259,6 +259,9 @@ export class MqttBridge {
 
     /** Publish the complete retained picture: all devices, device list, info and online state. */
     #publishAll(): void {
+        for (const message of bridgeDiscoveryMessagesOf(this.#serverVersion, this.#topics)) {
+            this.#connection.publish(message.topic, message.payload, true);
+        }
         for (const nodeId of this.#commandHandler.getNodeIds()) {
             try {
                 this.#refreshDevice(nodeId);
