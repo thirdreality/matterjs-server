@@ -115,6 +115,19 @@ export function bridgeDiscoveryMessagesOf(serverVersion: string | undefined, top
             }),
         },
         {
+            topic: `${DISCOVERY_PREFIX}/sensor/matter2mqtt_bridge/commissioned_nodes/config`,
+            payload: JSON.stringify({
+                name: "Commissioned nodes",
+                unique_id: "matter2mqtt_bridge_commissioned_nodes",
+                state_topic: topics.bridgeDevices,
+                value_template: "{{ value_json | length }}",
+                icon: "mdi:devices",
+                availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
+                device,
+                origin,
+            }),
+        },
+        {
             // Routes a bare-code commission: Auto offers all stored credentials (the network
             // type auto-negotiates), WiFi/Thread force one, Existing (IP) joins over network
             topic: `${DISCOVERY_PREFIX}/select/matter2mqtt_bridge/commission_mode/config`,
@@ -124,6 +137,7 @@ export function bridgeDiscoveryMessagesOf(serverVersion: string | undefined, top
                 command_topic: `${topics.prefix}/bridge/request/commission_mode`,
                 state_topic: topics.bridgeCommissionMode,
                 options: COMMISSION_MODE_NAMES,
+                entity_category: "config",
                 availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
                 device,
                 origin,
@@ -131,7 +145,9 @@ export function bridgeDiscoveryMessagesOf(serverVersion: string | undefined, top
         },
         {
             // Paste a pairing code to commission following the selected mode; result on
-            // bridge/response/commission and, human-readable, on the status sensor
+            // bridge/response/commission and, human-readable, on the status sensor.
+            // The cleared state is a single space (an empty retained payload would be
+            // dropped by the broker, leaving the entity "unknown"), trimmed back here.
             topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/commission_code/config`,
             payload: JSON.stringify({
                 name: "Commission code",
@@ -139,6 +155,8 @@ export function bridgeDiscoveryMessagesOf(serverVersion: string | undefined, top
                 command_topic: `${topics.prefix}/bridge/request/commission`,
                 command_template: '{"code":"{{ value }}"}',
                 state_topic: topics.bridgeCommissionCode,
+                value_template: "{{ value | trim }}",
+                entity_category: "config",
                 availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
                 device,
                 origin,

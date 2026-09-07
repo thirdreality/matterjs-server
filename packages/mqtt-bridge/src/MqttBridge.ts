@@ -165,9 +165,10 @@ export class MqttBridge {
 
         this.#ready = true;
         this.#publishAll();
-        // Fresh process: reset the commissioning feedback of the HA bridge card
+        // Fresh process: reset the commissioning feedback of the HA bridge card.
+        // The cleared code is a space: an empty retained payload would be dropped.
         this.#connection.publish(this.#topics.bridgeCommissionStatus, "idle", true);
-        this.#connection.publish(this.#topics.bridgeCommissionCode, "", true);
+        this.#connection.publish(this.#topics.bridgeCommissionCode, " ", true);
 
         logger.notice(`MQTT bridge started with prefix "${this.#topics.prefix}"`);
     }
@@ -289,7 +290,7 @@ export class MqttBridge {
         if (command === "commission") {
             // Progress feedback for the HA bridge card; also clear the code input
             this.#connection.publish(this.#topics.bridgeCommissionStatus, "commissioning...", true);
-            this.#connection.publish(this.#topics.bridgeCommissionCode, "", true);
+            this.#connection.publish(this.#topics.bridgeCommissionCode, " ", true);
         }
         const response = await executeBridgeCommand(command, payload, this.#commandContext);
         this.#connection.publish(this.#topics.bridgeResponse(command), JSON.stringify(response));

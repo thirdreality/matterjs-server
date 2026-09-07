@@ -66,6 +66,7 @@ describe("bridgeDiscoveryMessagesOf", () => {
             "homeassistant/text/matter2mqtt_bridge/wifi_ssid/config",
             "homeassistant/text/matter2mqtt_bridge/wifi_password/config",
             "homeassistant/text/matter2mqtt_bridge/thread_dataset/config",
+            "homeassistant/sensor/matter2mqtt_bridge/commissioned_nodes/config",
             "homeassistant/select/matter2mqtt_bridge/commission_mode/config",
             "homeassistant/text/matter2mqtt_bridge/commission_code/config",
             "homeassistant/sensor/matter2mqtt_bridge/commission_status/config",
@@ -84,19 +85,26 @@ describe("bridgeDiscoveryMessagesOf", () => {
         expect(dataset.state_topic).to.equal("matter2mqtt/bridge/thread_dataset");
         expect(dataset.mode).to.equal("password");
         expect(dataset.max).to.equal(255);
-        const mode = JSON.parse(messages[5].payload);
+        const nodes = JSON.parse(messages[5].payload);
+        expect(nodes.name).to.equal("Commissioned nodes");
+        expect(nodes.state_topic).to.equal("matter2mqtt/bridge/devices");
+        expect(nodes.value_template).to.equal("{{ value_json | length }}");
+        const mode = JSON.parse(messages[6].payload);
         expect(mode.name).to.equal("Commission mode");
         expect(mode.command_topic).to.equal("matter2mqtt/bridge/request/commission_mode");
         expect(mode.state_topic).to.equal("matter2mqtt/bridge/commission_mode");
         expect(mode.options).to.deep.equal(["Auto", "WiFi", "Thread", "Existing (IP)"]);
-        const commission = JSON.parse(messages[6].payload);
+        expect(mode.entity_category).to.equal("config");
+        const commission = JSON.parse(messages[7].payload);
         expect(commission.name).to.equal("Commission code");
         expect(commission.command_topic).to.equal("matter2mqtt/bridge/request/commission");
         expect(commission.command_template).to.equal('{"code":"{{ value }}"}');
         expect(commission.state_topic).to.equal("matter2mqtt/bridge/commission_code");
-        const status = JSON.parse(messages[7].payload);
+        expect(commission.value_template).to.equal("{{ value | trim }}");
+        expect(commission.entity_category).to.equal("config");
+        const status = JSON.parse(messages[8].payload);
         expect(status.state_topic).to.equal("matter2mqtt/bridge/commission_status");
-        const restart = JSON.parse(messages[8].payload);
+        const restart = JSON.parse(messages[9].payload);
         expect(restart.command_topic).to.equal("matter2mqtt/bridge/request/restart");
         expect(restart.device_class).to.equal("restart");
         const connection = JSON.parse(messages[0].payload);
