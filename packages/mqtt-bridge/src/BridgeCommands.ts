@@ -92,11 +92,15 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
      * Commission a device by pairing code. Mirrors the WebSocket commission_with_code
      * orchestration: stored credentials for BLE devices, node id allocation with
      * identity-conflict retry. `network_only: true` commissions over IP only
-     * ("add existing device").
+     * ("add existing device"); `network: "wifi" | "thread"` restricts to one
+     * credential type and fails early when it is not stored yet.
      */
-    commission: async ({ code, network_only }, ctx) => {
+    commission: async ({ code, network_only, network }, ctx) => {
         if (typeof code !== "string" || code.length === 0) {
             throw new Error('expected {"code": "<QR or manual pairing code>"}');
+        }
+        if (network !== undefined && network !== "wifi" && network !== "thread") {
+            throw new Error('"network" must be "wifi" or "thread"');
         }
         const { commandHandler, config, controller } = ctx;
         const networkOnly = network_only === true;
@@ -108,11 +112,17 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
             // Only apply stored credentials whose values are actually present
             const wifiEntry = config.getWifiCredentials(ConfigStorage.DEFAULT_CREDENTIAL_ID);
             const threadEntry = config.getThreadCredentials(ConfigStorage.DEFAULT_CREDENTIAL_ID);
-            if (wifiEntry?.ssid && wifiEntry.credentials) {
+            if (network !== "thread" && wifiEntry?.ssid && wifiEntry.credentials) {
                 wifiCredentials = { wifiSsid: wifiEntry.ssid, wifiCredentials: wifiEntry.credentials };
             }
-            if (threadEntry?.dataset) {
+            if (network !== "wifi" && threadEntry?.dataset) {
                 threadCredentials = { networkName: "", operationalDataset: threadEntry.dataset };
+            }
+            if (network === "wifi" && wifiCredentials === undefined) {
+                throw new Error("no WiFi credentials stored; set WiFi SSID and password first");
+            }
+            if (network === "thread" && threadCredentials === undefined) {
+                throw new Error("no Thread dataset stored; set it first");
             }
         }
 

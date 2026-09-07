@@ -113,15 +113,41 @@ export function bridgeDiscoveryMessagesOf(serverVersion: string | undefined, top
                 origin,
             }),
         },
+        // The three commissioning entries: paste a pairing code into the matching box.
+        // Result on bridge/response/commission and, human-readable, on the status sensor.
         {
-            // Paste a pairing code to commission a device; result on bridge/response/commission
-            // and, human-readable, on the commission-status sensor
-            topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/commission_code/config`,
+            topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/add_wifi_device/config`,
             payload: JSON.stringify({
-                name: "Commission code",
-                unique_id: "matter2mqtt_bridge_commission_code",
+                name: "Add WiFi device",
+                unique_id: "matter2mqtt_bridge_add_wifi_device",
                 command_topic: `${topics.prefix}/bridge/request/commission`,
-                command_template: '{"code":"{{ value }}"}',
+                command_template: '{"code":"{{ value }}","network":"wifi"}',
+                state_topic: topics.bridgeCommissionCode,
+                availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
+                device,
+                origin,
+            }),
+        },
+        {
+            topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/add_thread_device/config`,
+            payload: JSON.stringify({
+                name: "Add Thread device",
+                unique_id: "matter2mqtt_bridge_add_thread_device",
+                command_topic: `${topics.prefix}/bridge/request/commission`,
+                command_template: '{"code":"{{ value }}","network":"thread"}',
+                state_topic: topics.bridgeCommissionCode,
+                availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
+                device,
+                origin,
+            }),
+        },
+        {
+            topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/add_existing_device/config`,
+            payload: JSON.stringify({
+                name: "Add existing device",
+                unique_id: "matter2mqtt_bridge_add_existing_device",
+                command_topic: `${topics.prefix}/bridge/request/commission`,
+                command_template: '{"code":"{{ value }}","network_only":true}',
                 state_topic: topics.bridgeCommissionCode,
                 availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
                 device,

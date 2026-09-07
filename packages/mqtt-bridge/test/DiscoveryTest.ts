@@ -66,7 +66,9 @@ describe("bridgeDiscoveryMessagesOf", () => {
             "homeassistant/text/matter2mqtt_bridge/wifi_ssid/config",
             "homeassistant/text/matter2mqtt_bridge/wifi_password/config",
             "homeassistant/text/matter2mqtt_bridge/thread_dataset/config",
-            "homeassistant/text/matter2mqtt_bridge/commission_code/config",
+            "homeassistant/text/matter2mqtt_bridge/add_wifi_device/config",
+            "homeassistant/text/matter2mqtt_bridge/add_thread_device/config",
+            "homeassistant/text/matter2mqtt_bridge/add_existing_device/config",
             "homeassistant/sensor/matter2mqtt_bridge/commission_status/config",
             "homeassistant/button/matter2mqtt_bridge/restart/config",
         ]);
@@ -83,13 +85,20 @@ describe("bridgeDiscoveryMessagesOf", () => {
         expect(dataset.state_topic).to.equal("matter2mqtt/bridge/thread_dataset");
         expect(dataset.mode).to.equal("password");
         expect(dataset.max).to.equal(255);
-        const commission = JSON.parse(messages[5].payload);
-        expect(commission.command_topic).to.equal("matter2mqtt/bridge/request/commission");
-        expect(commission.command_template).to.equal('{"code":"{{ value }}"}');
-        expect(commission.state_topic).to.equal("matter2mqtt/bridge/commission_code");
-        const status = JSON.parse(messages[6].payload);
+        const addWifi = JSON.parse(messages[5].payload);
+        expect(addWifi.name).to.equal("Add WiFi device");
+        expect(addWifi.command_topic).to.equal("matter2mqtt/bridge/request/commission");
+        expect(addWifi.command_template).to.equal('{"code":"{{ value }}","network":"wifi"}');
+        expect(addWifi.state_topic).to.equal("matter2mqtt/bridge/commission_code");
+        const addThread = JSON.parse(messages[6].payload);
+        expect(addThread.name).to.equal("Add Thread device");
+        expect(addThread.command_template).to.equal('{"code":"{{ value }}","network":"thread"}');
+        const addExisting = JSON.parse(messages[7].payload);
+        expect(addExisting.name).to.equal("Add existing device");
+        expect(addExisting.command_template).to.equal('{"code":"{{ value }}","network_only":true}');
+        const status = JSON.parse(messages[8].payload);
         expect(status.state_topic).to.equal("matter2mqtt/bridge/commission_status");
-        const restart = JSON.parse(messages[7].payload);
+        const restart = JSON.parse(messages[9].payload);
         expect(restart.command_topic).to.equal("matter2mqtt/bridge/request/restart");
         expect(restart.device_class).to.equal("restart");
         const connection = JSON.parse(messages[0].payload);

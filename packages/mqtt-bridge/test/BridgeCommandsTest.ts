@@ -139,6 +139,27 @@ describe("BridgeCommands", () => {
         expect(request.manualCode).to.equal("34970112332");
     });
 
+    it("restricts credentials to the requested network type", async () => {
+        const { ctx, calls } = mockContext();
+        await executeBridgeCommand("commission", '{"code":"MT:ABC","network":"wifi"}', ctx);
+        const request = (calls.find(c => c.method === "commissionNode") as Call).args[0] as Record<string, unknown>;
+        expect(request.wifiCredentials).to.deep.equal({ wifiSsid: "NET", wifiCredentials: "PASS" });
+        expect(request.threadCredentials).to.equal(undefined);
+    });
+
+    it("fails early when the requested network credentials are not stored", async () => {
+        const { ctx } = mockContext();
+        const thread = await executeBridgeCommand("commission", '{"code":"MT:ABC","network":"thread"}', ctx);
+        expect(thread.status).to.equal("error");
+        expect(thread.error).to.contain("Thread dataset");
+        (ctx.config as unknown as Record<string, unknown>).getWifiCredentials = () => undefined;
+        const wifi = await executeBridgeCommand("commission", '{"code":"MT:ABC","network":"wifi"}', ctx);
+        expect(wifi.status).to.equal("error");
+        expect(wifi.error).to.contain("WiFi credentials");
+        const invalid = await executeBridgeCommand("commission", '{"code":"MT:ABC","network":"zigbee"}', ctx);
+        expect(invalid.status).to.equal("error");
+    });
+
     it("skips stored credentials for network_only commissioning", async () => {
         const { ctx, calls } = mockContext();
         await executeBridgeCommand("commission", '{"code":"MT:ABC","network_only":true}', ctx);
