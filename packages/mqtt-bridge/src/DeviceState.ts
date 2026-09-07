@@ -199,8 +199,11 @@ export function endpointStateOf(
                 color.saturation = Math.round((saturation / 254) * 100);
             }
             if (color.hue !== undefined && color.saturation !== undefined) {
-                // Home Assistant's MQTT JSON light only reads the short color keys (h/s, x/y);
-                // ship x/y alongside like zigbee2mqtt's color sync does
+                // Home Assistant's MQTT JSON light only reads the short color keys: h/s in hs
+                // mode, x/y for the color wheel. Ship both alongside the zigbee2mqtt-style long
+                // keys (z2m syncs xy into its state for the same reason).
+                color.h = color.hue;
+                color.s = color.saturation;
                 const { x, y } = hsvToXY(color.hue, color.saturation);
                 color.x = x;
                 color.y = y;
