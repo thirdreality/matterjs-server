@@ -64,10 +64,18 @@ describe("bridgeDiscoveryMessagesOf", () => {
             "homeassistant/binary_sensor/matter2mqtt_bridge/connection_state/config",
             "homeassistant/sensor/matter2mqtt_bridge/version/config",
             "homeassistant/text/matter2mqtt_bridge/commission_code/config",
+            "homeassistant/sensor/matter2mqtt_bridge/commission_status/config",
+            "homeassistant/button/matter2mqtt_bridge/restart/config",
         ]);
         const commission = JSON.parse(messages[2].payload);
         expect(commission.command_topic).to.equal("matter2mqtt/bridge/request/commission");
         expect(commission.command_template).to.equal('{"code":"{{ value }}"}');
+        expect(commission.state_topic).to.equal("matter2mqtt/bridge/commission_code");
+        const status = JSON.parse(messages[3].payload);
+        expect(status.state_topic).to.equal("matter2mqtt/bridge/commission_status");
+        const restart = JSON.parse(messages[4].payload);
+        expect(restart.command_topic).to.equal("matter2mqtt/bridge/request/restart");
+        expect(restart.device_class).to.equal("restart");
         const connection = JSON.parse(messages[0].payload);
         expect(connection.state_topic).to.equal("matter2mqtt/bridge/state");
         expect(connection.payload_on).to.equal("online");

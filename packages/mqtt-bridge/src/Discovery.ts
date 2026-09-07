@@ -71,12 +71,38 @@ export function bridgeDiscoveryMessagesOf(serverVersion: string | undefined, top
         },
         {
             // Paste a pairing code to commission a device; result on bridge/response/commission
+            // and, human-readable, on the commission-status sensor
             topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/commission_code/config`,
             payload: JSON.stringify({
                 name: "Commission code",
                 unique_id: "matter2mqtt_bridge_commission_code",
                 command_topic: `${topics.prefix}/bridge/request/commission`,
                 command_template: '{"code":"{{ value }}"}',
+                state_topic: topics.bridgeCommissionCode,
+                availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
+                device,
+                origin,
+            }),
+        },
+        {
+            topic: `${DISCOVERY_PREFIX}/sensor/matter2mqtt_bridge/commission_status/config`,
+            payload: JSON.stringify({
+                name: "Commission status",
+                unique_id: "matter2mqtt_bridge_commission_status",
+                state_topic: topics.bridgeCommissionStatus,
+                availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
+                device,
+                origin,
+            }),
+        },
+        {
+            topic: `${DISCOVERY_PREFIX}/button/matter2mqtt_bridge/restart/config`,
+            payload: JSON.stringify({
+                name: "Restart",
+                unique_id: "matter2mqtt_bridge_restart",
+                command_topic: `${topics.prefix}/bridge/request/restart`,
+                payload_press: "{}",
+                device_class: "restart",
                 availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
                 device,
                 origin,

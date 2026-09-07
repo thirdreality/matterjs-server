@@ -86,6 +86,16 @@ export class Topics {
         return `${this.#prefix}/bridge/response/${command}`;
     }
 
+    /** Retained human-readable commissioning progress, for the HA bridge card. */
+    get bridgeCommissionStatus(): string {
+        return `${this.#prefix}/bridge/commission_status`;
+    }
+
+    /** Retained state of the HA commission-code text entity (cleared after each request). */
+    get bridgeCommissionCode(): string {
+        return `${this.#prefix}/bridge/commission_code`;
+    }
+
     /**
      * Parse an inbound command topic. Returns undefined for topics that are not
      * device commands (including anything under `bridge/`).

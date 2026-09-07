@@ -156,6 +156,9 @@ export class MqttBridge {
 
         this.#ready = true;
         this.#publishAll();
+        // Fresh process: reset the commissioning feedback of the HA bridge card
+        this.#connection.publish(this.#topics.bridgeCommissionStatus, "idle", true);
+        this.#connection.publish(this.#topics.bridgeCommissionCode, "", true);
 
         logger.notice(`MQTT bridge started with prefix "${this.#topics.prefix}"`);
     }
@@ -274,8 +277,20 @@ export class MqttBridge {
             return;
         }
         logger.info(`Bridge command "${command}" requested`);
+        if (command === "commission") {
+            // Progress feedback for the HA bridge card; also clear the code input
+            this.#connection.publish(this.#topics.bridgeCommissionStatus, "commissioning...", true);
+            this.#connection.publish(this.#topics.bridgeCommissionCode, "", true);
+        }
         const response = await executeBridgeCommand(command, payload, this.#commandContext);
         this.#connection.publish(this.#topics.bridgeResponse(command), JSON.stringify(response));
+        if (command === "commission") {
+            const summary =
+                response.status === "ok"
+                    ? `ok: node ${(response.data as { node_id?: number })?.node_id}`
+                    : `error: ${response.error}`;
+            this.#connection.publish(this.#topics.bridgeCommissionStatus, summary, true);
+        }
         if (response.status === "ok") {
             logger.info(`Bridge command "${command}" succeeded`);
         }

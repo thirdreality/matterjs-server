@@ -120,6 +120,14 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
         throw new Error(`could not find a free node id after ${MAX_COMMISSION_NODE_ID_ATTEMPTS} attempts${reason}`);
     },
 
+    /** Restart the server process; systemd's Restart policy brings it back up. */
+    restart: async () => {
+        logger.notice("Restart requested via MQTT bridge command");
+        // Give the response publish a moment to reach the broker
+        setTimeout(() => process.exit(1), 500);
+        return {};
+    },
+
     "device/remove": async (args, { commandHandler }) => {
         await commandHandler.removeNode(nodeIdOf(args));
         return { id: args.id };
