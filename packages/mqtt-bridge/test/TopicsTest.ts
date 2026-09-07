@@ -45,6 +45,7 @@ describe("Topics", () => {
                 "matter2mqtt/+/+/set/+",
                 "matter2mqtt/+/get",
                 "matter2mqtt/+/+/get",
+                "matter2mqtt/bridge/request/#",
             ]);
         });
     });
@@ -84,6 +85,14 @@ describe("Topics", () => {
                 kind: "set",
                 attribute: "brightness",
             });
+        });
+
+        it("parses bridge request topics and builds response topics", () => {
+            expect(topics.parseBridgeRequest("matter2mqtt/bridge/request/commission")).to.equal("commission");
+            expect(topics.parseBridgeRequest("matter2mqtt/bridge/request/device/remove")).to.equal("device/remove");
+            expect(topics.parseBridgeRequest("matter2mqtt/bridge/request/")).to.equal(undefined);
+            expect(topics.parseBridgeRequest("matter2mqtt/5/set")).to.equal(undefined);
+            expect(topics.bridgeResponse("device/remove")).to.equal("matter2mqtt/bridge/response/device/remove");
         });
 
         it("parses get topics", () => {

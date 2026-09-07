@@ -61,7 +61,29 @@ export class Topics {
     /** Subscription filters covering all inbound command topic variants (disjoint set). */
     get commandFilters(): string[] {
         const p = this.#prefix;
-        return [`${p}/+/set`, `${p}/+/+/set`, `${p}/+/set/+`, `${p}/+/+/set/+`, `${p}/+/get`, `${p}/+/+/get`];
+        return [
+            `${p}/+/set`,
+            `${p}/+/+/set`,
+            `${p}/+/set/+`,
+            `${p}/+/+/set/+`,
+            `${p}/+/get`,
+            `${p}/+/+/get`,
+            `${p}/bridge/request/#`,
+        ];
+    }
+
+    /** Parse a `bridge/request/<command>` topic; the command may contain slashes (device/remove). */
+    parseBridgeRequest(topic: string): string | undefined {
+        const prefix = `${this.#prefix}/bridge/request/`;
+        if (!topic.startsWith(prefix)) {
+            return undefined;
+        }
+        const command = topic.slice(prefix.length);
+        return command.length > 0 ? command : undefined;
+    }
+
+    bridgeResponse(command: string): string {
+        return `${this.#prefix}/bridge/response/${command}`;
     }
 
     /**

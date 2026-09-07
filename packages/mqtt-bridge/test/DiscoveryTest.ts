@@ -58,12 +58,16 @@ describe("ColorMath", () => {
 });
 
 describe("bridgeDiscoveryMessagesOf", () => {
-    it("announces the bridge device with connectivity and version", () => {
+    it("announces the bridge device with connectivity, version and commission entities", () => {
         const messages = bridgeDiscoveryMessagesOf("1.4.0-tr.1", topics);
         expect(messages.map(m => m.topic)).to.deep.equal([
             "homeassistant/binary_sensor/matter2mqtt_bridge/connection_state/config",
             "homeassistant/sensor/matter2mqtt_bridge/version/config",
+            "homeassistant/text/matter2mqtt_bridge/commission_code/config",
         ]);
+        const commission = JSON.parse(messages[2].payload);
+        expect(commission.command_topic).to.equal("matter2mqtt/bridge/request/commission");
+        expect(commission.command_template).to.equal('{"code":"{{ value }}"}');
         const connection = JSON.parse(messages[0].payload);
         expect(connection.state_topic).to.equal("matter2mqtt/bridge/state");
         expect(connection.payload_on).to.equal("online");

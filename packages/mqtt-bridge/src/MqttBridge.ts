@@ -12,6 +12,7 @@ import {
 } from "@matter-server/ws-controller";
 import { Logger, NodeId, ObserverGroup } from "@matter/main";
 import { ClusterId, EndpointNumber } from "@matter/main/types";
+import { executeBridgeCommand, type BridgeCommandContext } from "./BridgeCommands.js";
 import { deviceStateOf, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
 import { bridgeDiscoveryMessagesOf, discoveryMessagesOf } from "./Discovery.js";
 import { lightCapabilitiesOf } from "./LightCapabilities.js";
@@ -57,6 +58,7 @@ interface DeviceEntry {
  */
 export class MqttBridge {
     readonly #commandHandler: ControllerCommandHandler;
+    readonly #commandContext?: BridgeCommandContext;
     readonly #topics: Topics;
     readonly #connection: MqttConnection;
     readonly #serverVersion?: string;
@@ -67,8 +69,13 @@ export class MqttBridge {
     /** True once the initial publish has run; gates re-publishing from reconnect events. */
     #ready = false;
 
-    constructor(commandHandler: ControllerCommandHandler, options: MqttBridgeOptions) {
+    constructor(
+        commandHandler: ControllerCommandHandler,
+        options: MqttBridgeOptions,
+        commandContext?: Omit<BridgeCommandContext, "commandHandler">,
+    ) {
         this.#commandHandler = commandHandler;
+        this.#commandContext = commandContext === undefined ? undefined : { commandHandler, ...commandContext };
         this.#serverVersion = options.serverVersion;
         this.#topics = new Topics(options.prefix ?? "matter2mqtt");
         this.#connection = new MqttConnection({
@@ -185,6 +192,11 @@ export class MqttBridge {
     }
 
     #handleMessage(topic: string, payload: string): void {
+        const bridgeCommand = this.#topics.parseBridgeRequest(topic);
+        if (bridgeCommand !== undefined) {
+            void this.#handleBridgeRequest(bridgeCommand, payload);
+            return;
+        }
         const parsed = this.#topics.parseInbound(topic);
         if (parsed === undefined) {
             return;
@@ -249,6 +261,23 @@ export class MqttBridge {
             } catch (error) {
                 logger.warn(`Command "${command.commandName}" failed for node ${node}:`, error);
             }
+        }
+    }
+
+    /** Run a bridge/request command and answer on bridge/response (not retained). */
+    async #handleBridgeRequest(command: string, payload: string): Promise<void> {
+        if (this.#commandContext === undefined) {
+            this.#connection.publish(
+                this.#topics.bridgeResponse(command),
+                JSON.stringify({ status: "error", error: "bridge commands are not available" }),
+            );
+            return;
+        }
+        logger.info(`Bridge command "${command}" requested`);
+        const response = await executeBridgeCommand(command, payload, this.#commandContext);
+        this.#connection.publish(this.#topics.bridgeResponse(command), JSON.stringify(response));
+        if (response.status === "ok") {
+            logger.info(`Bridge command "${command}" succeeded`);
         }
     }
 

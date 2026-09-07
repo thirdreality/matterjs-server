@@ -262,12 +262,16 @@ async function start() {
     await server.start();
 
     if (cliOptions.mqttUrl) {
-        mqttBridge = new MqttBridge(controller.commandHandler, {
-            url: cliOptions.mqttUrl,
-            prefix: cliOptions.mqttPrefix,
-            clientId: cliOptions.mqttClientId,
-            serverVersion: MATTER_SERVER_VERSION,
-        });
+        mqttBridge = new MqttBridge(
+            controller.commandHandler,
+            {
+                url: cliOptions.mqttUrl,
+                prefix: cliOptions.mqttPrefix,
+                clientId: cliOptions.mqttClientId,
+                serverVersion: MATTER_SERVER_VERSION,
+            },
+            { config, controller },
+        );
         await mqttBridge.start();
     }
 }

@@ -69,6 +69,19 @@ export function bridgeDiscoveryMessagesOf(serverVersion: string | undefined, top
                 origin,
             }),
         },
+        {
+            // Paste a pairing code to commission a device; result on bridge/response/commission
+            topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/commission_code/config`,
+            payload: JSON.stringify({
+                name: "Commission code",
+                unique_id: "matter2mqtt_bridge_commission_code",
+                command_topic: `${topics.prefix}/bridge/request/commission`,
+                command_template: '{"code":"{{ value }}"}',
+                availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
+                device,
+                origin,
+            }),
+        },
     ];
 }
 
