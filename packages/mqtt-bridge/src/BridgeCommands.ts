@@ -18,10 +18,20 @@ const logger = Logger.get("BridgeCommands");
 /** Maximum commissioning attempts when the chosen node id collides on the fabric. */
 const MAX_COMMISSION_NODE_ID_ATTEMPTS = 5;
 
+/** Commands whose single value may arrive as a bare (non-JSON) payload, e.g. from HA text entities. */
+const BARE_PAYLOAD_KEYS: Record<string, string> = {
+    commission: "code",
+    wifi_ssid: "ssid",
+    wifi_password: "password",
+    thread_dataset: "dataset",
+};
+
 export interface BridgeCommandContext {
     commandHandler: ControllerCommandHandler;
     config: ConfigStorage;
     controller: MatterController;
+    /** Half-entered WiFi credentials from the single-value HA text entities. */
+    wifiInput?: { ssid?: string; password?: string };
 }
 
 export interface BridgeCommandResponse {
@@ -46,6 +56,22 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
         }
         await config.setWifiCredentials(ConfigStorage.DEFAULT_CREDENTIAL_ID, ssid, credentials);
         return { ssid };
+    },
+
+    /** Set the WiFi SSID half; persisted once the password half is known too. */
+    wifi_ssid: async ({ ssid }, ctx) => {
+        if (typeof ssid !== "string" || ssid.length === 0) {
+            throw new Error('expected {"ssid": "..."}');
+        }
+        return await updateWifiInput(ctx, { ssid });
+    },
+
+    /** Set the WiFi password half; persisted once the SSID half is known too. */
+    wifi_password: async ({ password }, ctx) => {
+        if (typeof password !== "string" || password.length === 0) {
+            throw new Error('expected {"password": "..."}');
+        }
+        return await updateWifiInput(ctx, { password });
     },
 
     /** Store the Thread operational dataset (hex TLV) used for BLE commissioning. */
@@ -163,6 +189,36 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
 
 export const BRIDGE_COMMAND_NAMES: readonly string[] = Object.keys(COMMANDS);
 
+/** Bridge commands that change the stored commissioning credentials. */
+export const CREDENTIAL_COMMAND_NAMES: readonly string[] = [
+    "wifi_ssid",
+    "wifi_password",
+    "wifi_credentials",
+    "thread_dataset",
+];
+
+/**
+ * The HA bridge card enters SSID and password through two single-value text entities;
+ * combine both halves (reusing the stored, write-only password for an unchanged SSID)
+ * and persist once complete.
+ */
+async function updateWifiInput(
+    ctx: BridgeCommandContext,
+    update: { ssid?: string; password?: string },
+): Promise<unknown> {
+    const input = (ctx.wifiInput ??= {});
+    Object.assign(input, update);
+    const stored = ctx.config.getWifiCredentials(ConfigStorage.DEFAULT_CREDENTIAL_ID);
+    const ssid = input.ssid ?? stored?.ssid;
+    const password = input.password ?? (ssid !== undefined && ssid === stored?.ssid ? stored.credentials : undefined);
+    if (ssid === undefined || password === undefined) {
+        return { pending: ssid === undefined ? "ssid" : "password" };
+    }
+    await ctx.config.setWifiCredentials(ConfigStorage.DEFAULT_CREDENTIAL_ID, ssid, password);
+    ctx.wifiInput = {};
+    return { ssid };
+}
+
 function nodeIdOf(args: Record<string, unknown>): NodeId {
     const id = args.id;
     if (typeof id !== "number" && typeof id !== "string" && typeof id !== "bigint") {
@@ -193,20 +249,22 @@ export async function executeBridgeCommand(
 ): Promise<BridgeCommandResponse> {
     let args: Record<string, unknown> = {};
     if (payload.trim().length > 0) {
+        const bareKey = BARE_PAYLOAD_KEYS[command];
         try {
             const parsed: unknown = JSON.parse(payload);
             if (typeof parsed === "object" && parsed !== null) {
                 args = parsed as Record<string, unknown>;
-            } else if (command === "commission" && (typeof parsed === "string" || typeof parsed === "number")) {
-                // A bare manual pairing code parses as a JSON number
-                args = { code: String(parsed) };
+            } else if (bareKey !== undefined && typeof parsed === "string") {
+                args = { [bareKey]: parsed };
+            } else if (bareKey !== undefined) {
+                // Bare numeric payloads must keep their exact digits (pairing codes, hex datasets)
+                args = { [bareKey]: payload.trim() };
             } else {
                 return { status: "error", error: "payload must be a JSON object" };
             }
         } catch {
-            if (command === "commission") {
-                // Convenience (and the HA text entity): a bare pairing code
-                args = { code: payload.trim() };
+            if (bareKey !== undefined) {
+                args = { [bareKey]: payload.trim() };
             } else {
                 return { status: "error", error: "payload must be a JSON object" };
             }

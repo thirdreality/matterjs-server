@@ -70,6 +70,50 @@ export function bridgeDiscoveryMessagesOf(serverVersion: string | undefined, top
             }),
         },
         {
+            topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/wifi_ssid/config`,
+            payload: JSON.stringify({
+                name: "WiFi SSID",
+                unique_id: "matter2mqtt_bridge_wifi_ssid",
+                command_topic: `${topics.prefix}/bridge/request/wifi_ssid`,
+                state_topic: topics.bridgeWifiSsid,
+                max: 32,
+                entity_category: "config",
+                availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
+                device,
+                origin,
+            }),
+        },
+        {
+            topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/wifi_password/config`,
+            payload: JSON.stringify({
+                name: "WiFi password",
+                unique_id: "matter2mqtt_bridge_wifi_password",
+                command_topic: `${topics.prefix}/bridge/request/wifi_password`,
+                state_topic: topics.bridgeWifiPassword,
+                mode: "password",
+                max: 64,
+                entity_category: "config",
+                availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
+                device,
+                origin,
+            }),
+        },
+        {
+            topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/thread_dataset/config`,
+            payload: JSON.stringify({
+                name: "Thread dataset",
+                unique_id: "matter2mqtt_bridge_thread_dataset",
+                command_topic: `${topics.prefix}/bridge/request/thread_dataset`,
+                state_topic: topics.bridgeThreadDataset,
+                mode: "password",
+                max: 255,
+                entity_category: "config",
+                availability: [{ topic: topics.bridgeState, value_template: "{{ value_json.state }}" }],
+                device,
+                origin,
+            }),
+        },
+        {
             // Paste a pairing code to commission a device; result on bridge/response/commission
             // and, human-readable, on the commission-status sensor
             topic: `${DISCOVERY_PREFIX}/text/matter2mqtt_bridge/commission_code/config`,

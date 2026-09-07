@@ -96,6 +96,21 @@ export class Topics {
         return `${this.#prefix}/bridge/commission_code`;
     }
 
+    /** Retained state of the HA WiFi-SSID text entity (the stored/pending SSID). */
+    get bridgeWifiSsid(): string {
+        return `${this.#prefix}/bridge/wifi_ssid`;
+    }
+
+    /** Retained state of the HA WiFi-password text entity (masked, never the secret). */
+    get bridgeWifiPassword(): string {
+        return `${this.#prefix}/bridge/wifi_password`;
+    }
+
+    /** Retained state of the HA Thread-dataset text entity (masked, never the secret). */
+    get bridgeThreadDataset(): string {
+        return `${this.#prefix}/bridge/thread_dataset`;
+    }
+
     /**
      * Parse an inbound command topic. Returns undefined for topics that are not
      * device commands (including anything under `bridge/`).

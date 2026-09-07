@@ -74,6 +74,49 @@ describe("BridgeCommands", () => {
         expect(response.status).to.equal("error");
     });
 
+    it("combines ssid and password entered separately (HA text entities)", async () => {
+        const { ctx, calls } = mockContext();
+        (ctx.config as unknown as Record<string, unknown>).getWifiCredentials = () => undefined;
+        const first = await executeBridgeCommand("wifi_ssid", "MyNet", ctx);
+        expect(first.status).to.equal("ok");
+        expect(first.data).to.deep.equal({ pending: "password" });
+        const second = await executeBridgeCommand("wifi_password", "S3CRET", ctx);
+        expect(second.status).to.equal("ok");
+        expect(second.data).to.deep.equal({ ssid: "MyNet" });
+        expect(JSON.stringify(second)).to.not.contain("S3CRET");
+        expect(calls[0]).to.deep.equal({ method: "setWifiCredentials", args: ["default", "MyNet", "S3CRET"] });
+    });
+
+    it("updates only the password against the stored ssid", async () => {
+        const { ctx, calls } = mockContext();
+        const response = await executeBridgeCommand("wifi_password", "N3WPASS", ctx);
+        expect(response.status).to.equal("ok");
+        expect(response.data).to.deep.equal({ ssid: "NET" });
+        expect(calls[0]).to.deep.equal({ method: "setWifiCredentials", args: ["default", "NET", "N3WPASS"] });
+    });
+
+    it("reuses the stored password for an unchanged ssid", async () => {
+        const { ctx, calls } = mockContext();
+        const response = await executeBridgeCommand("wifi_ssid", "NET", ctx);
+        expect(response.data).to.deep.equal({ ssid: "NET" });
+        expect(calls[0]).to.deep.equal({ method: "setWifiCredentials", args: ["default", "NET", "PASS"] });
+    });
+
+    it("keeps a new ssid pending until its own password arrives", async () => {
+        const { ctx, calls } = mockContext();
+        const response = await executeBridgeCommand("wifi_ssid", "OtherNet", ctx);
+        expect(response.data).to.deep.equal({ pending: "password" });
+        expect(calls.filter(c => c.method === "setWifiCredentials")).to.have.length(0);
+    });
+
+    it("treats a bare numeric thread dataset payload without digit loss", async () => {
+        const { ctx, calls } = mockContext();
+        const digits = "112233445566778899000111222333444555666777888999";
+        const response = await executeBridgeCommand("thread_dataset", digits, ctx);
+        expect(response.status).to.equal("ok");
+        expect(calls[0]).to.deep.equal({ method: "setThreadCredentials", args: ["default", digits] });
+    });
+
     it("commissions with stored credentials and allocated node id", async () => {
         const { ctx, calls } = mockContext();
         const response = await executeBridgeCommand("commission", '{"code":"MT:ABC","transaction":"t1"}', ctx);

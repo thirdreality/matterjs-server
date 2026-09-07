@@ -5,6 +5,7 @@
  */
 
 import {
+    ConfigStorage,
     toBigIntAwareJson,
     type AttributesData,
     type ControllerCommandHandler,
@@ -12,7 +13,7 @@ import {
 } from "@matter-server/ws-controller";
 import { Logger, NodeId, ObserverGroup } from "@matter/main";
 import { ClusterId, EndpointNumber } from "@matter/main/types";
-import { executeBridgeCommand, type BridgeCommandContext } from "./BridgeCommands.js";
+import { CREDENTIAL_COMMAND_NAMES, executeBridgeCommand, type BridgeCommandContext } from "./BridgeCommands.js";
 import { deviceStateOf, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
 import { bridgeDiscoveryMessagesOf, discoveryMessagesOf } from "./Discovery.js";
 import { lightCapabilitiesOf } from "./LightCapabilities.js";
@@ -27,6 +28,9 @@ const logger = Logger.get("MqttBridge");
 function bridgeStatePayload(state: "online" | "offline"): string {
     return JSON.stringify({ state });
 }
+
+/** Shown on the HA bridge card in place of stored secrets. */
+const SECRET_MASK = "********";
 
 export interface MqttBridgeOptions {
     /** Broker URL, e.g. `mqtt://user:password@localhost:1883`. */
@@ -284,6 +288,10 @@ export class MqttBridge {
         }
         const response = await executeBridgeCommand(command, payload, this.#commandContext);
         this.#connection.publish(this.#topics.bridgeResponse(command), JSON.stringify(response));
+        if (CREDENTIAL_COMMAND_NAMES.includes(command)) {
+            // Also on error: resets the HA text entities back to the stored truth
+            this.#publishCredentialState();
+        }
         if (command === "commission") {
             const summary =
                 response.status === "ok"
@@ -315,7 +323,23 @@ export class MqttBridge {
         }
         this.#publishDevices();
         this.#publishBridgeInfo();
+        this.#publishCredentialState();
         this.#connection.publish(this.#topics.bridgeState, bridgeStatePayload("online"), true);
+    }
+
+    /** Retained credential feedback for the HA bridge card; secrets only ever appear masked. */
+    #publishCredentialState(): void {
+        const context = this.#commandContext;
+        if (context === undefined) {
+            return;
+        }
+        const wifi = context.config.getWifiCredentials(ConfigStorage.DEFAULT_CREDENTIAL_ID);
+        const thread = context.config.getThreadCredentials(ConfigStorage.DEFAULT_CREDENTIAL_ID);
+        const ssid = context.wifiInput?.ssid ?? wifi?.ssid ?? "";
+        const password = context.wifiInput?.password ?? wifi?.credentials ?? "";
+        this.#connection.publish(this.#topics.bridgeWifiSsid, ssid, true);
+        this.#connection.publish(this.#topics.bridgeWifiPassword, password.length > 0 ? SECRET_MASK : "", true);
+        this.#connection.publish(this.#topics.bridgeThreadDataset, thread?.dataset ? SECRET_MASK : "", true);
     }
 
     /** Publish the merged zigbee2mqtt-style device state to the single `<node>` topic. */
