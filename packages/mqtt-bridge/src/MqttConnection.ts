@@ -48,7 +48,7 @@ export class MqttConnection {
         return this.#client?.connected ?? false;
     }
 
-    connect(onMessage: MessageHandler): void {
+    connect(onMessage: MessageHandler, onConnect?: () => void): void {
         if (this.#client !== undefined) {
             throw new Error("MQTT connection already started");
         }
@@ -60,7 +60,16 @@ export class MqttConnection {
         });
         this.#client = client;
 
-        client.on("connect", () => logger.notice(`Connected to MQTT broker at ${this.#redactedUrl()}`));
+        client.on("connect", () => {
+            logger.notice(`Connected to MQTT broker at ${this.#redactedUrl()}`);
+            // Fires on every (re)connect: after a broker restart our last will was published
+            // (bridge offline) and retained state may be gone, so the bridge must re-publish
+            try {
+                onConnect?.();
+            } catch (error) {
+                logger.error("Unhandled error in MQTT connect handler:", error);
+            }
+        });
         client.on("reconnect", () => logger.debug("Reconnecting to MQTT broker"));
         client.on("offline", () => logger.warn("MQTT broker connection lost, queueing messages"));
         client.on("error", error => logger.warn(`MQTT connection error: ${error.message}`));

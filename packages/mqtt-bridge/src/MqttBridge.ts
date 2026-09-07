@@ -61,6 +61,8 @@ export class MqttBridge {
     /** Known devices keyed by node id string (the `<device>` topic segment). */
     readonly #devices = new Map<string, DeviceEntry>();
     #started = false;
+    /** True once the initial publish has run; gates re-publishing from reconnect events. */
+    #ready = false;
 
     constructor(commandHandler: ControllerCommandHandler, options: MqttBridgeOptions) {
         this.#commandHandler = commandHandler;
@@ -79,7 +81,17 @@ export class MqttBridge {
         }
         this.#started = true;
 
-        this.#connection.connect((topic, payload) => this.#handleMessage(topic, payload));
+        this.#connection.connect(
+            (topic, payload) => this.#handleMessage(topic, payload),
+            // Re-publish everything on every (re)connect: a broker restart published our last
+            // will (bridge offline) and may have lost retained state. Guarded until the initial
+            // publish below has run, which needs the started command handler.
+            () => {
+                if (this.#ready) {
+                    this.#publishAll();
+                }
+            },
+        );
         this.#connection.subscribe(this.#topics.commandFilters);
 
         // The Matter stack is otherwise only started once a WebSocket client connects
@@ -132,16 +144,8 @@ export class MqttBridge {
             }
         });
 
-        for (const nodeId of this.#commandHandler.getNodeIds()) {
-            try {
-                this.#refreshDevice(nodeId);
-            } catch (error) {
-                logger.warn(`Failed to publish initial state for node ${nodeId}:`, error);
-            }
-        }
-        this.#publishDevices();
-        this.#publishBridgeInfo();
-        this.#connection.publish(this.#topics.bridgeState, bridgeStatePayload("online"), true);
+        this.#ready = true;
+        this.#publishAll();
 
         logger.notice(`MQTT bridge started with prefix "${this.#topics.prefix}"`);
     }
@@ -151,6 +155,7 @@ export class MqttBridge {
             return;
         }
         this.#started = false;
+        this.#ready = false;
         this.#observers.close();
         await this.#connection.close({ topic: this.#topics.bridgeState, payload: bridgeStatePayload("offline") });
     }
@@ -247,6 +252,20 @@ export class MqttBridge {
     /** zigbee2mqtt-style `get`: re-publish the full current state from the attribute cache. */
     #handleGet(entry: DeviceEntry, _endpoint?: number): void {
         this.#publishDeviceState(entry);
+    }
+
+    /** Publish the complete retained picture: all devices, device list, info and online state. */
+    #publishAll(): void {
+        for (const nodeId of this.#commandHandler.getNodeIds()) {
+            try {
+                this.#refreshDevice(nodeId);
+            } catch (error) {
+                logger.warn(`Failed to publish state for node ${nodeId}:`, error);
+            }
+        }
+        this.#publishDevices();
+        this.#publishBridgeInfo();
+        this.#connection.publish(this.#topics.bridgeState, bridgeStatePayload("online"), true);
     }
 
     /** Publish the merged zigbee2mqtt-style device state to the single `<node>` topic. */
