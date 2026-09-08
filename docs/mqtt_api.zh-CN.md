@@ -264,6 +264,7 @@ JSON 对象载荷：
 | `color` | 支持 zigbee2mqtt 的全部颜色形式 —— 见[颜色格式](#颜色格式) |
 | `color_temp` | mireds（会按 endpoint 的物理上下限裁剪），或预设值：`coolest`、`cool`（250）、`neutral`（370）、`warm`（454）、`warmest` |
 | `transition` | 渐变时间，单位秒（内部换算为 Matter 的 0.1 秒单位） |
+| `brightness_move`、`brightness_step`、`color_temp_move`、`color_temp_step`、`hue_move`、`hue_step`、`saturation_move`、`saturation_step` | 相对控制 —— 见[连续调节与步进](#连续调节与步进) |
 
 其他属性会被忽略并打 warning 日志；endpoint 不支持的属性同样如此（例如给普通开关下 `color_temp`）。
 
@@ -318,6 +319,33 @@ hue 是 0–360，saturation / lightness / value 是 0–100，x/y 是 0–1，R
 HSV/HSB 形式的第三个分量（`v` / `b`）在 zigbee2mqtt 里被当作**亮度**而不是颜色的一部分：
 `{"h":120,"s":50,"v":80}` 会额外发一条 `moveToLevelWithOnOff`，level 为 254 的 80%。这只发生在
 色相/饱和度这条路径上，与 zigbee2mqtt 一致。
+
+### 连续调节与步进
+
+相对控制，语义同 zigbee2mqtt：`*_move` 会一直调节直到被停止，`*_step` 只走一个增量。正值向上、负值向下；
+`0`、`"stop"`、`"release"` 停止一次 move。同一条消息里可以出现多个，按消息中的出现顺序依次下发。
+
+| 属性 | Matter 命令 | 说明 |
+|------|------------|------|
+| `brightness_move` | LevelControl `move`，或 `stop` | `brightness_move_onoff` 用 `moveWithOnOff`；两者停止时都用普通的 `stop` |
+| `brightness_step` | LevelControl `step` | `brightness_step_onoff` 用 `stepWithOnOff`；遵循 `transition` |
+| `color_temp_move`（或 `colortemp_move`） | ColorControl `moveColorTemperature` | 取值形式见下 |
+| `color_temp_step` | ColorControl `stepColorTemperature` | 遵循 `transition` |
+| `hue_move` / `saturation_move` | ColorControl `moveHue` / `moveSaturation` | 停止时发 mode Stop + rate 1，与 zigbee2mqtt 一致 |
+| `hue_step` / `saturation_step` | ColorControl `stepHue` / `stepSaturation` | 遵循 `transition` |
+
+`color_temp_move` 有三种取值形式，各自的差异保持与 zigbee2mqtt 相同：
+
+- 带符号的速率（`{"color_temp_move":30}`），使用完整的 0–600 mireds 边界；
+- 词形 `"up"` / `"down"`（`"1"` 等同 up），默认速率 55、并使用更窄的 153–370 mireds 边界；同级的 `"rate"`
+  属性可以覆盖速率；
+- 对象 `{"rate":20,"minimum":200,"maximum":454}`；边界默认 0–600，`minimum` 不小于 `maximum` 时该命令被拒绝。
+
+Matter 的两条色温命令都要求带 mireds 边界，所以 `color_temp_step` 总是发 0–600。
+
+endpoint 不具备对应特性时，这些属性会被打 warning 后丢弃（`brightness_*` 需要 LevelControl，`color_temp_*`
+需要 ColorTemperature 特性，`hue_*`/`saturation_*` 需要 HueSaturation 特性）。速率与步长用的是 Matter 原始单位
+（level 0–254、hue 0–254、saturation 0–254、mireds），与 zigbee2mqtt 发给 Zigbee 的一致。
 
 ### 到 Matter 命令的映射
 

@@ -281,6 +281,7 @@ JSON object payload:
 | `color` | Any zigbee2mqtt color form — see [Color formats](#color-formats) |
 | `color_temp` | Mireds (clamped to the endpoint's physical min/max), or a preset: `coolest`, `cool` (250), `neutral` (370), `warm` (454), `warmest` |
 | `transition` | Transition time in seconds (converted to Matter's 0.1 s units) |
+| `brightness_move`, `brightness_step`, `color_temp_move`, `color_temp_step`, `hue_move`, `hue_step`, `saturation_move`, `saturation_step` | Relative control — see [Move and step](#move-and-step) |
 
 Any other property is ignored with a log warning, as is a property the endpoint does not support
 (e.g. `color_temp` on a plain switch).
@@ -341,6 +342,37 @@ there and not a given as on Zigbee:
 The HSV/HSB forms carry a third component (`v` / `b`) which zigbee2mqtt treats as the **light level**,
 not as part of the color: `{"h":120,"s":50,"v":80}` also sends `moveToLevelWithOnOff` at 80 % of 254.
 This only happens on the hue/saturation path, matching zigbee2mqtt.
+
+### Move and step
+
+Relative control, as in zigbee2mqtt: a `*_move` runs until it is stopped, a `*_step` applies one
+increment. A positive value goes up, a negative one down; `0`, `"stop"` and `"release"` stop a move.
+Several of these may appear in one message and are sent in the order the message lists them.
+
+| Property | Matter command | Notes |
+|----------|----------------|-------|
+| `brightness_move` | LevelControl `move`, or `stop` | `brightness_move_onoff` uses `moveWithOnOff`; both stop with the plain `stop` |
+| `brightness_step` | LevelControl `step` | `brightness_step_onoff` uses `stepWithOnOff`; honors `transition` |
+| `color_temp_move` (or `colortemp_move`) | ColorControl `moveColorTemperature` | See the value forms below |
+| `color_temp_step` | ColorControl `stepColorTemperature` | Honors `transition` |
+| `hue_move` / `saturation_move` | ColorControl `moveHue` / `moveSaturation` | Stopping sends mode Stop with rate 1, as zigbee2mqtt does |
+| `hue_step` / `saturation_step` | ColorControl `stepHue` / `stepSaturation` | Honors `transition` |
+
+`color_temp_move` takes three forms, keeping zigbee2mqtt's differences between them:
+
+- a signed rate (`{"color_temp_move":30}`) over the full 0–600 mireds bound;
+- the words `"up"` / `"down"` (`"1"` counts as up), which default to rate 55 and the narrower 153–370
+  mireds bound; a sibling `"rate"` property overrides the rate;
+- an object `{"rate":20,"minimum":200,"maximum":454}`; the bounds default to 0–600 and a `minimum` that
+  is not below `maximum` is rejected.
+
+Matter requires the mireds bounds on both color temperature commands, so `color_temp_step` always sends
+0–600.
+
+Move and step properties are dropped with a warning on endpoints without the matching feature
+(`brightness_*` needs LevelControl, `color_temp_*` the ColorTemperature feature, `hue_*`/`saturation_*`
+the HueSaturation feature). The rate and step units are the raw Matter ones (level 0–254, hue 0–254,
+saturation 0–254, mireds), matching what zigbee2mqtt sends to Zigbee.
 
 ### Mapping to Matter commands
 

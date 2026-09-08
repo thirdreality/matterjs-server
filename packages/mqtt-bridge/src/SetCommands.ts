@@ -7,6 +7,7 @@
 import { parseColorInput } from "./ColorInput.js";
 import { hsvToXY, rgbToXY, xyToHsv } from "./ColorMath.js";
 import { COLOR_CLUSTER_ID, LEVEL_CLUSTER_ID, ONOFF_CLUSTER_ID, type LightCapabilities } from "./LightCapabilities.js";
+import { moveStepCommandsOf, MOVE_STEP_KEYS, MOVE_STEP_OPTION_KEYS } from "./MoveStepCommands.js";
 
 /** One Matter command derived from a /set message. */
 export interface DeviceCommand {
@@ -81,16 +82,27 @@ export function parseSetObject(
         ? colorTempCommandOf(message, caps, transitionTime, warnings)
         : warnIfPresent(message, "color_temp", "color_temp not supported by this endpoint", warnings);
     const colorSetCommands = colorCommandsOf(message, caps, transitionTime, warnings);
+    const moveStepCommands = moveStepCommandsOf(message, caps, transitionTime, warnings);
 
+    const known = [
+        "state",
+        "brightness",
+        "brightness_percent",
+        "color",
+        "color_temp",
+        "transition",
+        ...MOVE_STEP_KEYS,
+        ...MOVE_STEP_OPTION_KEYS,
+    ];
     for (const key of Object.keys(message)) {
-        if (!["state", "brightness", "brightness_percent", "color", "color_temp", "transition"].includes(key)) {
+        if (!known.includes(key)) {
             warnings.push(`unsupported attribute "${key}"`);
         }
     }
 
     // zigbee2mqtt ordering: turning off comes first (some bulbs reject color changes while off),
     // anything else last (set color/color_temp before turning on)
-    const colorCommands = [colorTempCommand, ...colorSetCommands].filter(c => c !== undefined);
+    const colorCommands = [colorTempCommand, ...colorSetCommands, ...moveStepCommands].filter(c => c !== undefined);
     const turningOff = stateCommand?.commandName === "off" || (stateCommand?.data.level as number | undefined) === 0;
     const commands = turningOff
         ? [stateCommand as DeviceCommand, ...colorCommands]

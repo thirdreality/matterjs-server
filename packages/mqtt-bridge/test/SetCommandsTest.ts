@@ -315,6 +315,174 @@ describe("SetCommands", () => {
         });
     });
 
+    describe("move and step", () => {
+        it("moves brightness up and down at a rate", () => {
+            const up = parseSetMessage('{"brightness_move":40}', undefined, FULL_COLOR);
+            expect(up?.commands).to.deep.equal([
+                {
+                    clusterId: 8,
+                    commandName: "move",
+                    data: { moveMode: 0, rate: 40, optionsMask: 0, optionsOverride: 0 },
+                },
+            ]);
+            const down = parseSetMessage('{"brightness_move":-40}', undefined, FULL_COLOR);
+            expect(down?.commands[0].data).to.deep.include({ moveMode: 1, rate: 40 });
+            const withOnOff = parseSetMessage('{"brightness_move_onoff":40}', undefined, FULL_COLOR);
+            expect(withOnOff?.commands[0].commandName).to.equal("moveWithOnOff");
+        });
+
+        it("stops a brightness move on 0 and on the stop words", () => {
+            for (const payload of ['{"brightness_move":0}', '{"brightness_move":"stop"}', '{"brightness_move":"0"}']) {
+                const result = parseSetMessage(payload, undefined, FULL_COLOR);
+                expect(result?.commands, payload).to.deep.equal([
+                    { clusterId: 8, commandName: "stop", data: { optionsMask: 0, optionsOverride: 0 } },
+                ]);
+            }
+            // The _onoff spelling stops the same way, as in zigbee2mqtt
+            expect(
+                parseSetMessage('{"brightness_move_onoff":"stop"}', undefined, FULL_COLOR)?.commands[0].commandName,
+            ).to.equal("stop");
+        });
+
+        it("steps brightness with the transition time", () => {
+            const result = parseSetMessage('{"brightness_step":-10,"transition":2}', undefined, FULL_COLOR);
+            expect(result?.commands).to.deep.equal([
+                {
+                    clusterId: 8,
+                    commandName: "step",
+                    data: { stepMode: 1, stepSize: 10, transitionTime: 20, optionsMask: 0, optionsOverride: 0 },
+                },
+            ]);
+            expect(
+                parseSetMessage('{"brightness_step_onoff":10}', undefined, FULL_COLOR)?.commands[0].commandName,
+            ).to.equal("stepWithOnOff");
+        });
+
+        it("moves color temperature by rate over the full mireds range", () => {
+            const result = parseSetMessage('{"color_temp_move":30}', undefined, FULL_COLOR);
+            expect(result?.commands).to.deep.equal([
+                {
+                    clusterId: 768,
+                    commandName: "moveColorTemperature",
+                    data: {
+                        moveMode: 1,
+                        rate: 30,
+                        colorTemperatureMinimumMireds: 0,
+                        colorTemperatureMaximumMireds: 600,
+                        optionsMask: 0,
+                        optionsOverride: 0,
+                    },
+                },
+            ]);
+            expect(parseSetMessage('{"colortemp_move":-30}', undefined, FULL_COLOR)?.commands[0].data).to.deep.include({
+                moveMode: 3,
+                rate: 30,
+            });
+        });
+
+        it("keeps zigbee2mqtt's narrower bounds and default rate for the word forms", () => {
+            const up = parseSetMessage('{"color_temp_move":"up"}', undefined, FULL_COLOR);
+            expect(up?.commands[0].data).to.deep.include({
+                moveMode: 1,
+                rate: 55,
+                colorTemperatureMinimumMireds: 153,
+                colorTemperatureMaximumMireds: 370,
+            });
+            const down = parseSetMessage('{"color_temp_move":"down","rate":40}', undefined, FULL_COLOR);
+            expect(down?.warnings).to.deep.equal([]);
+            expect(down?.commands[0].data).to.deep.include({ moveMode: 3, rate: 40 });
+            for (const payload of ['{"color_temp_move":"stop"}', '{"color_temp_move":"release"}']) {
+                expect(parseSetMessage(payload, undefined, FULL_COLOR)?.commands[0].data, payload).to.deep.include({
+                    moveMode: 0,
+                    rate: 1,
+                });
+            }
+        });
+
+        it("takes rate and bounds from the object form", () => {
+            const result = parseSetMessage(
+                '{"color_temp_move":{"rate":20,"minimum":200,"maximum":454}}',
+                undefined,
+                FULL_COLOR,
+            );
+            expect(result?.commands[0].data).to.deep.include({
+                moveMode: 1,
+                rate: 20,
+                colorTemperatureMinimumMireds: 200,
+                colorTemperatureMaximumMireds: 454,
+            });
+            const inverted = parseSetMessage(
+                '{"color_temp_move":{"rate":20,"minimum":500,"maximum":200}}',
+                undefined,
+                FULL_COLOR,
+            );
+            expect(inverted?.commands).to.deep.equal([]);
+            expect(inverted?.warnings[0]).to.contain("invalid color_temp_move");
+        });
+
+        it("steps color temperature, hue and saturation", () => {
+            const colorTemp = parseSetMessage('{"color_temp_step":25}', undefined, FULL_COLOR);
+            expect(colorTemp?.commands[0].commandName).to.equal("stepColorTemperature");
+            expect(colorTemp?.commands[0].data).to.deep.include({
+                stepMode: 1,
+                stepSize: 25,
+                colorTemperatureMinimumMireds: 0,
+                colorTemperatureMaximumMireds: 600,
+            });
+            const hue = parseSetMessage('{"hue_step":-20}', undefined, FULL_COLOR);
+            expect(hue?.commands[0].commandName).to.equal("stepHue");
+            expect(hue?.commands[0].data).to.deep.include({ stepMode: 3, stepSize: 20 });
+            const saturation = parseSetMessage('{"saturation_step":20}', undefined, FULL_COLOR);
+            expect(saturation?.commands[0].commandName).to.equal("stepSaturation");
+        });
+
+        it("moves hue and saturation, stopping with rate 1", () => {
+            expect(parseSetMessage('{"hue_move":15}', undefined, FULL_COLOR)?.commands[0]).to.deep.equal({
+                clusterId: 768,
+                commandName: "moveHue",
+                data: { moveMode: 1, rate: 15, optionsMask: 0, optionsOverride: 0 },
+            });
+            expect(parseSetMessage('{"saturation_move":-15}', undefined, FULL_COLOR)?.commands[0].data).to.deep.include(
+                {
+                    moveMode: 3,
+                    rate: 15,
+                },
+            );
+            expect(parseSetMessage('{"hue_move":"stop"}', undefined, FULL_COLOR)?.commands[0].data).to.deep.include({
+                moveMode: 0,
+                rate: 1,
+            });
+        });
+
+        it("reports move and step properties the endpoint cannot do", () => {
+            const onOff = parseSetMessage('{"brightness_move":10}', undefined, ONOFF_ONLY);
+            expect(onOff?.commands).to.deep.equal([]);
+            expect(onOff?.warnings[0]).to.contain("brightness not supported");
+            const noColor = parseSetMessage('{"hue_move":10,"color_temp_step":5}', undefined, ONOFF_ONLY);
+            expect(noColor?.warnings[0]).to.contain("hue/saturation not supported");
+            expect(noColor?.warnings[1]).to.contain("color_temp not supported");
+        });
+
+        it("warns on values it cannot read", () => {
+            for (const payload of [
+                '{"brightness_move":"faster"}',
+                '{"brightness_step":"nope"}',
+                '{"color_temp_move":"sideways"}',
+                '{"color_temp_move":{"minimum":100}}',
+                '{"hue_step":"x"}',
+            ]) {
+                const result = parseSetMessage(payload, undefined, FULL_COLOR);
+                expect(result?.commands, payload).to.deep.equal([]);
+                expect(result?.warnings[0], payload).to.contain("invalid");
+            }
+        });
+
+        it("keeps the order the message lists them in", () => {
+            const result = parseSetMessage('{"hue_move":10,"brightness_step":5}', undefined, FULL_COLOR);
+            expect(result?.commands.map(c => c.commandName)).to.deep.equal(["moveHue", "step"]);
+        });
+    });
+
     describe("combined messages", () => {
         it("orders color before state when turning on", () => {
             const result = parseSetMessage(
