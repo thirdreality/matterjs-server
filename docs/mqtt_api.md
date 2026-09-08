@@ -278,7 +278,7 @@ JSON object payload:
 | `state` | `ON` / `OFF` / `TOGGLE` (case-insensitive), `true` / `false`, or `null` (adjust level only) |
 | `brightness` | 0–254 (255 is accepted and treated as 254) |
 | `brightness_percent` | 0–100, scaled to 0–254 |
-| `color` | `{"x":0..1,"y":0..1}`, `{"hue":0..360,"saturation":0..100}`, or the short form `{"h":…,"s":…}`. `hue` and `saturation` may each be given alone |
+| `color` | Any zigbee2mqtt color form — see [Color formats](#color-formats) |
 | `color_temp` | Mireds (clamped to the endpoint's physical min/max), or a preset: `coolest`, `cool` (250), `neutral` (370), `warm` (454), `warmest` |
 | `transition` | Transition time in seconds (converted to Matter's 0.1 s units) |
 
@@ -311,6 +311,37 @@ A suffix that does not match a known OnOff endpoint is treated as part of the pr
 zigbee2mqtt). Commands are only accepted for endpoints that expose the OnOff cluster; anything else is
 logged and dropped.
 
+### Color formats
+
+`color` accepts every form zigbee2mqtt accepts, resolved in this order (the first form whose keys are
+all present wins, so `{"x":…,"y":…,"h":…}` is read as xy):
+
+| Form | Example |
+|------|---------|
+| CIE xy | `{"x":0.7,"y":0.3}` |
+| RGB components, 0–255 | `{"r":255,"g":0,"b":0}` |
+| RGB string | `{"rgb":"255,0,0"}` |
+| Hex | `{"hex":"#FF0000"}`, or the bare string `"#FF0000"` |
+| HSL | `{"h":120,"s":100,"l":50}`, `{"hsl":"120,100,50"}` |
+| HSB / HSV | `{"h":120,"s":50,"b":80}`, `{"hsb":"120,50,80"}`, `{"h":120,"s":50,"v":80}`, `{"hsv":"120,50,80"}` |
+| Hue / saturation | `{"h":120,"s":50}`, `{"hue":120,"saturation":50}`, or either alone (`{"h":120}`, `{"s":50}`) |
+
+Hue is 0–360, saturation, lightness and value are 0–100, x/y are 0–1, RGB components 0–255. Numeric
+strings are accepted (Home Assistant templates produce them). A hue-only payload may carry
+`"direction"`, which is passed to the Matter hue move.
+
+Which color space reaches the device follows zigbee2mqtt: **hue/saturation for HSV-style payloads when
+the endpoint supports that feature, xy for everything else** (RGB, hex, xy, and HSV on an endpoint
+without hue/saturation support). Two Matter-specific additions, because xy support is a feature bit
+there and not a given as on Zigbee:
+
+- an endpoint without xy support receives a converted hue/saturation command instead of being skipped;
+- an endpoint with neither feature warns and ignores the payload.
+
+The HSV/HSB forms carry a third component (`v` / `b`) which zigbee2mqtt treats as the **light level**,
+not as part of the color: `{"h":120,"s":50,"v":80}` also sends `moveToLevelWithOnOff` at 80 % of 254.
+This only happens on the hue/saturation path, matching zigbee2mqtt.
+
 ### Mapping to Matter commands
 
 | Message | Matter command |
@@ -320,10 +351,11 @@ logged and dropped.
 | `brightness` (with or without `state`) | LevelControl `moveToLevelWithOnOff` |
 | `brightness` with `state: null` | LevelControl `moveToLevel` (level only, no on/off change) |
 | `color_temp` | ColorControl `moveToColorTemperature` |
-| `color: {x,y}` | ColorControl `moveToColor` |
+| `color` resolved to xy (RGB, hex, xy, HSV without HS support) | ColorControl `moveToColor` |
 | `color` with hue + saturation | ColorControl `enhancedMoveToHueAndSaturation`, or `moveToHueAndSaturation` without the EnhancedHue feature |
-| `color` with hue only | ColorControl `enhancedMoveToHue` / `moveToHue` (direction 0) |
+| `color` with hue only | ColorControl `enhancedMoveToHue` / `moveToHue` (direction from the payload, else 0) |
 | `color` with saturation only | ColorControl `moveToSaturation` |
+| `color` with an HSV value component | LevelControl `moveToLevelWithOnOff` in addition to the color command |
 
 LevelControl and ColorControl commands are sent with `optionsMask: 0, optionsOverride: 0`.
 

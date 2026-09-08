@@ -261,7 +261,7 @@ JSON 对象载荷：
 | `state` | `ON` / `OFF` / `TOGGLE`（大小写不敏感）、`true` / `false`，或 `null`（只调亮度不改开关） |
 | `brightness` | 0–254（255 也接受，按 254 处理） |
 | `brightness_percent` | 0–100，换算到 0–254 |
-| `color` | `{"x":0..1,"y":0..1}`、`{"hue":0..360,"saturation":0..100}`，或短键形式 `{"h":…,"s":…}`。`hue` 与 `saturation` 也可以只给其中一个 |
+| `color` | 支持 zigbee2mqtt 的全部颜色形式 —— 见[颜色格式](#颜色格式) |
 | `color_temp` | mireds（会按 endpoint 的物理上下限裁剪），或预设值：`coolest`、`cool`（250）、`neutral`（370）、`warm`（454）、`warmest` |
 | `transition` | 渐变时间，单位秒（内部换算为 Matter 的 0.1 秒单位） |
 
@@ -290,6 +290,35 @@ matter2mqtt/5/set/color        →  {"hue":120,"saturation":80}
 后缀数字不属于已知 OnOff endpoint 时，会被当成属性名的一部分（与 zigbee2mqtt 一致）。命令只对暴露 OnOff cluster
 的 endpoint 生效，其余情况打日志后丢弃。
 
+### 颜色格式
+
+`color` 接受 zigbee2mqtt 支持的全部形式，按下表顺序判定（第一个键齐全的形式胜出，所以
+`{"x":…,"y":…,"h":…}` 会被当成 xy）：
+
+| 形式 | 示例 |
+|------|------|
+| CIE xy | `{"x":0.7,"y":0.3}` |
+| RGB 分量，0–255 | `{"r":255,"g":0,"b":0}` |
+| RGB 字符串 | `{"rgb":"255,0,0"}` |
+| Hex | `{"hex":"#FF0000"}`，或裸字符串 `"#FF0000"` |
+| HSL | `{"h":120,"s":100,"l":50}`、`{"hsl":"120,100,50"}` |
+| HSB / HSV | `{"h":120,"s":50,"b":80}`、`{"hsb":"120,50,80"}`、`{"h":120,"s":50,"v":80}`、`{"hsv":"120,50,80"}` |
+| 色相 / 饱和度 | `{"h":120,"s":50}`、`{"hue":120,"saturation":50}`，或只给其中一个（`{"h":120}`、`{"s":50}`） |
+
+hue 是 0–360，saturation / lightness / value 是 0–100，x/y 是 0–1，RGB 分量是 0–255。数字字符串也接受
+（Home Assistant 的模板会产出这种）。只给 hue 的载荷可以附带 `"direction"`，会传给 Matter 的 hue move 命令。
+
+最终发到设备的是哪种色彩空间，规则跟随 zigbee2mqtt：**HSV 系载荷在 endpoint 支持该特性时走色相/饱和度，
+其余一律走 xy**（RGB、hex、xy，以及在不支持色相/饱和度的 endpoint 上的 HSV）。另有两条 Matter 特有的补充 ——
+因为 xy 在 Matter 里是一个 feature bit，不像 Zigbee 那样默认可用：
+
+- 不支持 xy 的 endpoint 会收到换算后的色相/饱和度命令，而不是被直接跳过；
+- 两个特性都不支持的 endpoint 会打 warning 并忽略该载荷。
+
+HSV/HSB 形式的第三个分量（`v` / `b`）在 zigbee2mqtt 里被当作**亮度**而不是颜色的一部分：
+`{"h":120,"s":50,"v":80}` 会额外发一条 `moveToLevelWithOnOff`，level 为 254 的 80%。这只发生在
+色相/饱和度这条路径上，与 zigbee2mqtt 一致。
+
 ### 到 Matter 命令的映射
 
 | 消息 | Matter 命令 |
@@ -299,10 +328,11 @@ matter2mqtt/5/set/color        →  {"hue":120,"saturation":80}
 | 带 `brightness`（有或没有 `state`） | LevelControl `moveToLevelWithOnOff` |
 | 带 `brightness` 且 `state: null` | LevelControl `moveToLevel`（只调 level，不改开关） |
 | `color_temp` | ColorControl `moveToColorTemperature` |
-| `color: {x,y}` | ColorControl `moveToColor` |
+| `color` 归一到 xy（RGB、hex、xy，或不支持 HS 时的 HSV） | ColorControl `moveToColor` |
 | `color` 同时给 hue 与 saturation | ColorControl `enhancedMoveToHueAndSaturation`；无 EnhancedHue 特性时用 `moveToHueAndSaturation` |
-| `color` 只给 hue | ColorControl `enhancedMoveToHue` / `moveToHue`（direction 0） |
+| `color` 只给 hue | ColorControl `enhancedMoveToHue` / `moveToHue`（direction 取载荷中的值，缺省 0） |
 | `color` 只给 saturation | ColorControl `moveToSaturation` |
+| `color` 带 HSV 的 value 分量 | 在颜色命令之外，额外一条 LevelControl `moveToLevelWithOnOff` |
 
 LevelControl 与 ColorControl 命令均带 `optionsMask: 0, optionsOverride: 0` 下发。
 

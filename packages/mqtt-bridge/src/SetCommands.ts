@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { parseColorInput } from "./ColorInput.js";
+import { hsvToXY, rgbToXY, xyToHsv } from "./ColorMath.js";
 import { COLOR_CLUSTER_ID, LEVEL_CLUSTER_ID, ONOFF_CLUSTER_ID, type LightCapabilities } from "./LightCapabilities.js";
 
 /** One Matter command derived from a /set message. */
@@ -78,10 +80,7 @@ export function parseSetObject(
     const colorTempCommand = caps.colorTemp
         ? colorTempCommandOf(message, caps, transitionTime, warnings)
         : warnIfPresent(message, "color_temp", "color_temp not supported by this endpoint", warnings);
-    const colorCommand =
-        caps.hueSaturation || caps.xy
-            ? colorCommandOf(message, caps, transitionTime, warnings)
-            : warnIfPresent(message, "color", "color not supported by this endpoint", warnings);
+    const colorSetCommands = colorCommandsOf(message, caps, transitionTime, warnings);
 
     for (const key of Object.keys(message)) {
         if (!["state", "brightness", "brightness_percent", "color", "color_temp", "transition"].includes(key)) {
@@ -91,7 +90,7 @@ export function parseSetObject(
 
     // zigbee2mqtt ordering: turning off comes first (some bulbs reject color changes while off),
     // anything else last (set color/color_temp before turning on)
-    const colorCommands = [colorTempCommand, colorCommand].filter(c => c !== undefined);
+    const colorCommands = [colorTempCommand, ...colorSetCommands].filter(c => c !== undefined);
     const turningOff = stateCommand?.commandName === "off" || (stateCommand?.data.level as number | undefined) === 0;
     const commands = turningOff
         ? [stateCommand as DeviceCommand, ...colorCommands]
@@ -305,94 +304,118 @@ function colorTempCommandOf(
     };
 }
 
-function colorCommandOf(
+/** Command payload fields every ColorControl move-to command carries. */
+interface ColorBase {
+    transitionTime: number;
+    optionsMask: number;
+    optionsOverride: number;
+}
+
+/**
+ * zigbee2mqtt `light_color`: an HSV payload goes out as hue/saturation when the endpoint supports
+ * that feature, everything else (RGB, xy, and HSV on an endpoint without the HS feature) as xy.
+ *
+ * zigbee2mqtt can assume xy always works on Zigbee; on Matter it is a feature bit, so we fall back to
+ * hue/saturation when an endpoint has no xy support. An HSV `value` component also sets the light
+ * level, which is zigbee2mqtt behaviour and only applies on the hue/saturation path.
+ */
+function colorCommandsOf(
     message: Record<string, unknown>,
     caps: LightCapabilities,
     transitionTime: number,
     warnings: string[],
-): DeviceCommand | undefined {
+): DeviceCommand[] {
     const color = message.color;
     if (color === undefined) {
-        return undefined;
+        return [];
     }
-    if (typeof color !== "object" || color === null) {
-        warnings.push(`unsupported color format "${String(color)}" (only {x,y} and {hue,saturation}/{h,s} for now)`);
-        return undefined;
+    if (!caps.hueSaturation && !caps.xy) {
+        warnings.push("color not supported by this endpoint");
+        return [];
     }
-    const c = color as Record<string, unknown>;
-    const base = { transitionTime, optionsMask: 0, optionsOverride: 0 };
+    const parsed = parseColorInput(color);
+    if (parsed === undefined) {
+        warnings.push(`unsupported color format ${JSON.stringify(color)}`);
+        return [];
+    }
+    const base: ColorBase = { transitionTime, optionsMask: 0, optionsOverride: 0 };
 
-    if (c.x !== undefined && c.y !== undefined) {
-        if (!caps.xy) {
-            warnings.push("xy color not supported by this endpoint");
-            return undefined;
+    if (parsed.kind === "hsv" && caps.hueSaturation) {
+        const commands = new Array<DeviceCommand>();
+        if (parsed.value !== undefined) {
+            if (caps.brightness) {
+                const level = Math.round((clamp(parsed.value, 0, 100) / 100) * 254);
+                commands.push(levelCommand("moveToLevelWithOnOff", level, transitionTime));
+            } else {
+                warnings.push("brightness not supported by this endpoint");
+            }
         }
-        const x = clamp(Number(c.x), 0, 1);
-        const y = clamp(Number(c.y), 0, 1);
-        if (Number.isNaN(x) || Number.isNaN(y)) {
-            warnings.push(`invalid xy color ${JSON.stringify(color)}`);
-            return undefined;
-        }
-        return {
-            clusterId: COLOR_CLUSTER_ID,
-            commandName: "moveToColor",
-            data: { colorX: Math.round(x * 65535), colorY: Math.round(y * 65535), ...base },
-        };
+        commands.push(hueSaturationCommand(parsed.hue, parsed.saturation, parsed.direction, caps, base));
+        return commands;
     }
 
-    // hue 0-360 / saturation 0-100 in the MQTT API (zigbee2mqtt ColorHSV); either may be given alone
-    const hueIn = c.hue ?? c.h;
-    const satIn = c.saturation ?? c.s;
-    if (hueIn === undefined && satIn === undefined) {
-        warnings.push(
-            `unsupported color format ${JSON.stringify(color)} (only {x,y} and {hue,saturation}/{h,s} for now)`,
-        );
-        return undefined;
-    }
-    if (!caps.hueSaturation) {
-        warnings.push("hue/saturation color not supported by this endpoint");
-        return undefined;
-    }
-    const hue = hueIn === undefined ? undefined : ((Number(hueIn) % 360) + 360) % 360;
-    const saturation = satIn === undefined ? undefined : clamp(Number(satIn), 0, 100);
-    if ((hue !== undefined && Number.isNaN(hue)) || (saturation !== undefined && Number.isNaN(saturation))) {
-        warnings.push(`invalid hue/saturation color ${JSON.stringify(color)}`);
-        return undefined;
-    }
+    const xy =
+        parsed.kind === "xy"
+            ? { x: clamp(parsed.xy.x, 0, 1), y: clamp(parsed.xy.y, 0, 1) }
+            : parsed.kind === "rgb"
+              ? rgbToXY(parsed.rgb)
+              : // Partial HSV completes the way zigbee2mqtt's ColorHSV.complete() does
+                hsvToXY(parsed.hue ?? 0, parsed.saturation ?? 100);
 
-    const sat254 = saturation === undefined ? undefined : Math.round((saturation / 100) * 254);
-    if (hue !== undefined && sat254 !== undefined) {
-        if (caps.enhancedHue) {
-            return {
+    if (caps.xy) {
+        return [
+            {
                 clusterId: COLOR_CLUSTER_ID,
-                commandName: "enhancedMoveToHueAndSaturation",
-                data: { enhancedHue: Math.round((hue / 360) * 65535), saturation: sat254, ...base },
-            };
-        }
-        return {
-            clusterId: COLOR_CLUSTER_ID,
-            commandName: "moveToHueAndSaturation",
-            data: { hue: Math.round((hue / 360) * 254), saturation: sat254, ...base },
-        };
+                commandName: "moveToColor",
+                data: { colorX: Math.round(xy.x * 65535), colorY: Math.round(xy.y * 65535), ...base },
+            },
+        ];
+    }
+    const hsv = xyToHsv(xy);
+    return [hueSaturationCommand(hsv.hue, hsv.saturation, undefined, caps, base)];
+}
+
+/** hue 0-360 / saturation 0-100 to the matching ColorControl command; either may be absent. */
+function hueSaturationCommand(
+    hueIn: number | undefined,
+    saturationIn: number | undefined,
+    direction: number | undefined,
+    caps: LightCapabilities,
+    base: ColorBase,
+): DeviceCommand {
+    const hue = hueIn === undefined ? undefined : ((hueIn % 360) + 360) % 360;
+    const saturation = saturationIn === undefined ? undefined : Math.round((clamp(saturationIn, 0, 100) / 100) * 254);
+
+    if (hue !== undefined && saturation !== undefined) {
+        return caps.enhancedHue
+            ? {
+                  clusterId: COLOR_CLUSTER_ID,
+                  commandName: "enhancedMoveToHueAndSaturation",
+                  data: { enhancedHue: Math.round((hue / 360) * 65535), saturation, ...base },
+              }
+            : {
+                  clusterId: COLOR_CLUSTER_ID,
+                  commandName: "moveToHueAndSaturation",
+                  data: { hue: Math.round((hue / 360) * 254), saturation, ...base },
+              };
     }
     if (hue !== undefined) {
-        if (caps.enhancedHue) {
-            return {
-                clusterId: COLOR_CLUSTER_ID,
-                commandName: "enhancedMoveToHue",
-                data: { enhancedHue: Math.round((hue / 360) * 65535), direction: 0, ...base },
-            };
-        }
-        return {
-            clusterId: COLOR_CLUSTER_ID,
-            commandName: "moveToHue",
-            data: { hue: Math.round((hue / 360) * 254), direction: 0, ...base },
-        };
+        return caps.enhancedHue
+            ? {
+                  clusterId: COLOR_CLUSTER_ID,
+                  commandName: "enhancedMoveToHue",
+                  data: { enhancedHue: Math.round((hue / 360) * 65535), direction: direction ?? 0, ...base },
+              }
+            : {
+                  clusterId: COLOR_CLUSTER_ID,
+                  commandName: "moveToHue",
+                  data: { hue: Math.round((hue / 360) * 254), direction: direction ?? 0, ...base },
+              };
     }
     return {
         clusterId: COLOR_CLUSTER_ID,
         commandName: "moveToSaturation",
-        data: { saturation: sat254, ...base },
+        data: { saturation, ...base },
     };
 }
 

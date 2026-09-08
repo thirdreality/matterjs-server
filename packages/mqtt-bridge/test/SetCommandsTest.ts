@@ -227,12 +227,91 @@ describe("SetCommands", () => {
             );
         });
 
-        it("warns on stage-3 color forms and invalid values", () => {
-            const hex = parseSetMessage('{"color":"#FF0000"}', undefined, FULL_COLOR);
-            expect(hex?.commands).to.deep.equal([]);
-            expect(hex?.warnings[0]).to.contain("unsupported color format");
-            const rgb = parseSetMessage('{"color":{"r":255,"g":0,"b":0}}', undefined, FULL_COLOR);
-            expect(rgb?.warnings[0]).to.contain("unsupported color format");
+        it("sends RGB forms as xy, like zigbee2mqtt", () => {
+            // Red: the wide-gamut primary, well outside the sRGB corner
+            for (const payload of [
+                '{"color":"#FF0000"}',
+                '{"color":{"r":255,"g":0,"b":0}}',
+                '{"color":{"rgb":"255,0,0"}}',
+                '{"color":{"hex":"#FF0000"}}',
+            ]) {
+                const result = parseSetMessage(payload, undefined, FULL_COLOR);
+                expect(result?.warnings, payload).to.deep.equal([]);
+                // x/y 0.7006/0.2993: the wide-gamut red primary this matrix produces
+                expect(result?.commands, payload).to.deep.equal([
+                    {
+                        clusterId: 768,
+                        commandName: "moveToColor",
+                        data: { colorX: 45914, colorY: 19615, transitionTime: 0, optionsMask: 0, optionsOverride: 0 },
+                    },
+                ]);
+            }
+        });
+
+        it("converts HSL to hue/saturation", () => {
+            // HSL 120/100/50 is pure green: HSV 120/100/100
+            const result = parseSetMessage('{"color":{"h":120,"s":100,"l":50}}', undefined, FULL_COLOR);
+            expect(result?.commands.map(c => c.commandName)).to.deep.equal([
+                "moveToLevelWithOnOff",
+                "enhancedMoveToHueAndSaturation",
+            ]);
+            expect(result?.commands[1].data).to.deep.include({ enhancedHue: 21845, saturation: 254 });
+            const asString = parseSetMessage('{"color":{"hsl":"120,100,50"}}', undefined, FULL_COLOR);
+            expect(asString?.commands).to.deep.equal(result?.commands);
+        });
+
+        it("maps the HSV value component to the light level (zigbee2mqtt behaviour)", () => {
+            for (const payload of ['{"color":{"h":120,"s":50,"v":80}}', '{"color":{"hsv":"120,50,80"}}']) {
+                const result = parseSetMessage(payload, undefined, FULL_COLOR);
+                expect(result?.warnings, payload).to.deep.equal([]);
+                expect(result?.commands[0], payload).to.deep.equal({
+                    clusterId: 8,
+                    commandName: "moveToLevelWithOnOff",
+                    data: { level: 203, transitionTime: 0, optionsMask: 0, optionsOverride: 0 },
+                });
+                expect(result?.commands[1].commandName, payload).to.equal("enhancedMoveToHueAndSaturation");
+            }
+            // {h,s,b} spells the same thing
+            const hsb = parseSetMessage('{"color":{"hsb":"120,50,80"}}', undefined, FULL_COLOR);
+            expect(hsb?.commands[0].data).to.deep.include({ level: 203 });
+        });
+
+        it("falls back to xy when an endpoint has no hue/saturation support", () => {
+            const xyOnly: LightCapabilities = { ...FULL_COLOR, hueSaturation: false, enhancedHue: false };
+            const result = parseSetMessage('{"color":{"hue":120,"saturation":100}}', undefined, xyOnly);
+            expect(result?.warnings).to.deep.equal([]);
+            expect(result?.commands[0].commandName).to.equal("moveToColor");
+        });
+
+        it("falls back to hue/saturation when an endpoint has no xy support", () => {
+            const hsOnly: LightCapabilities = { ...FULL_COLOR, xy: false };
+            const result = parseSetMessage('{"color":{"x":0.7,"y":0.3}}', undefined, hsOnly);
+            expect(result?.warnings).to.deep.equal([]);
+            expect(result?.commands[0].commandName).to.equal("enhancedMoveToHueAndSaturation");
+        });
+
+        it("passes a hue move direction through", () => {
+            const result = parseSetMessage('{"color":{"h":90,"direction":1}}', undefined, PLAIN_HS);
+            expect(result?.commands[0].data).to.deep.include({ direction: 1 });
+        });
+
+        it("warns on color payloads it cannot read", () => {
+            for (const payload of [
+                '{"color":"red"}',
+                '{"color":{"foo":1}}',
+                '{"color":{"r":1,"g":2}}',
+                '{"color":5}',
+            ]) {
+                const result = parseSetMessage(payload, undefined, FULL_COLOR);
+                expect(result?.commands, payload).to.deep.equal([]);
+                expect(result?.warnings[0], payload).to.contain("unsupported color format");
+            }
+        });
+
+        it("reports color as unsupported on an endpoint without any color feature", () => {
+            const result = parseSetMessage('{"color":{"hue":10}}', undefined, ONOFF_ONLY);
+            expect(result?.commands).to.deep.equal([]);
+            expect(result?.warnings[0]).to.contain("color not supported");
         });
     });
 
