@@ -98,3 +98,7 @@ The script connects to the server, sends the command, and keeps the connection o
 ## Websocket commands
 
 [Websocket documentation](/docs/websockets_api.md)
+
+## MQTT bridge
+
+[MQTT API documentation](/docs/mqtt_api.md) ([中文版](/docs/mqtt_api.zh-CN.md))
