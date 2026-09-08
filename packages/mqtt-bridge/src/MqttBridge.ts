@@ -17,13 +17,15 @@ import {
     CREDENTIAL_COMMAND_NAMES,
     DEFAULT_COMMISSION_MODE,
     executeBridgeCommand,
+    OTA_COMMAND_NAMES,
     type BridgeCommandContext,
 } from "./BridgeCommands.js";
-import { deviceStateOf, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
+import { deviceStateOf, isDeviceLevelStateAttribute, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
 import { bridgeDiscoveryMessagesOf, discoveryMessagesOf } from "./Discovery.js";
 import { lightCapabilitiesOf } from "./LightCapabilities.js";
 import { MqttConnection } from "./MqttConnection.js";
 import { onOffEndpointsOf, onOffValueOf } from "./OnOffState.js";
+import { OtaTracker, supportsOta } from "./OtaState.js";
 import { messageOf, parseSetObject, splitByEndpointSuffix } from "./SetCommands.js";
 import { Topics } from "./Topics.js";
 
@@ -36,6 +38,13 @@ function bridgeStatePayload(state: "online" | "offline"): string {
 
 /** Shown on the HA bridge card in place of stored secrets. */
 const SECRET_MASK = "********";
+
+/** How often the bridge asks for firmware updates (zigbee2mqtt's default check interval). */
+const OTA_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** Delay before the first pass, keeping startup and commissioning traffic clear. */
+const OTA_CHECK_START_DELAY_MS = 30 * 1000;
+/** Gap between nodes, so a pass does not burst DCL queries. */
+const OTA_CHECK_NODE_GAP_MS = 5 * 1000;
 
 export interface MqttBridgeOptions {
     /** Broker URL, e.g. `mqtt://user:password@localhost:1883`. */
@@ -72,11 +81,13 @@ export class MqttBridge {
     readonly #connection: MqttConnection;
     readonly #serverVersion?: string;
     readonly #observers = new ObserverGroup();
+    readonly #ota = new OtaTracker();
     /** Known devices keyed by node id string (the `<device>` topic segment). */
     readonly #devices = new Map<string, DeviceEntry>();
     #started = false;
     /** True once the initial publish has run; gates re-publishing from reconnect events. */
     #ready = false;
+    #otaCheckTimer?: ReturnType<typeof setTimeout>;
 
     constructor(
         commandHandler: ControllerCommandHandler,
@@ -84,7 +95,8 @@ export class MqttBridge {
         commandContext?: Omit<BridgeCommandContext, "commandHandler">,
     ) {
         this.#commandHandler = commandHandler;
-        this.#commandContext = commandContext === undefined ? undefined : { commandHandler, ...commandContext };
+        this.#commandContext =
+            commandContext === undefined ? undefined : { ...commandContext, commandHandler, ota: this.#ota };
         this.#serverVersion = options.serverVersion;
         this.#topics = new Topics(options.prefix ?? "matter2mqtt");
         this.#connection = new MqttConnection({
@@ -165,6 +177,7 @@ export class MqttBridge {
 
         this.#ready = true;
         this.#publishAll();
+        this.#scheduleOtaCheck(OTA_CHECK_START_DELAY_MS);
         // Fresh process: reset the commissioning feedback of the HA bridge card.
         // The cleared code is a space: an empty retained payload would be dropped.
         this.#connection.publish(this.#topics.bridgeCommissionStatus, "idle", true);
@@ -179,6 +192,10 @@ export class MqttBridge {
         }
         this.#started = false;
         this.#ready = false;
+        if (this.#otaCheckTimer !== undefined) {
+            clearTimeout(this.#otaCheckTimer);
+            this.#otaCheckTimer = undefined;
+        }
         this.#observers.close();
         await this.#connection.close({ topic: this.#topics.bridgeState, payload: bridgeStatePayload("offline") });
     }
@@ -193,13 +210,17 @@ export class MqttBridge {
         }
         const device = nodeId.toString();
         let entry = this.#devices.get(device);
-        if (entry === undefined || !entry.relevantEndpoints.includes(path.endpointId)) {
+        const endpointKnown =
+            entry !== undefined &&
+            (isDeviceLevelStateAttribute(path.clusterId, path.attributeId) ||
+                entry.relevantEndpoints.includes(path.endpointId));
+        if (!endpointKnown) {
             // Unknown device or endpoint: the structure changed ahead of any structure event
             entry = this.#refreshDevice(nodeId);
             this.#publishDevices();
-            if (entry === undefined) {
-                return;
-            }
+        }
+        if (entry === undefined) {
+            return;
         }
         this.#publishDeviceState(entry);
     }
@@ -301,6 +322,11 @@ export class MqttBridge {
         if (command === "commission_mode") {
             this.#publishCommissionMode();
         }
+        if (OTA_COMMAND_NAMES.includes(command)) {
+            // The check result and the requested-update flag only live in the bridge, so the
+            // device's `update` property has to be re-published explicitly
+            this.#publishDeviceStateOf((response.data as { id?: unknown })?.id);
+        }
         if (command === "commission") {
             const summary =
                 response.status === "ok"
@@ -316,6 +342,66 @@ export class MqttBridge {
     /** zigbee2mqtt-style `get`: re-publish the full current state from the attribute cache. */
     #handleGet(entry: DeviceEntry, _endpoint?: number): void {
         this.#publishDeviceState(entry);
+    }
+
+    /**
+     * The controller learns about firmware updates from its own DCL poll but does not expose that,
+     * so the bridge has to ask per node for the `update` property to ever leave `idle`. Chained
+     * timeouts rather than an interval: a slow pass can never overlap the next one.
+     */
+    #scheduleOtaCheck(delay: number): void {
+        if (this.#commandContext === undefined) {
+            return;
+        }
+        this.#otaCheckTimer = setTimeout(() => {
+            void this.#runOtaCheckPass().finally(() => {
+                if (this.#started) {
+                    this.#scheduleOtaCheck(OTA_CHECK_INTERVAL_MS);
+                }
+            });
+        }, delay);
+        // Never hold up shutdown
+        this.#otaCheckTimer.unref?.();
+    }
+
+    async #runOtaCheckPass(): Promise<void> {
+        for (const [device, entry] of [...this.#devices]) {
+            if (!this.#started) {
+                return;
+            }
+            let details: MatterNodeData;
+            try {
+                details = this.#commandHandler.getNodeDetails(entry.nodeId);
+            } catch {
+                continue;
+            }
+            // An unreachable node cannot be updated anyway, and a running check owns the node
+            if (!details.available || !supportsOta(details.attributes) || !this.#ota.begin(device)) {
+                continue;
+            }
+            try {
+                const update = await this.#commandHandler.checkNodeUpdate(entry.nodeId);
+                if (update !== null) {
+                    logger.notice(`Firmware ${update.software_version_string} available for node ${device}`);
+                }
+                this.#ota.setAvailableUpdate(device, update);
+            } catch (error) {
+                logger.info(`Firmware check for node ${device} failed:`, error);
+            } finally {
+                this.#ota.end(device);
+            }
+            this.#publishDeviceState(entry);
+            await new Promise(resolve => setTimeout(resolve, OTA_CHECK_NODE_GAP_MS).unref?.());
+        }
+    }
+
+    /** Re-publish one device's state, addressed the way a bridge command response identifies it. */
+    #publishDeviceStateOf(id: unknown): void {
+        const device = deviceKeyOf(id);
+        const entry = device === undefined ? undefined : this.#devices.get(device);
+        if (entry !== undefined) {
+            this.#publishDeviceState(entry);
+        }
     }
 
     /** Publish the complete retained picture: all devices, device list, info and online state. */
@@ -374,6 +460,10 @@ export class MqttBridge {
         const state = deviceStateOf(details.attributes, entry.relevantEndpoints, endpoint =>
             lightCapabilitiesOf(details.attributes, endpoint),
         );
+        const update = this.#ota.updateStateOf(device, details.attributes);
+        if (update !== undefined) {
+            state.update = update;
+        }
         if (Object.keys(state).length === 0) {
             return;
         }
@@ -449,6 +539,7 @@ export class MqttBridge {
             return;
         }
         this.#devices.delete(device);
+        this.#ota.forget(device);
         for (const topic of entry.discoveryTopics) {
             this.#connection.clearRetained(topic);
         }
@@ -496,4 +587,16 @@ export class MqttBridge {
 function stringAttribute(attributes: AttributesData, path: string): string | undefined {
     const value = attributes[path];
     return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+/** The `<device>` topic segment for a node id as it appears in a bridge command response. */
+function deviceKeyOf(id: unknown): string | undefined {
+    if (typeof id !== "bigint" && typeof id !== "number" && typeof id !== "string") {
+        return undefined;
+    }
+    try {
+        return BigInt(id).toString();
+    } catch {
+        return undefined;
+    }
 }

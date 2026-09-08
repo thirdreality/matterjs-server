@@ -10,6 +10,8 @@ This page shows a detailed overview of the changes between versions without the 
 ## **WORK IN PROGRESS**
 
 - Feature: (ThirdReality) New `@matter-server/mqtt-bridge` package (matter2mqtt): publishes bridge status, device list, availability and OnOff state to an MQTT broker using a zigbee2mqtt-style topic layout, and routes `<device>/set` OnOff commands to the controller. Enabled via new CLI flags `--mqtt-url`, `--mqtt-prefix` and `--mqtt-client-id`; without `--mqtt-url` the server behaves as before
+- Feature: (ThirdReality) MQTT bridge exposes firmware updates: bridge commands `device/ota_update/check` and `device/ota_update/update` (built on the same controller calls as the WebSocket `check_node_update` / `update_node`), a zigbee2mqtt-style `update` property in the device state carrying version, source and download progress, a Home Assistant `update` entity, and a periodic per-node check because the controller does not expose its own DCL poll. **Not yet verified against real hardware** — the API shape deserves a review and an end-to-end update on a real node before it is relied on
+- Documentation: (ThirdReality) MQTT API reference for the bridge in `docs/mqtt_api.md`, with a Chinese translation in `docs/mqtt_api.zh-CN.md`
 
 ## 1.4.0 (2026-08-07)
 

@@ -15,6 +15,7 @@ import {
 } from "@matter/main/clusters";
 import { hsvToXY } from "./ColorMath.js";
 import { COLOR_CLUSTER_ID, LEVEL_CLUSTER_ID, ONOFF_CLUSTER_ID, type LightCapabilities } from "./LightCapabilities.js";
+import { BASIC_INFORMATION_CLUSTER_ID, OTA_REQUESTOR_CLUSTER_ID } from "./OtaState.js";
 
 const OCCUPANCY_CLUSTER_ID = OccupancySensing.Cluster.id;
 const ILLUMINANCE_CLUSTER_ID = IlluminanceMeasurement.Cluster.id;
@@ -22,6 +23,19 @@ const TEMPERATURE_CLUSTER_ID = TemperatureMeasurement.Cluster.id;
 const HUMIDITY_CLUSTER_ID = RelativeHumidityMeasurement.Cluster.id;
 const POWER_SOURCE_CLUSTER_ID = PowerSource.Cluster.id;
 const BOOLEAN_STATE_CLUSTER_ID = BooleanState.Cluster.id;
+
+/**
+ * Device-level state attributes: they contribute a property to the whole device rather than to one
+ * endpoint (`battery`, `update`), so a change on an endpoint outside {@link relevantEndpointsOf}
+ * must not be read as a structure change.
+ */
+export const DEVICE_LEVEL_STATE_PATHS: ReadonlySet<string> = new Set([
+    `${POWER_SOURCE_CLUSTER_ID}/12`, // batPercentRemaining
+    `${OTA_REQUESTOR_CLUSTER_ID}/2`, // updateState
+    `${OTA_REQUESTOR_CLUSTER_ID}/3`, // updateStateProgress
+    `${BASIC_INFORMATION_CLUSTER_ID}/9`, // softwareVersion
+    `${BASIC_INFORMATION_CLUSTER_ID}/10`, // softwareVersionString
+]);
 
 /** `<cluster>/<attribute>` paths whose changes require a device state re-publish. */
 export const STATE_ATTRIBUTE_PATHS: ReadonlySet<string> = new Set([
@@ -38,13 +52,18 @@ export const STATE_ATTRIBUTE_PATHS: ReadonlySet<string> = new Set([
     `${ILLUMINANCE_CLUSTER_ID}/0`,
     `${TEMPERATURE_CLUSTER_ID}/0`,
     `${HUMIDITY_CLUSTER_ID}/0`,
-    `${POWER_SOURCE_CLUSTER_ID}/12`, // batPercentRemaining
     `${BOOLEAN_STATE_CLUSTER_ID}/0`, // stateValue
+    ...DEVICE_LEVEL_STATE_PATHS,
 ]);
 
 /** True when a changed attribute path affects the published device state. */
 export function isStateAttribute(clusterId: number, attributeId: number): boolean {
     return STATE_ATTRIBUTE_PATHS.has(`${clusterId}/${attributeId}`);
+}
+
+/** True for a state attribute that belongs to the device as a whole, not to one endpoint. */
+export function isDeviceLevelStateAttribute(clusterId: number, attributeId: number): boolean {
+    return DEVICE_LEVEL_STATE_PATHS.has(`${clusterId}/${attributeId}`);
 }
 
 /** Endpoints of a node that contribute properties to the device state. */

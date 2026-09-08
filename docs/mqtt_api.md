@@ -183,6 +183,7 @@ built from the controller's attribute cache, so it is available without an extra
 | `humidity` | RelativeHumidityMeasurement `1029/0` | %, `raw/100` rounded to 2 decimals |
 | `contact` | BooleanState `69/0` | `true` = closed, `false` = open (zigbee2mqtt semantics) |
 | `battery` | PowerSource `47/12` | %, `raw/2` (BatPercentRemaining is in half percent). Device-level: the first PowerSource occurrence wins |
+| `update` | OtaSoftwareUpdateRequestor `42/{2,3}` + BasicInformation `40/{9,10}` | Firmware update state object, device-level — see [Firmware Updates](#firmware-updates) |
 
 In `hs` mode `color` carries the zigbee2mqtt-style long keys `hue` (0–360) and `saturation` (0–100). When
 both are known, the short keys `h`/`s` and the derived `x`/`y` are added as well, because Home Assistant's
@@ -207,11 +208,54 @@ one endpoint keeps its plain name; a property provided by several endpoints gets
 Suffixing is decided from endpoint *capabilities*, not from current values, so names stay stable while
 values are still unknown.
 
+### Firmware updates
+
+Nodes exposing the OTA Requestor cluster (`0/42/2` present) carry a device-level `update` property,
+shaped like zigbee2mqtt's:
+
+```json
+{
+  "update": {
+    "state": "available",
+    "installed_version": 16777235,
+    "installed_version_string": "1.0.3",
+    "latest_version": 16777236,
+    "latest_version_string": "1.0.4",
+    "latest_source": "main-net-dcl",
+    "latest_release_notes": "https://example.com/notes",
+    "progress": 42
+  }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `state` | `idle`, `available` (a newer firmware is known) or `updating` |
+| `installed_version` / `installed_version_string` | BasicInformation `0/40/9` / `0/40/10`. The `_string` variant falls back to the numeric version, so it is never null while the version is known |
+| `latest_version` / `latest_version_string` | Target of the last check. **Equal to the installed version when nothing is pending** — that is what tells Home Assistant the node is up to date |
+| `latest_source` | `main-net-dcl`, `test-net-dcl` or `local`. Anything but `main-net-dcl` is an uncertified image |
+| `latest_release_notes` | Release notes URL, when the DCL entry carries one |
+| `progress` | Download progress in percent, present only while `updating` |
+
+`state` is derived from the node's own UpdateState (`0/42/2`): anything other than Idle/Unknown is
+`updating`. Right after an install request the bridge reports `updating` for up to 15 minutes even
+while the node still says Idle, so the Home Assistant install button does not bounce back before the
+device starts downloading. Nothing is persisted: after a bridge restart the state comes from the
+node's attributes again.
+
+`available` requires a completed check. The controller polls the DCL on its own schedule but does not
+expose the result, so the bridge asks per node: 30 s after startup and every 24 h after that, plus on
+demand via `bridge/request/device/ota_update/check`. Unreachable nodes are skipped, and there is a
+5 s gap between nodes so a pass does not burst DCL queries.
+
 ### State refresh triggers
 
 A re-publish happens on any change of `6/0`, `8/0`, `768/{0,1,3,4,7,8,16384}`, `1030/0`, `1024/0`,
-`1026/0`, `1029/0`, `47/12`, `69/0`, and on node add, structure change, availability change and
-`<prefix>/<node>/get`.
+`1026/0`, `1029/0`, `69/0`, `47/12`, `42/{2,3}`, `40/{9,10}`, and on node add, structure change,
+availability change, a firmware check/install command and `<prefix>/<node>/get`.
+
+`47/12`, `42/{2,3}` and `40/{9,10}` back device-level properties (`battery`, `update`), so a change
+on any endpoint re-publishes the state without being mistaken for a structure change.
 
 ### Availability
 
@@ -347,6 +391,8 @@ numbers). For every other command a payload that is not a JSON object is rejecte
 | `device/interview` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/rename` | `{"id": <node id>, "name": "…"}` | `{"id": <node id>, "name": "…"}` |
 | `device/share` | `{"id": <node id>}` | `{"id": <node id>, "manual_code": "…", "qr_code": "MT:…"}` |
+| `device/ota_update/check` | `{"id": <node id>}` | `{"id": …, "update_available": true, "latest_version": 16777236, "latest_version_string": "1.0.4", "latest_source": "main-net-dcl", "latest_release_notes": "…"}` |
+| `device/ota_update/update` | `{"id": <node id>, "software_version": 16777236}` | `{"id": …, "software_version": 16777236, "software_version_string": "1.0.4"}` |
 
 **commission** mirrors the WebSocket `commission_with_code` orchestration:
 
@@ -387,6 +433,28 @@ uses when no `id` is given. Named credential lists are WebSocket-only for now.
 
 **device/rename** writes BasicInformation `nodeLabel` (`0/40/5`). **device/share** opens a commissioning
 window and returns the pairing codes for multi-admin sharing.
+
+**device/ota_update/check** queries the DCL and the local image store for a newer firmware, and
+remembers the answer for the node's `update` property. **device/ota_update/update** starts the update;
+`software_version` is optional and defaults to the target of the last check (or of a check run right
+then), which is what Home Assistant's install button needs — it can only send the node id.
+
+Both run at most one operation per node: a request that arrives while a check or install is running for
+that node is rejected. A successful install request only means the update was **queued**; the device
+downloads and applies it asynchronously, and progress shows up in the `update` property. Failure modes
+worth knowing:
+
+- the controller rejects an install while the node reports a non-Idle UpdateState, is offline, or has
+  no known update;
+- a check answers `update_available: false` both when there is genuinely nothing and when the DCL
+  lookup failed — the controller does not distinguish the two;
+- check results are cached by the controller without expiry, so a check can answer from that cache
+  rather than from a fresh DCL query.
+
+> **Not yet verified on real hardware.** The OTA surface is wired to the same controller calls the
+> WebSocket API uses for `check_node_update` / `update_node`, and it is covered by unit tests, but no
+> firmware has been pushed to a device over MQTT yet. Before relying on it, please review whether this
+> topic/payload shape is the right API and run an end-to-end update on a real node.
 
 **restart** exits the process (exit code 1) about 500 ms after answering, so a supervisor with a restart
 policy (systemd `Restart=`, Docker `restart:`) brings the server back up. Without such a supervisor the
@@ -441,6 +509,7 @@ BasicInformation carries no product name.
 | TemperatureMeasurement | `sensor`, `°C`, measurement |
 | RelativeHumidityMeasurement | `sensor`, `%`, measurement |
 | PowerSource `47/12` | `sensor`, `%`, battery, diagnostic (device-level) |
+| OtaSoftwareUpdateRequestor `42/2` | `update`, device class `firmware`, config category (device-level). Installs via `payload_install: {"id":"<node>"}`; versions are piped through `tojson` so an unknown version stays JSON `null` instead of Jinja's `None` |
 
 All device entities use `availability_mode: all` over two topics — `<prefix>/bridge/state` and
 `<prefix>/<node>/availability` — so entities go unavailable both when the bridge is down and when the node
@@ -456,9 +525,10 @@ entities accept commands but do not reflect state. Single-light devices — the 
 
 Mapped today: OnOff (6), LevelControl (8), ColorControl (768), IlluminanceMeasurement (1024),
 TemperatureMeasurement (1026), RelativeHumidityMeasurement (1029), OccupancySensing (1030),
-BooleanState (69), PowerSource (47, battery percentage) and BasicInformation (40, device metadata).
+BooleanState (69), PowerSource (47, battery percentage), OtaSoftwareUpdateRequestor (42, firmware
+updates) and BasicInformation (40, device metadata and firmware version).
 
-Everything else — including WindowCovering, DoorLock, Thermostat, scenes/groups, OTA and diagnostics — is
+Everything else — including WindowCovering, DoorLock, Thermostat, scenes/groups and diagnostics — is
 only reachable through the [WebSocket API](websockets_api.md).
 
 ## Relation to the WebSocket API
@@ -469,7 +539,8 @@ only reachable through the [WebSocket API](websockets_api.md).
 | Device control | `<node>/set` with high-level properties | `device_command`, `write_attribute` (raw cluster commands) |
 | Commissioning | `bridge/request/commission` (`default` credentials) | `commission_with_code`, `commission_on_network`, named credential lists |
 | Node management | `bridge/request/device/{remove,interview,rename,share}` | `remove_node`, `interview_node`, `write_attribute`, `open_commissioning_window` |
-| Diagnostics, OTA, ACL, bindings, ICD, topology | not exposed | full command set |
+| Firmware updates | `bridge/request/device/ota_update/{check,update}` + the `update` state property | `check_node_update`, `update_node`, `initiate_ota_upload` (local image upload) |
+| Diagnostics, ACL, bindings, ICD, topology | not exposed | full command set |
 | Schema/versioning | none — the topic layout is versioned by the release | `schema_version` negotiation |
 
 Both APIs act on the same controller and the same fabric. A change made over MQTT shows up in the

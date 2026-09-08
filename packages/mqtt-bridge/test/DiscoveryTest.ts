@@ -191,4 +191,27 @@ describe("Discovery", () => {
         expect(config.device_class).to.equal("battery");
         expect(config.entity_category).to.equal("diagnostic");
     });
+
+    it("adds a firmware update entity for nodes with the OTA Requestor cluster", () => {
+        const attributes = { "1/6/0": true, "0/42/2": 1, "0/40/9": 16777235, "0/40/10": "1.0.3" };
+        const messages = messagesFor(attributes, [1], "8");
+        const update = messages.find(m => m.topic === "homeassistant/update/matter2mqtt_8/update/config");
+        expect(update).to.exist;
+        const config = JSON.parse((update as { payload: string }).payload);
+        expect(config.device_class).to.equal("firmware");
+        expect(config.entity_category).to.equal("config");
+        expect(config.state_topic).to.equal("matter2mqtt/8");
+        expect(config.command_topic).to.equal("matter2mqtt/bridge/request/device/ota_update/update");
+        expect(config.payload_install).to.equal('{"id":"8"}');
+        expect(config.unique_id).to.equal("matter2mqtt_8_update");
+        // Versions go through tojson so an unknown version stays JSON null
+        expect(config.value_template).to.contain("installed_version_string'] | tojson");
+        expect(config.value_template).to.contain("'progress', 'null'");
+        expect(config.value_template).to.contain("== 'updating'");
+    });
+
+    it("omits the update entity for nodes without OTA support", () => {
+        const messages = messagesFor(NIGHT_LIGHT, [1, 2, 3]);
+        expect(messages.some(m => m.topic.includes("/update/"))).to.equal(false);
+    });
 });

@@ -8,6 +8,7 @@ import type { AttributesData } from "@matter-server/ws-controller";
 import { COMMISSION_MODE_NAMES } from "./BridgeCommands.js";
 import { endpointPropertyKeysOf, propertyNameResolver, sensorPresenceOf } from "./DeviceState.js";
 import type { LightCapabilities } from "./LightCapabilities.js";
+import { supportsOta } from "./OtaState.js";
 import type { Topics } from "./Topics.js";
 
 /** Home Assistant MQTT discovery prefix (HA default). */
@@ -354,6 +355,27 @@ export function discoveryMessagesOf(
                 value_template: `{{ value_json.${key} }}`,
             });
         }
+    }
+
+    // Device-level firmware update entity, for nodes exposing the OTA Requestor cluster.
+    // The versions are published as strings and piped through tojson so an unknown version stays
+    // JSON null instead of Jinja's "None".
+    if (supportsOta(attributes)) {
+        add("update", "update", {
+            ...common,
+            name: "Firmware",
+            unique_id: `${uidBase}_update`,
+            device_class: "firmware",
+            entity_category: "config",
+            command_topic: `${topics.prefix}/bridge/request/device/ota_update/update`,
+            payload_install: JSON.stringify({ id: info.device }),
+            value_template:
+                `{"installed_version":{{ value_json['update']['installed_version_string'] | tojson }},` +
+                `"latest_version":{{ value_json['update']['latest_version_string'] | tojson }},` +
+                `"update_percentage":{{ value_json['update'].get('progress', 'null') }},` +
+                `"in_progress":{{ (value_json['update']['state'] == 'updating') | lower }},` +
+                `"release_url":{{ value_json['update']['latest_release_notes'] | tojson }}}`,
+        });
     }
 
     // Device-level battery (first PowerSource occurrence)

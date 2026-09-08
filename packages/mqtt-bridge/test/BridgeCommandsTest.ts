@@ -4,12 +4,25 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { UpdateSource, type MatterSoftwareVersion } from "@matter-server/ws-controller";
 import { executeBridgeCommand, type BridgeCommandContext } from "../src/BridgeCommands.js";
+import { OtaTracker } from "../src/OtaState.js";
 
 interface Call {
     method: string;
     args: unknown[];
 }
+
+const UPDATE: MatterSoftwareVersion = {
+    vid: 4891,
+    pid: 1,
+    software_version: 16777236,
+    software_version_string: "1.0.4",
+    min_applicable_software_version: 0,
+    max_applicable_software_version: 16777235,
+    release_notes_url: "https://example.com/notes",
+    update_source: UpdateSource.MAIN_NET_DCL,
+};
 
 function mockContext() {
     const calls: Call[] = [];
@@ -28,7 +41,10 @@ function mockContext() {
             interviewNode: record("interviewNode"),
             handleWriteAttribute: record("handleWriteAttribute", { status: 0 }),
             openCommissioningWindow: record("openCommissioningWindow", { manualCode: "123", qrCode: "MT:X" }),
+            checkNodeUpdate: record("checkNodeUpdate", UPDATE),
+            updateNode: record("updateNode", UPDATE),
         },
+        ota: new OtaTracker(),
         config: {
             setWifiCredentials: record("setWifiCredentials"),
             setThreadCredentials: record("setThreadCredentials"),
@@ -227,5 +243,104 @@ describe("BridgeCommands", () => {
         (ctx.commandHandler as unknown as Record<string, unknown>).removeNode = () => Promise.reject(new Error("boom"));
         const response = await executeBridgeCommand("device/remove", '{"id":8,"transaction":3}', ctx);
         expect(response).to.deep.equal({ status: "error", error: "boom", transaction: 3 });
+    });
+
+    it("reports an available firmware update and remembers it", async () => {
+        const { ctx, calls } = mockContext();
+        const response = await executeBridgeCommand("device/ota_update/check", '{"id":8}', ctx);
+        expect(response.status).to.equal("ok");
+        expect(response.data).to.deep.equal({
+            id: 8,
+            update_available: true,
+            latest_version: 16777236,
+            latest_version_string: "1.0.4",
+            latest_source: "main-net-dcl",
+            latest_release_notes: "https://example.com/notes",
+        });
+        expect(calls.find(c => c.method === "checkNodeUpdate")?.args[0]).to.equal(8n);
+        expect(ctx.ota?.availableUpdate("8")).to.deep.equal(UPDATE);
+    });
+
+    it("reports no firmware update and forgets a previous one", async () => {
+        const { ctx } = mockContext();
+        ctx.ota?.setAvailableUpdate("8", UPDATE);
+        (ctx.commandHandler as unknown as Record<string, unknown>).checkNodeUpdate = () => Promise.resolve(null);
+        const response = await executeBridgeCommand("device/ota_update/check", '{"id":8}', ctx);
+        expect(response.data).to.deep.equal({
+            id: 8,
+            update_available: false,
+            latest_version: null,
+            latest_version_string: null,
+            latest_source: null,
+            latest_release_notes: null,
+        });
+        expect(ctx.ota?.availableUpdate("8")).to.equal(undefined);
+    });
+
+    it("resolves the update target from a check when the request carries only the node id", async () => {
+        const { ctx, calls } = mockContext();
+        const response = await executeBridgeCommand("device/ota_update/update", '{"id":"8"}', ctx);
+        expect(response.status).to.equal("ok");
+        expect(response.data).to.deep.equal({ id: "8", software_version: 16777236, software_version_string: "1.0.4" });
+        expect(calls.find(c => c.method === "updateNode")?.args).to.deep.equal([8n, 16777236]);
+    });
+
+    it("reuses a stored check result instead of querying again", async () => {
+        const { ctx, calls } = mockContext();
+        ctx.ota?.setAvailableUpdate("8", UPDATE);
+        await executeBridgeCommand("device/ota_update/update", '{"id":8}', ctx);
+        expect(calls.filter(c => c.method === "checkNodeUpdate")).to.have.length(0);
+        expect(calls.find(c => c.method === "updateNode")?.args).to.deep.equal([8n, 16777236]);
+    });
+
+    it("accepts an explicit target version, including as a string", async () => {
+        const { ctx, calls } = mockContext();
+        await executeBridgeCommand("device/ota_update/update", '{"id":8,"software_version":"16777240"}', ctx);
+        expect(calls.find(c => c.method === "updateNode")?.args).to.deep.equal([8n, 16777240]);
+        const invalid = await executeBridgeCommand(
+            "device/ota_update/update",
+            '{"id":8,"software_version":"latest"}',
+            ctx,
+        );
+        expect(invalid.status).to.equal("error");
+        expect(invalid.error).to.contain("software_version");
+    });
+
+    it("errors when no update is available to install", async () => {
+        const { ctx, calls } = mockContext();
+        (ctx.commandHandler as unknown as Record<string, unknown>).checkNodeUpdate = () => Promise.resolve(null);
+        const response = await executeBridgeCommand("device/ota_update/update", '{"id":8}', ctx);
+        expect(response.status).to.equal("error");
+        expect(response.error).to.contain("no update available");
+        expect(calls.filter(c => c.method === "updateNode")).to.have.length(0);
+    });
+
+    it("refuses a second OTA operation while one is running", async () => {
+        const { ctx } = mockContext();
+        const pending = new Array<(update: MatterSoftwareVersion) => void>();
+        (ctx.commandHandler as unknown as Record<string, unknown>).checkNodeUpdate = () =>
+            new Promise<MatterSoftwareVersion>(resolve => pending.push(resolve));
+        const first = executeBridgeCommand("device/ota_update/check", '{"id":8}', ctx);
+        const second = await executeBridgeCommand("device/ota_update/update", '{"id":8}', ctx);
+        expect(second.status).to.equal("error");
+        expect(second.error).to.contain("already running");
+        // A different node is unaffected
+        const other = executeBridgeCommand("device/ota_update/check", '{"id":9}', ctx);
+        for (const resolve of pending) {
+            resolve(UPDATE);
+        }
+        expect((await first).status).to.equal("ok");
+        expect((await other).status).to.equal("ok");
+        // The guard is released again
+        (ctx.commandHandler as unknown as Record<string, unknown>).checkNodeUpdate = () => Promise.resolve(UPDATE);
+        expect((await executeBridgeCommand("device/ota_update/check", '{"id":8}', ctx)).status).to.equal("ok");
+    });
+
+    it("reports OTA commands as unavailable without a tracker", async () => {
+        const { ctx } = mockContext();
+        ctx.ota = undefined;
+        const response = await executeBridgeCommand("device/ota_update/check", '{"id":8}', ctx);
+        expect(response.status).to.equal("error");
+        expect(response.error).to.contain("not available");
     });
 });

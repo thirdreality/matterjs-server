@@ -4,7 +4,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { deviceStateOf, endpointStateOf, isStateAttribute, relevantEndpointsOf } from "../src/DeviceState.js";
+import {
+    deviceStateOf,
+    endpointStateOf,
+    isDeviceLevelStateAttribute,
+    isStateAttribute,
+    relevantEndpointsOf,
+} from "../src/DeviceState.js";
 import { lightCapabilitiesOf } from "../src/LightCapabilities.js";
 import { splitByEndpointSuffix } from "../src/SetCommands.js";
 
@@ -49,6 +55,23 @@ describe("DeviceState", () => {
             expect(isStateAttribute(1030, 0)).to.equal(true);
             expect(isStateAttribute(6, 16384)).to.equal(false);
             expect(isStateAttribute(40, 1)).to.equal(false);
+        });
+
+        it("includes the OTA and version attributes behind the update property", () => {
+            expect(isStateAttribute(42, 2)).to.equal(true);
+            expect(isStateAttribute(42, 3)).to.equal(true);
+            expect(isStateAttribute(40, 9)).to.equal(true);
+            expect(isStateAttribute(40, 10)).to.equal(true);
+        });
+    });
+
+    describe("isDeviceLevelStateAttribute", () => {
+        it("separates device-wide properties from per-endpoint ones", () => {
+            expect(isDeviceLevelStateAttribute(47, 12)).to.equal(true);
+            expect(isDeviceLevelStateAttribute(42, 2)).to.equal(true);
+            expect(isDeviceLevelStateAttribute(40, 9)).to.equal(true);
+            expect(isDeviceLevelStateAttribute(6, 0)).to.equal(false);
+            expect(isDeviceLevelStateAttribute(1030, 0)).to.equal(false);
         });
     });
 

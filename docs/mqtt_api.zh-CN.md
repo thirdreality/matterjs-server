@@ -175,6 +175,7 @@ node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_
 | `humidity` | RelativeHumidityMeasurement `1029/0` | %，`raw/100` 保留 2 位小数 |
 | `contact` | BooleanState `69/0` | `true` = 闭合，`false` = 打开（zigbee2mqtt 语义） |
 | `battery` | PowerSource `47/12` | %，`raw/2`（BatPercentRemaining 以 0.5% 为单位）。设备级：取第一个 PowerSource |
+| `update` | OtaSoftwareUpdateRequestor `42/{2,3}` + BasicInformation `40/{9,10}` | 固件更新状态对象，设备级 —— 见[固件更新](#固件更新) |
 
 `hs` 模式下 `color` 带 zigbee2mqtt 风格的长键 `hue`（0–360）与 `saturation`（0–100）。两者都已知时，还会额外附上
 短键 `h`/`s` 以及换算出的 `x`/`y`，因为 Home Assistant 的 JSON light schema 只读短键。endpoint 支持 EnhancedHue
@@ -195,10 +196,50 @@ node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_
 
 后缀由 endpoint 的*能力*决定，而不是由当前值决定，所以在值还未知时属性名也是稳定的。
 
+### 固件更新
+
+暴露 OTA Requestor cluster 的节点（存在 `0/42/2`）会带一个设备级的 `update` 属性，形状对齐 zigbee2mqtt：
+
+```json
+{
+  "update": {
+    "state": "available",
+    "installed_version": 16777235,
+    "installed_version_string": "1.0.3",
+    "latest_version": 16777236,
+    "latest_version_string": "1.0.4",
+    "latest_source": "main-net-dcl",
+    "latest_release_notes": "https://example.com/notes",
+    "progress": 42
+  }
+}
+```
+
+| 字段 | 含义 |
+|------|------|
+| `state` | `idle`、`available`（已知有更新的固件）或 `updating` |
+| `installed_version` / `installed_version_string` | BasicInformation `0/40/9` / `0/40/10`。`_string` 变体在字符串属性缺失时回落到数字版本，因此只要版本已知就不会是 null |
+| `latest_version` / `latest_version_string` | 上次检查得到的目标版本。**没有待装更新时等于已装版本** —— Home Assistant 就是靠这个判断"已是最新" |
+| `latest_source` | `main-net-dcl`、`test-net-dcl` 或 `local`。非 `main-net-dcl` 意味着未认证镜像 |
+| `latest_release_notes` | DCL 条目带 release notes 时给出其 URL |
+| `progress` | 下载进度百分比，仅在 `updating` 时出现 |
+
+`state` 由节点自己的 UpdateState（`0/42/2`）推导：除 Idle/Unknown 之外的任何值都是 `updating`。发出安装请求后
+的 15 分钟内，即使节点还报 Idle，桥也会报 `updating` —— 否则 Home Assistant 的安装按钮会在设备真正开始下载
+之前就弹回去。这些都不持久化：桥重启后状态重新从节点属性推导。
+
+`available` 需要一次完成的检查。控制器自己会按计划轮询 DCL，但不把结果对外暴露，所以桥必须按节点主动问：
+启动后 30 秒一轮，之后每 24 小时一轮，另外可通过 `bridge/request/device/ota_update/check` 随时触发。不可达的
+节点会跳过，节点之间间隔 5 秒，避免一轮检查把 DCL 查询打成一阵爆发。
+
 ### 触发状态重发的条件
 
 以下属性任一变化都会重发：`6/0`、`8/0`、`768/{0,1,3,4,7,8,16384}`、`1030/0`、`1024/0`、`1026/0`、`1029/0`、
-`47/12`、`69/0`；此外节点新增、结构变化、可用性变化以及收到 `<prefix>/<node>/get` 时也会重发。
+`69/0`、`47/12`、`42/{2,3}`、`40/{9,10}`；此外节点新增、结构变化、可用性变化、固件检查/安装命令以及收到
+`<prefix>/<node>/get` 时也会重发。
+
+`47/12`、`42/{2,3}`、`40/{9,10}` 支撑的是设备级属性（`battery`、`update`），所以它们无论落在哪个 endpoint 上
+都直接重发状态，不会被误判成结构变化。
 
 ### 可用性
 
@@ -323,6 +364,8 @@ LevelControl 与 ColorControl 命令均带 `optionsMask: 0, optionsOverride: 0` 
 | `device/interview` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/rename` | `{"id": <node id>, "name": "…"}` | `{"id": <node id>, "name": "…"}` |
 | `device/share` | `{"id": <node id>}` | `{"id": <node id>, "manual_code": "…", "qr_code": "MT:…"}` |
+| `device/ota_update/check` | `{"id": <node id>}` | `{"id": …, "update_available": true, "latest_version": 16777236, "latest_version_string": "1.0.4", "latest_source": "main-net-dcl", "latest_release_notes": "…"}` |
+| `device/ota_update/update` | `{"id": <node id>, "software_version": 16777236}` | `{"id": …, "software_version": 16777236, "software_version_string": "1.0.4"}` |
 
 **commission** 与 WebSocket 的 `commission_with_code` 编排一致：
 
@@ -357,6 +400,21 @@ MeshCoP 诊断（见 [Thread Network Diagnostics](websockets_api.md#thread-netwo
 
 **device/rename** 写 BasicInformation 的 `nodeLabel`（`0/40/5`）。**device/share** 打开配网窗口并返回配对码，用于
 多管理员共享。
+
+**device/ota_update/check** 向 DCL 与本地镜像库查询是否有更新的固件，并把结果记下来供该节点的 `update` 属性
+使用。**device/ota_update/update** 启动更新；`software_version` 可省略，省略时取上次检查的目标版本（或当场跑一次
+检查的结果）—— Home Assistant 的安装按钮只能发节点 id，不这样做按钮就是死的。
+
+两个命令对同一节点同时只允许一个操作：该节点正在检查或安装时进来的请求会被直接拒绝。安装请求成功只代表更新
+**已排队**，设备的下载与应用是异步的，进度体现在 `update` 属性上。需要知道的失败情形：
+
+- 节点报非 Idle 的 UpdateState、离线、或没有已知更新时，控制器会拒绝安装；
+- 检查回 `update_available: false` 既可能是真的没有更新，也可能是 DCL 查询失败 —— 控制器不区分这两种情况；
+- 检查结果被控制器无过期地缓存，所以一次检查可能是从该缓存回答的，而不是新的 DCL 查询。
+
+> **尚未在真实硬件上验证。** OTA 这套接的是 WebSocket API 走 `check_node_update` / `update_node` 时用的同一批
+> 控制器调用，也有单测覆盖，但还没有真正通过 MQTT 给设备推过一次固件。在依赖它之前，请先评估这套 topic/载荷
+> 形状是不是合理的 API，并在真实节点上跑一次端到端更新。
 
 **restart** 在回响应约 500 ms 后退出进程（退出码 1），由带重启策略的守护方式（systemd `Restart=`、Docker
 `restart:`）把 server 拉起来。没有这类守护时，server 不会自行恢复。
@@ -409,6 +467,7 @@ discovery 在每次连接以及节点结构变化时重发；消失的实体 top
 | TemperatureMeasurement | `sensor`，`°C`，measurement |
 | RelativeHumidityMeasurement | `sensor`，`%`，measurement |
 | PowerSource `47/12` | `sensor`，`%`，battery，diagnostic（设备级） |
+| OtaSoftwareUpdateRequestor `42/2` | `update`，device class `firmware`，config 分类（设备级）。安装走 `payload_install: {"id":"<node>"}`；版本经 `tojson` 输出，未知版本是 JSON `null` 而不是 Jinja 的 `None` |
 
 所有设备实体都用 `availability_mode: all` 组合两个 topic —— `<prefix>/bridge/state` 与
 `<prefix>/<node>/availability` —— 所以桥掉线和节点离线都会让实体变为不可用。实体的 `value_template` 用的是解析
@@ -422,9 +481,10 @@ discovery 在每次连接以及节点结构变化时重发；消失的实体 top
 
 已映射：OnOff（6）、LevelControl（8）、ColorControl（768）、IlluminanceMeasurement（1024）、
 TemperatureMeasurement（1026）、RelativeHumidityMeasurement（1029）、OccupancySensing（1030）、
-BooleanState（69）、PowerSource（47，电量百分比）、BasicInformation（40，设备元信息）。
+BooleanState（69）、PowerSource（47，电量百分比）、OtaSoftwareUpdateRequestor（42，固件更新）、
+BasicInformation（40，设备元信息与固件版本）。
 
-其余能力 —— 包括 WindowCovering、DoorLock、Thermostat、场景/分组、OTA 与诊断 —— 目前只能通过
+其余能力 —— 包括 WindowCovering、DoorLock、Thermostat、场景/分组与诊断 —— 目前只能通过
 [WebSocket API](websockets_api.md) 访问。
 
 ## 与 WebSocket API 的关系
@@ -435,7 +495,8 @@ BooleanState（69）、PowerSource（47，电量百分比）、BasicInformation�
 | 设备控制 | `<node>/set`，高层属性 | `device_command`、`write_attribute`（原始 cluster 命令） |
 | 配网 | `bridge/request/commission`（`default` 凭据） | `commission_with_code`、`commission_on_network`，支持命名凭据列表 |
 | 节点管理 | `bridge/request/device/{remove,interview,rename,share}` | `remove_node`、`interview_node`、`write_attribute`、`open_commissioning_window` |
-| 诊断、OTA、ACL、binding、ICD、拓扑 | 未暴露 | 完整命令集 |
+| 固件更新 | `bridge/request/device/ota_update/{check,update}` + `update` 状态属性 | `check_node_update`、`update_node`、`initiate_ota_upload`（本地镜像上传） |
+| 诊断、ACL、binding、ICD、拓扑 | 未暴露 | 完整命令集 |
 | Schema / 版本协商 | 无 —— topic 布局随发布版本演进 | `schema_version` 协商 |
 
 两套 API 作用于同一个 controller、同一个 fabric。通过 MQTT 做的变更会出现在 WebSocket 事件流里，反之亦然。

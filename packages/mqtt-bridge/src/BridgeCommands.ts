@@ -12,6 +12,7 @@ import {
 } from "@matter-server/ws-controller";
 import { Logger, MatterError, NodeId } from "@matter/main";
 import { AttributeId, ClusterId, EndpointNumber } from "@matter/main/types";
+import type { OtaTracker } from "./OtaState.js";
 
 const logger = Logger.get("BridgeCommands");
 
@@ -50,6 +51,8 @@ export interface BridgeCommandContext {
     wifiInput?: { ssid?: string; password?: string };
     /** Selected HA commission mode; applies when a commission request carries only a code. */
     commissionMode?: string;
+    /** OTA bookkeeping shared with the state publisher. */
+    ota?: OtaTracker;
 }
 
 export interface BridgeCommandResponse {
@@ -230,6 +233,69 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
         const { manualCode, qrCode } = await commandHandler.openCommissioningWindow({ nodeId: nodeIdOf(args) });
         return { id: args.id, manual_code: manualCode, qr_code: qrCode };
     },
+
+    /**
+     * Ask the DCL (and the local image store) whether a firmware update exists for a node.
+     * The result is remembered so the device's `update` state property can report it.
+     */
+    "device/ota_update/check": async (args, ctx) => {
+        const nodeId = nodeIdOf(args);
+        const device = nodeId.toString();
+        const ota = requireOta(ctx);
+        // A DCL round trip per request: refuse to pile them up on one node (zigbee2mqtt semantics)
+        if (!ota.begin(device)) {
+            throw new Error(`an OTA check or update is already running for node ${device}`);
+        }
+        try {
+            const update = await ctx.commandHandler.checkNodeUpdate(nodeId);
+            ota.setAvailableUpdate(device, update);
+            return {
+                id: args.id,
+                update_available: update !== null,
+                latest_version: update?.software_version ?? null,
+                latest_version_string: update?.software_version_string ?? null,
+                latest_source: update?.update_source ?? null,
+                latest_release_notes: update?.release_notes_url ?? null,
+            };
+        } finally {
+            ota.end(device);
+        }
+    },
+
+    /**
+     * Start a firmware update. `software_version` is optional: without it the target comes from the
+     * last check, or from a check run now — which is what Home Assistant's install button needs,
+     * since it can only send the node id.
+     */
+    "device/ota_update/update": async (args, ctx) => {
+        const nodeId = nodeIdOf(args);
+        const device = nodeId.toString();
+        const ota = requireOta(ctx);
+        if (!ota.begin(device)) {
+            throw new Error(`an OTA check or update is already running for node ${device}`);
+        }
+        try {
+            let target = softwareVersionOf(args.software_version);
+            if (target === undefined) {
+                const available =
+                    ota.availableUpdate(device) ?? (await ctx.commandHandler.checkNodeUpdate(nodeId)) ?? undefined;
+                if (available === undefined) {
+                    throw new Error("no update available for this node");
+                }
+                ota.setAvailableUpdate(device, available);
+                target = available.software_version;
+            }
+            const started = await ctx.commandHandler.updateNode(nodeId, target);
+            ota.markUpdateRequested(device);
+            return {
+                id: args.id,
+                software_version: target,
+                software_version_string: started?.software_version_string ?? null,
+            };
+        } finally {
+            ota.end(device);
+        }
+    },
 };
 
 export const BRIDGE_COMMAND_NAMES: readonly string[] = Object.keys(COMMANDS);
@@ -241,6 +307,9 @@ export const CREDENTIAL_COMMAND_NAMES: readonly string[] = [
     "wifi_credentials",
     "thread_dataset",
 ];
+
+/** Bridge commands that change a device's published `update` property. */
+export const OTA_COMMAND_NAMES: readonly string[] = ["device/ota_update/check", "device/ota_update/update"];
 
 /**
  * The HA bridge card enters SSID and password through two single-value text entities;
@@ -262,6 +331,25 @@ async function updateWifiInput(
     await ctx.config.setWifiCredentials(ConfigStorage.DEFAULT_CREDENTIAL_ID, ssid, password);
     ctx.wifiInput = {};
     return { ssid };
+}
+
+function requireOta(ctx: BridgeCommandContext): OtaTracker {
+    if (ctx.ota === undefined) {
+        throw new Error("OTA commands are not available");
+    }
+    return ctx.ota;
+}
+
+/** Optional target version; Home Assistant templates deliver numbers as strings. */
+function softwareVersionOf(value: unknown): number | undefined {
+    if (value === undefined || value === null || value === "") {
+        return undefined;
+    }
+    const version = typeof value === "string" ? parseInt(value, 10) : value;
+    if (typeof version !== "number" || !Number.isInteger(version) || version < 0) {
+        throw new Error(`invalid "software_version" ${JSON.stringify(value)}`);
+    }
+    return version;
 }
 
 function nodeIdOf(args: Record<string, unknown>): NodeId {
