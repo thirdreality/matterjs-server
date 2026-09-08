@@ -177,10 +177,20 @@ node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_
 | `battery` | PowerSource `47/12` | %，`raw/2`（BatPercentRemaining 以 0.5% 为单位）。设备级：取第一个 PowerSource |
 | `update` | OtaSoftwareUpdateRequestor `42/{2,3}` + BasicInformation `40/{9,10}` | 固件更新状态对象，设备级 —— 见[固件更新](#固件更新) |
 
-`hs` 模式下 `color` 带 zigbee2mqtt 风格的长键 `hue`（0–360）与 `saturation`（0–100）。两者都已知时，还会额外附上
-短键 `h`/`s` 以及换算出的 `x`/`y`，因为 Home Assistant 的 JSON light schema 只读短键。endpoint 支持 EnhancedHue
-特性时，优先用 `enhancedCurrentHue`（`768/16384`）而不是 `currentHue`。`xy` 模式下 `color` 为 `{x, y}`，各自
-`raw/65535` 保留 4 位小数。
+`color` 会在各种表示法之间保持一致，做法同 zigbee2mqtt 的 `syncColorState`：无论 endpoint 报告的是哪种模式，
+其余表示法都由它推导出来，这样消费方不会读到上一个模式留下的过期值。
+
+| 报告的模式 | `color` 内容 | `color_temp` |
+|-----------|-------------|--------------|
+| `hs` | `hue`（0–360）与 `saturation`（0–100），外加短键 `h`/`s` 和推导出的 `x`/`y` | 由当前颜色推导 |
+| `xy` | `x`/`y`（各为 `raw/65535`，保留 4 位小数），外加由其推导的 `hue`/`saturation`/`h`/`s` | 由当前颜色推导 |
+| `color_temp` | 由 mireds 推导出的 `x`/`y` 与 `hue`/`saturation`/`h`/`s` | 设备报告的 mireds |
+
+之所以要发短键，是因为 Home Assistant 的 JSON light schema 只读短键，而它的色盘读 `x`/`y`。endpoint 支持
+EnhancedHue 特性时，优先用 `enhancedCurrentHue`（`768/16384`）而不是 `currentHue`。推导出的属性只会在 endpoint
+确实具备对应特性时出现（唯一的例外是 `hs` 模式下的 `x`/`y`，它们为 Home Assistant 无条件发布），推导出的
+`color_temp` 会被裁剪到 endpoint 的物理 mireds 范围内。从一个高饱和度的颜色推导色温本身就是近似的 —— 这种颜色
+离普朗克轨迹很远 —— 但 zigbee2mqtt 报告的也是同样的值。
 
 只有 endpoint 确实暴露了对应 cluster **且** 已缓存到值时，属性才会出现。合并结果为空对象时不发布状态 topic。
 
@@ -376,7 +386,10 @@ LevelControl 与 ColorControl 命令均带 `optionsMask: 0, optionsOverride: 0` 
 
 ### `<prefix>/<node>/get`
 
-从属性缓存重发 `<prefix>/<node>`。载荷被忽略；两级形式里的 `<endpoint>` 段也被忽略 —— `get` 总是重发整个设备状态。
+向设备读取状态属性，然后把结果发布到 `<prefix>/<node>`，语义与 zigbee2mqtt 的 `get` 一致。只请求该节点已知拥有
+的属性路径。读到的值用于本次发布，但不会写回订阅缓存；节点不可达或读取失败时，回落为发布缓存中的状态。
+
+载荷被忽略；两级形式里的 `<endpoint>` 段也被忽略 —— `get` 总是重发整个设备状态。
 
 ### 错误处理
 

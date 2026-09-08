@@ -185,11 +185,23 @@ built from the controller's attribute cache, so it is available without an extra
 | `battery` | PowerSource `47/12` | %, `raw/2` (BatPercentRemaining is in half percent). Device-level: the first PowerSource occurrence wins |
 | `update` | OtaSoftwareUpdateRequestor `42/{2,3}` + BasicInformation `40/{9,10}` | Firmware update state object, device-level — see [Firmware Updates](#firmware-updates) |
 
-In `hs` mode `color` carries the zigbee2mqtt-style long keys `hue` (0–360) and `saturation` (0–100). When
-both are known, the short keys `h`/`s` and the derived `x`/`y` are added as well, because Home Assistant's
-JSON light schema only reads the short keys. `enhancedCurrentHue` (`768/16384`) is preferred over
-`currentHue` when the endpoint supports the EnhancedHue feature. In `xy` mode `color` is `{x, y}`, each
-`raw/65535` rounded to 4 decimals.
+`color` is kept consistent across representations, the way zigbee2mqtt's `syncColorState` does: whichever
+mode the endpoint reports, the others are derived from it, so a consumer never reads a value left over
+from a previous mode.
+
+| Reported mode | `color` contents | `color_temp` |
+|---------------|------------------|--------------|
+| `hs` | `hue` (0–360) and `saturation` (0–100), plus the short keys `h`/`s` and the derived `x`/`y` | Derived from the current color |
+| `xy` | `x`/`y` (each `raw/65535`, 4 decimals), plus `hue`/`saturation`/`h`/`s` derived from them | Derived from the current color |
+| `color_temp` | `x`/`y` and `hue`/`saturation`/`h`/`s` derived from the mireds | The reported mireds |
+
+Short keys are shipped because Home Assistant's JSON light schema only reads those, and its color wheel
+reads `x`/`y`. `enhancedCurrentHue` (`768/16384`) is preferred over `currentHue` when the endpoint
+supports the EnhancedHue feature. Derived properties only appear for features the endpoint actually has
+(the one exception is `x`/`y` in `hs` mode, which are always published for Home Assistant), and a derived
+`color_temp` is clamped to the endpoint's physical mireds range. Deriving a color temperature from a
+saturated color is inherently approximate — such a color is nowhere near the Planckian locus — but this is
+what zigbee2mqtt reports too.
 
 Properties are only present when the endpoint actually exposes the cluster **and** a value is cached.
 The state topic is not published while the resulting object would be empty.
@@ -406,8 +418,13 @@ remaining ones.
 
 ### `<prefix>/<node>/get`
 
-Re-publishes `<prefix>/<node>` from the attribute cache. The payload is ignored, and so is the
-`<endpoint>` segment on the two-level form — `get` always re-publishes the full device state.
+Reads the state attributes from the device and publishes the result on `<prefix>/<node>`, following
+zigbee2mqtt's `get` semantics. Only the paths the node is known to have are requested. The read result
+is used for that publish but does not replace the subscription cache; an unreachable node or a failing
+read falls back to publishing what the cache holds.
+
+The payload is ignored, and so is the `<endpoint>` segment on the two-level form — `get` always
+re-publishes the full device state.
 
 ### Errors
 

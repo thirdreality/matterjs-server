@@ -5,7 +5,7 @@
  */
 
 import { parseColorInput } from "../src/ColorInput.js";
-import { hexToRgb, hslToHsv, hsvToXY, rgbToHsv, rgbToXY, xyToHsv } from "../src/ColorMath.js";
+import { hexToRgb, hslToHsv, hsvToXY, miredsToXY, rgbToHsv, rgbToXY, xyToHsv, xyToMireds } from "../src/ColorMath.js";
 
 describe("parseColorInput", () => {
     it("takes xy first, as zigbee2mqtt does", () => {
@@ -124,6 +124,26 @@ describe("ColorMath", () => {
             expect(delta, `hue ${hue}`).to.be.lessThan(3);
             expect(recovered.saturation, `hue ${hue}`).to.be.greaterThan(90);
         }
+    });
+
+    it("round-trips mireds through xy", () => {
+        for (const mireds of [153, 250, 370, 454, 500]) {
+            const recovered = xyToMireds(miredsToXY(mireds));
+            expect(Math.abs(recovered - mireds), `${mireds} mireds`).to.be.lessThan(mireds * 0.05);
+        }
+    });
+
+    it("places known color temperatures on the Planckian locus", () => {
+        // 6500 K (154 mireds) blackbody is (0.3135, 0.3237) - close to but not the D65 daylight
+        // point (0.3128, 0.3290), which sits slightly off the blackbody locus
+        const cool = miredsToXY(154);
+        expect(cool.x).to.be.closeTo(0.3135, 0.005);
+        expect(cool.y).to.be.closeTo(0.3237, 0.005);
+        // 2700 K (370 mireds), an incandescent lamp, is a true blackbody radiator
+        const warm = miredsToXY(370);
+        expect(warm.x).to.be.closeTo(0.4593, 0.005);
+        expect(warm.y).to.be.closeTo(0.4106, 0.005);
+        expect(warm.x).to.be.greaterThan(cool.x);
     });
 
     it("keeps white near the D65 center on both paths", () => {

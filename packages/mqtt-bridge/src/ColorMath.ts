@@ -157,3 +157,32 @@ export function xyToRgb({ x, y }: Xy): Rgb {
 export function xyToHsv(xy: Xy): Hsv {
     return rgbToHsv(xyToRgb(xy));
 }
+
+/** Correlated color temperature of an xy point, in mireds (McCamy's approximation, as z2m uses). */
+export function xyToMireds({ x, y }: Xy): number {
+    const n = (x - 0.332) / (0.1858 - y);
+    const kelvin = Math.abs(437 * n ** 3 + 3601 * n ** 2 + 6861 * n + 5517);
+    return Math.round(1e6 / kelvin);
+}
+
+/**
+ * Mireds to the xy point on the Planckian locus.
+ *
+ * zigbee2mqtt interpolates a 1000-entry kelvin/xy table; this is the standard CIE 1931 cubic
+ * approximation (Kim et al.) instead, which stays within ~0.001 of it over 1667-25000 K and keeps the
+ * bridge free of a lookup table.
+ */
+export function miredsToXY(mireds: number): Xy {
+    const kelvin = clamp(1e6 / mireds, 1667, 25000);
+    const x =
+        kelvin <= 4000
+            ? -0.2661239e9 / kelvin ** 3 - 0.2343589e6 / kelvin ** 2 + (0.8776956e3 / kelvin + 0.17991)
+            : -3.0258469e9 / kelvin ** 3 + 2.1070379e6 / kelvin ** 2 + (0.2226347e3 / kelvin + 0.24039);
+    const y =
+        kelvin <= 2222
+            ? -1.1063814 * x ** 3 - 1.3481102 * x ** 2 + 2.18555832 * x - 0.20219683
+            : kelvin <= 4000
+              ? -0.9549476 * x ** 3 - 1.37418593 * x ** 2 + 2.09137015 * x - 0.16748867
+              : 3.081758 * x ** 3 - 5.8733867 * x ** 2 + 3.75112997 * x - 0.37001483;
+    return { x: round4(x), y: round4(y) };
+}

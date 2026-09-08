@@ -88,20 +88,38 @@ describe("DeviceState", () => {
             expect(state.state).to.equal("ON");
             expect(state.brightness).to.equal(200);
             expect(state.color_mode).to.equal("hs");
-            expect(state.color_temp).to.equal(250);
+            // color_temp is derived from the current color rather than left at the stale attribute
+            // from a previous color_temp mode (zigbee2mqtt syncColorState). A saturated blue sits far
+            // off the Planckian locus, so its correlated temperature is only nominally meaningful.
+            expect(state.color_temp).to.equal(574);
         });
 
-        it("uses xy representation in xy color mode", () => {
+        it("derives hue/saturation and color_temp in xy color mode", () => {
             const attributes = { ...NIGHT_LIGHT, "1/768/8": 1 };
             const state = endpointStateOf(attributes, 1, capsOf(1));
             expect(state.color_mode).to.equal("xy");
-            expect(state.color).to.deep.equal({ x: 0.3805, y: 0.3769 });
+            expect(state.color).to.deep.equal({ x: 0.3805, y: 0.3769, hue: 40, saturation: 50, h: 40, s: 50 });
+            expect(state.color_temp).to.be.a("number");
         });
 
-        it("reports color_temp mode without a color object", () => {
+        it("derives a color from the mireds in color_temp mode", () => {
             const attributes = { ...NIGHT_LIGHT, "1/768/8": 2 };
             const state = endpointStateOf(attributes, 1, capsOf(1));
             expect(state.color_mode).to.equal("color_temp");
+            expect(state.color_temp).to.equal(250);
+            // 250 mireds = 4000 K, on the Planckian locus
+            const color = state.color as Record<string, number>;
+            expect(color.x).to.be.closeTo(0.38, 0.02);
+            expect(color.y).to.be.closeTo(0.377, 0.02);
+            expect(color.h).to.equal(color.hue);
+            expect(color.s).to.equal(color.saturation);
+        });
+
+        it("keeps the raw mireds when the endpoint reports no color mode", () => {
+            const attributes: Record<string, unknown> = { ...NIGHT_LIGHT };
+            delete attributes["1/768/8"];
+            const state = endpointStateOf(attributes, 1, capsOf(1));
+            expect(state.color_mode).to.equal(undefined);
             expect(state.color).to.equal(undefined);
             expect(state.color_temp).to.equal(250);
         });

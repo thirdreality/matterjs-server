@@ -13,7 +13,7 @@ import {
     RelativeHumidityMeasurement,
     TemperatureMeasurement,
 } from "@matter/main/clusters";
-import { hsvToXY } from "./ColorMath.js";
+import { hsvToXY, miredsToXY, xyToHsv, xyToMireds } from "./ColorMath.js";
 import { COLOR_CLUSTER_ID, LEVEL_CLUSTER_ID, ONOFF_CLUSTER_ID, type LightCapabilities } from "./LightCapabilities.js";
 import { BASIC_INFORMATION_CLUSTER_ID, OTA_REQUESTOR_CLUSTER_ID } from "./OtaState.js";
 
@@ -177,6 +177,95 @@ const round = (value: number, digits: number): number => {
 };
 
 /**
+ * The color part of the endpoint state, kept in sync across representations the way zigbee2mqtt's
+ * `syncColorState` does: whichever mode the endpoint reports, the other representations the endpoint
+ * supports are derived from it, so a consumer never sees a stale value from a previous mode.
+ *
+ * Deviation: `x`/`y` are published in hs mode even for an endpoint without the xy feature, because
+ * Home Assistant's color wheel reads them.
+ */
+function colorStateOf(attributes: AttributesData, endpoint: number, caps: LightCapabilities): Record<string, unknown> {
+    const state: Record<string, unknown> = {};
+    const color: Record<string, number> = {};
+    const colorMode = numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 8);
+    let mireds: number | undefined;
+
+    const clampMireds = (value: number) =>
+        Math.min(caps.colorTempMaxMireds ?? Infinity, Math.max(caps.colorTempMinMireds ?? 1, value));
+    const addHueSaturation = ({ hue, saturation }: { hue: number; saturation: number }) => {
+        color.hue = Math.round(hue);
+        color.saturation = Math.round(saturation);
+        // Home Assistant's MQTT JSON light only reads the short keys
+        color.h = color.hue;
+        color.s = color.saturation;
+    };
+
+    if (colorMode === 0) {
+        state.color_mode = "hs";
+        const enhancedHue = caps.enhancedHue ? numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 16384) : undefined;
+        const hue = numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 0);
+        const saturation = numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 1);
+        if (enhancedHue !== undefined) {
+            color.hue = Math.round((enhancedHue / 65535) * 360);
+        } else if (hue !== undefined) {
+            color.hue = Math.round((hue / 254) * 360);
+        }
+        if (saturation !== undefined) {
+            color.saturation = Math.round((saturation / 254) * 100);
+        }
+        if (color.hue !== undefined && color.saturation !== undefined) {
+            color.h = color.hue;
+            color.s = color.saturation;
+            const xy = hsvToXY(color.hue, color.saturation);
+            color.x = xy.x;
+            color.y = xy.y;
+            if (caps.colorTemp) {
+                mireds = clampMireds(xyToMireds(xy));
+            }
+        }
+    } else if (colorMode === 1) {
+        state.color_mode = "xy";
+        const rawX = numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 3);
+        const rawY = numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 4);
+        if (rawX !== undefined && rawY !== undefined) {
+            const xy = { x: round(rawX / 65535, 4), y: round(rawY / 65535, 4) };
+            color.x = xy.x;
+            color.y = xy.y;
+            if (caps.hueSaturation) {
+                addHueSaturation(xyToHsv(xy));
+            }
+            if (caps.colorTemp) {
+                mireds = clampMireds(xyToMireds(xy));
+            }
+        }
+    } else if (colorMode === 2) {
+        state.color_mode = "color_temp";
+        mireds = numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 7);
+        if (mireds !== undefined) {
+            const xy = miredsToXY(mireds);
+            if (caps.xy) {
+                color.x = xy.x;
+                color.y = xy.y;
+            }
+            if (caps.hueSaturation) {
+                addHueSaturation(xyToHsv(xy));
+            }
+        }
+    } else if (caps.colorTemp) {
+        // Mode unknown: the raw attribute is all we have
+        mireds = numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 7);
+    }
+
+    if (Object.keys(color).length > 0) {
+        state.color = color;
+    }
+    if (mireds !== undefined) {
+        state.color_temp = mireds;
+    }
+    return state;
+}
+
+/**
  * zigbee2mqtt-style state properties of one endpoint, read from the attribute cache.
  * Value conventions follow z2m: hue 0-360, saturation 0-100, x/y 4 decimals,
  * illuminance in lux, temperature/humidity in real units.
@@ -202,50 +291,7 @@ export function endpointStateOf(
     }
 
     if (caps.colorTemp || caps.hueSaturation || caps.xy) {
-        const colorMode = numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 8);
-        if (colorMode === 0) {
-            state.color_mode = "hs";
-            const enhancedHue = caps.enhancedHue ? numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 16384) : undefined;
-            const hue = numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 0);
-            const saturation = numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 1);
-            const color: Record<string, number> = {};
-            if (enhancedHue !== undefined) {
-                color.hue = Math.round((enhancedHue / 65535) * 360);
-            } else if (hue !== undefined) {
-                color.hue = Math.round((hue / 254) * 360);
-            }
-            if (saturation !== undefined) {
-                color.saturation = Math.round((saturation / 254) * 100);
-            }
-            if (color.hue !== undefined && color.saturation !== undefined) {
-                // Home Assistant's MQTT JSON light only reads the short color keys: h/s in hs
-                // mode, x/y for the color wheel. Ship both alongside the zigbee2mqtt-style long
-                // keys (z2m syncs xy into its state for the same reason).
-                color.h = color.hue;
-                color.s = color.saturation;
-                const { x, y } = hsvToXY(color.hue, color.saturation);
-                color.x = x;
-                color.y = y;
-            }
-            if (Object.keys(color).length > 0) {
-                state.color = color;
-            }
-        } else if (colorMode === 1) {
-            state.color_mode = "xy";
-            const x = numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 3);
-            const y = numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 4);
-            if (x !== undefined && y !== undefined) {
-                state.color = { x: round(x / 65535, 4), y: round(y / 65535, 4) };
-            }
-        } else if (colorMode === 2) {
-            state.color_mode = "color_temp";
-        }
-        if (caps.colorTemp) {
-            const mireds = numberOf(attributes, endpoint, COLOR_CLUSTER_ID, 7);
-            if (mireds !== undefined) {
-                state.color_temp = mireds;
-            }
-        }
+        Object.assign(state, colorStateOf(attributes, endpoint, caps));
     }
 
     const occupancy = attributes[`${endpoint}/${OCCUPANCY_CLUSTER_ID}/0`];

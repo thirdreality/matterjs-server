@@ -241,7 +241,7 @@ export class MqttBridge {
             return;
         }
         if (parsed.kind === "get") {
-            this.#handleGet(entry, parsed.endpoint);
+            void this.#handleGet(entry);
             return;
         }
         const endpoint = parsed.endpoint ?? entry.onOffEndpoints[0];
@@ -339,9 +339,34 @@ export class MqttBridge {
         }
     }
 
-    /** zigbee2mqtt-style `get`: re-publish the full current state from the attribute cache. */
-    #handleGet(entry: DeviceEntry, _endpoint?: number): void {
-        this.#publishDeviceState(entry);
+    /**
+     * zigbee2mqtt-style `get`: read the state attributes from the device, then publish. Reads are
+     * requested for the paths the node is known to have, and their results overlay the cache for this
+     * publish (a direct read does not update the subscription cache). An offline node, or a failing
+     * read, falls back to re-publishing what the cache holds.
+     */
+    async #handleGet(entry: DeviceEntry): Promise<void> {
+        const device = entry.nodeId.toString();
+        let attributes: AttributesData;
+        try {
+            attributes = this.#commandHandler.getNodeDetails(entry.nodeId).attributes;
+        } catch {
+            logger.warn(`Cannot read state for "${device}"`);
+            return;
+        }
+        const paths = Object.keys(attributes).filter(path => {
+            const [, clusterId, attributeId] = path.split("/").map(Number);
+            return clusterId !== undefined && attributeId !== undefined && isStateAttribute(clusterId, attributeId);
+        });
+        let fresh: AttributesData | undefined;
+        if (paths.length > 0) {
+            try {
+                fresh = await this.#commandHandler.handleReadAttributes(entry.nodeId, paths);
+            } catch (error) {
+                logger.info(`Read for "${device}" failed, publishing the cached state:`, error);
+            }
+        }
+        this.#publishDeviceState(entry, fresh);
     }
 
     /**
@@ -447,8 +472,11 @@ export class MqttBridge {
         this.#connection.publish(this.#topics.bridgeThreadDataset, thread?.dataset ? SECRET_MASK : "", true);
     }
 
-    /** Publish the merged zigbee2mqtt-style device state to the single `<node>` topic. */
-    #publishDeviceState(entry: DeviceEntry): void {
+    /**
+     * Publish the merged zigbee2mqtt-style device state to the single `<node>` topic. `fresh` carries
+     * values read directly from the device, which take precedence over the subscription cache.
+     */
+    #publishDeviceState(entry: DeviceEntry, fresh?: AttributesData): void {
         const device = entry.nodeId.toString();
         let details: MatterNodeData;
         try {
@@ -457,10 +485,11 @@ export class MqttBridge {
             logger.warn(`Cannot read state for "${device}"`);
             return;
         }
-        const state = deviceStateOf(details.attributes, entry.relevantEndpoints, endpoint =>
-            lightCapabilitiesOf(details.attributes, endpoint),
+        const attributes = fresh === undefined ? details.attributes : { ...details.attributes, ...fresh };
+        const state = deviceStateOf(attributes, entry.relevantEndpoints, endpoint =>
+            lightCapabilitiesOf(attributes, endpoint),
         );
-        const update = this.#ota.updateStateOf(device, details.attributes);
+        const update = this.#ota.updateStateOf(device, attributes);
         if (update !== undefined) {
             state.update = update;
         }
