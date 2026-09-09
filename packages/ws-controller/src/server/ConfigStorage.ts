@@ -5,6 +5,7 @@
  */
 
 import { Environment, Logger, Mutex, StorageContext, StorageManager, StorageService } from "@matter/main";
+import { reapStaleStorageLocks } from "./StaleStorageLocks.js";
 
 const logger = new Logger("ConfigStorage");
 
@@ -102,6 +103,10 @@ export class ConfigStorage {
         // in this directory, use --storage-clear to start with an empty storage.
         // Or Env vars like MATTER_STORAGE_PATH and MATTER_STORAGE_CLEAR
         logger.info(`Storage location: ${this.#storageService.location} (Directory)`);
+        // Before the first storage open takes the locks, drop any whose owner is provably gone
+        if (typeof this.#storageService.location === "string") {
+            await reapStaleStorageLocks(this.#storageService.location);
+        }
         this.#storage = await this.#storageService.open("config");
         this.#configStore = this.#storage.createContext("values");
 
