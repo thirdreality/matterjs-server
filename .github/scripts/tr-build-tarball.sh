@@ -1,12 +1,13 @@
 #!/bin/bash
 # Build the ThirdReality matter-server release tarball (matter-server + bundled
-# @matter-server/* workspace packages). Used by tr-release.yml; also runs locally.
+# @matter-server/* workspace packages). Used by tr-release.yml, and the same script
+# the deb build consumes, so CI and a local build cannot drift apart.
 #
 # Usage: .github/scripts/tr-build-tarball.sh <version> [out-dir]
-#   e.g. .github/scripts/tr-build-tarball.sh 1.4.0-tr.1
+#   e.g. .github/scripts/tr-build-tarball.sh 1.4.0-tr.3 /root/m2m-dist
 #
-# Expects to run from the repo root with dependencies installed and dist built
-# (`npm ci` does both via the prepare script).
+# Runs from anywhere inside the checkout. Expects dependencies installed and dist
+# built (`npm ci` does both via the prepare script; locally `npm run build`).
 #
 # Note: `npm pack` ignores bundleDependencies for workspace symlinks (npm 9-11),
 # so the bundled packages are packed individually and assembled by hand.
@@ -15,16 +16,33 @@ set -euo pipefail
 VER="${1:?usage: tr-build-tarball.sh <version> [out-dir]}"
 OUT="${2:-dist-release}"
 BUNDLED=(custom-clusters ws-client ws-controller dashboard ble-proxy mqtt-bridge)
+VERSIONED=(custom-clusters ws-controller ws-client dashboard ble-proxy mqtt-bridge matter-server)
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "FATAL: not inside the matterjs-server checkout (git rev-parse failed)" >&2
+    exit 1
+}
+cd "$ROOT"
 
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 
+# Packing needs the release version in the workspace manifests, which is a local edit we must
+# not leave behind: restore exactly the files we touch, on failure too. Listing them explicitly
+# rather than checking out packages/ keeps any other work in progress intact. `git -C` because
+# later steps run from the output directory, which is usually outside the checkout.
+restore_manifests() {
+    local paths=(version.txt)
+    for p in "${VERSIONED[@]}"; do paths+=("packages/$p/package.json"); done
+    git -C "$ROOT" checkout -- "${paths[@]}" 2>/dev/null || true
+}
+trap restore_manifests EXIT
+
 echo "[1] apply version $VER to workspace packages"
 echo -n "$VER" > version.txt
-node - "$VER" <<'EOF'
+node - "$VER" "${VERSIONED[@]}" <<'EOF'
 const fs = require("fs");
-const ver = process.argv[2];
-const pkgs = ["custom-clusters", "ws-controller", "ws-client", "dashboard", "ble-proxy", "mqtt-bridge", "matter-server"];
+const [ver, ...pkgs] = process.argv.slice(2);
 for (const p of pkgs) {
     const path = `packages/${p}/package.json`;
     const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
