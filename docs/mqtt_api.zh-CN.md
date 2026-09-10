@@ -503,6 +503,24 @@ homeassistant/<component>/matter2mqtt_<node>/<object_id>/config
 discovery 在每次连接以及节点结构变化时重发；消失的实体 topic 会被清空，节点被解绑时它的所有 discovery topic 都会
 被清空。
 
+### 清理桥不再发布的内容
+
+retained topic 的寿命超过发布它的进程，所以桥一旦停止发布某个 topic，它就会一直留在 broker 上：新版本里删掉或
+改名的实体会继续出现在 Home Assistant 里，而桥停机期间被解绑的节点会留下它的状态和实体。
+
+每次连接发完全量之后，桥会订阅 `homeassistant/+/+/+/config`、`<prefix>/+` 与 `<prefix>/+/availability` ——
+broker 随即回放的 retained topic 会与刚刚发布的内容比对，多出来的被清空。该订阅保持不断开，因此每次重连都会
+重新对账一次。
+
+只有能被证明属于本桥的 topic 才会被动：
+
+- discovery config 的载荷必须引用本桥的 topic 前缀，因此另一个用不同前缀的桥、或别的集成的实体，都不会被误认；
+- 在本桥前缀之下，只有未配网节点的 `<prefix>/<node>` 与 `<prefix>/<node>/availability` 才算；`bridge/…` 与命令
+  topic 一概不动；
+- 空载荷是"清空"而不是内容，忽略。
+
+凡是无法辨认的一律保留原状：残留实体只是观感问题，而误删别的集成的 discovery config 会直接把它弄坏。
+
 ### 桥自身的实体
 
 设备名 `Matter2MQTT Bridge`（标识 `matter2mqtt_bridge`），按发布顺序：

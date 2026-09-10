@@ -27,7 +27,8 @@ import { MqttConnection } from "./MqttConnection.js";
 import { onOffEndpointsOf, onOffValueOf } from "./OnOffState.js";
 import { OtaTracker, supportsOta } from "./OtaState.js";
 import { messageOf, parseSetObject, splitByEndpointSuffix } from "./SetCommands.js";
-import { Topics } from "./Topics.js";
+import { staleRetainedReason } from "./StaleTopics.js";
+import { DISCOVERY_PREFIX, Topics } from "./Topics.js";
 
 const logger = Logger.get("MqttBridge");
 
@@ -82,6 +83,8 @@ export class MqttBridge {
     readonly #serverVersion?: string;
     readonly #observers = new ObserverGroup();
     readonly #ota = new OtaTracker();
+    /** Discovery topics of the bridge's own entities, for telling ours from a previous version's. */
+    #bridgeDiscoveryTopics = new Array<string>();
     /** Known devices keyed by node id string (the `<device>` topic segment). */
     readonly #devices = new Map<string, DeviceEntry>();
     #started = false;
@@ -226,6 +229,10 @@ export class MqttBridge {
     }
 
     #handleMessage(topic: string, payload: string): void {
+        if (topic.startsWith(`${DISCOVERY_PREFIX}/`)) {
+            this.#reconcileRetained(topic, payload);
+            return;
+        }
         const bridgeCommand = this.#topics.parseBridgeRequest(topic);
         if (bridgeCommand !== undefined) {
             void this.#handleBridgeRequest(bridgeCommand, payload);
@@ -233,6 +240,8 @@ export class MqttBridge {
         }
         const parsed = this.#topics.parseInbound(topic);
         if (parsed === undefined) {
+            // Not a command: the only other thing we subscribe to is our own retained state
+            this.#reconcileRetained(topic, payload);
             return;
         }
         const entry = this.#devices.get(parsed.device);
@@ -431,7 +440,9 @@ export class MqttBridge {
 
     /** Publish the complete retained picture: all devices, device list, info and online state. */
     #publishAll(): void {
+        this.#bridgeDiscoveryTopics = [];
         for (const message of bridgeDiscoveryMessagesOf(this.#serverVersion, this.#topics)) {
+            this.#bridgeDiscoveryTopics.push(message.topic);
             this.#connection.publish(message.topic, message.payload, true);
         }
         for (const nodeId of this.#commandHandler.getNodeIds()) {
@@ -446,6 +457,26 @@ export class MqttBridge {
         this.#publishCredentialState();
         this.#publishCommissionMode();
         this.#connection.publish(this.#topics.bridgeState, bridgeStatePayload("online"), true);
+        // Subscribing last, with the full picture published, means the retained topics the broker
+        // now replays can be judged against complete expectations. The subscription stays: every
+        // reconnect replays them, so a broker that outlived several bridge versions keeps healing.
+        this.#connection.subscribe(this.#topics.reconcileFilters);
+    }
+
+    /** Clear a retained topic of ours that should no longer exist. */
+    #reconcileRetained(topic: string, payload: string): void {
+        const reason = staleRetainedReason(topic, payload, {
+            prefix: this.#topics.prefix,
+            expectedDiscovery: new Set([
+                ...this.#bridgeDiscoveryTopics,
+                ...[...this.#devices.values()].flatMap(entry => entry.discoveryTopics),
+            ]),
+            knownDevices: new Set(this.#devices.keys()),
+        });
+        if (reason !== undefined) {
+            logger.notice(`Clearing stale retained topic ${topic}: ${reason}`);
+            this.#connection.clearRetained(topic);
+        }
     }
 
     /** Retained mode of the HA commission select; a fresh process starts back at Auto. */

@@ -554,6 +554,28 @@ homeassistant/<component>/matter2mqtt_<node>/<object_id>/config
 Discovery is republished on every connect and whenever a node's structure changes; entity topics that
 disappear are cleared, and all of a node's discovery topics are cleared when it is decommissioned.
 
+### Clearing what the bridge no longer publishes
+
+A retained topic outlives the process that published it, so anything the bridge stops publishing would
+otherwise stay on the broker: an entity dropped or renamed in a new version keeps appearing in Home
+Assistant, and a node decommissioned while the bridge was down leaves its state and entities behind.
+
+After publishing the full picture on each connect, the bridge subscribes to
+`homeassistant/+/+/+/config`, `<prefix>/+` and `<prefix>/+/availability` — the retained topics the
+broker then replays are compared against what it just published, and the leftovers are cleared. The
+subscription stays, so every reconnect reconciles again.
+
+Only topics that are provably the bridge's own are touched:
+
+- a discovery config must have a payload referencing this bridge's topic prefix, so a second bridge on
+  another prefix, or another integration's entities, are never claimed;
+- under the bridge's own prefix, only `<prefix>/<node>` and `<prefix>/<node>/availability` for a node
+  that is not commissioned qualify — `bridge/…` topics and command topics are left alone;
+- an empty payload is a clear, not content, and is ignored.
+
+Anything unrecognized is left in place: a leftover entity is cosmetic, while deleting another
+integration's discovery config would break it.
+
 ### Bridge entities
 
 Device `Matter2MQTT Bridge` (identifier `matter2mqtt_bridge`), in publish order:

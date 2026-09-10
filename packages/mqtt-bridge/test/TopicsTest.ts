@@ -37,6 +37,18 @@ describe("Topics", () => {
             expect(topics.deviceAvailability("5")).to.equal("matter2mqtt/5/availability");
         });
 
+        it("provides reconcile filters that never overlap the command filters", () => {
+            expect(topics.reconcileFilters).to.deep.equal([
+                "homeassistant/+/+/+/config",
+                "matter2mqtt/+",
+                "matter2mqtt/+/availability",
+            ]);
+            // A command delivered twice would run twice
+            for (const filter of topics.reconcileFilters) {
+                expect(topics.commandFilters, filter).to.not.contain(filter);
+            }
+        });
+
         it("provides command subscription filters", () => {
             expect(topics.commandFilters).to.deep.equal([
                 "matter2mqtt/+/set",

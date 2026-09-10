@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/** Home Assistant MQTT discovery prefix (HA default). */
+export const DISCOVERY_PREFIX = "homeassistant";
+
 /** A parsed inbound command topic (`set`, `set/<attribute>` or `get`). */
 export interface InboundTopic {
     device: string;
@@ -70,6 +73,15 @@ export class Topics {
             `${p}/+/+/get`,
             `${p}/bridge/request/#`,
         ];
+    }
+
+    /**
+     * Subscriptions that let the bridge find retained topics of its own that should no longer exist:
+     * discovery configs, plus per-device state and availability. Command topics are deliberately
+     * absent - they are already covered by {@link commandFilters} and must not be delivered twice.
+     */
+    get reconcileFilters(): string[] {
+        return [`${DISCOVERY_PREFIX}/+/+/+/config`, `${this.#prefix}/+`, `${this.#prefix}/+/availability`];
     }
 
     /** Parse a `bridge/request/<command>` topic; the command may contain slashes (device/remove). */

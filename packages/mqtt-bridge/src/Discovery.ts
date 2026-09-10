@@ -9,10 +9,7 @@ import { COMMISSION_MODE_NAMES } from "./BridgeCommands.js";
 import { endpointPropertyKeysOf, propertyNameResolver, sensorPresenceOf } from "./DeviceState.js";
 import type { LightCapabilities } from "./LightCapabilities.js";
 import { supportsOta } from "./OtaState.js";
-import type { Topics } from "./Topics.js";
-
-/** Home Assistant MQTT discovery prefix (HA default). */
-const DISCOVERY_PREFIX = "homeassistant";
+import { DISCOVERY_PREFIX, type Topics } from "./Topics.js";
 
 export interface DiscoveryDeviceInfo {
     /** Node id string, the `<device>` topic segment and unique-id base. */
