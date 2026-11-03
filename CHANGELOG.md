@@ -6,8 +6,154 @@ This page shows a detailed overview of the changes between versions without the 
 	Placeholder for the next version (at the beginning of the line):
 	## **WORK IN PROGRESS**
 -->
+## 1.5.5 (2026-10-24)
 
-## **WORK IN PROGRESS**
+- Fix: (@lanthaler) Renamed custom cluster `AqaraLedStripT2Cluster` to `AqaraLedStripCluster` as other Aqara LED devices expose the same cluster as well.
+- Fix: Nodes whose stored discovery TTL was damaged by an older server version load again, and no longer make the nodes stored after them unavailable at startup
+
+## 1.5.4 (2026-10-23)
+
+- Enhancement: Further optimize the node initialization at startup
+- Enhancement: The TypeScript ws-client accepts an options object with a `logger` (for example a matter.js `Logger`) in place of the WebSocket factory; passing the factory alone still works and the default still writes to `console`. With a logger that hides debug output, logging no longer slows down message handling. Each incoming event is logged once instead of twice
+
+## 1.5.3 (2026-10-23)
+
+- Enhancement: (@Max-src) Adds the vendor clusters of the Yeelight Cube Lite (LAN control, microphone music modes, display direction, effects, drawings, the button playlist and GIF upload) to the custom cluster definitions
+- Enhancement: (@lboue) Dashboard Thermostat Presets panel allows creating, editing, and removing presets, and setting the active preset
+- Enhancement: Attribute values are converted for clients much faster, which shortens the node initialization at startup
+- Fix: `node_added`, `node_removed`, `endpoint_added` and `endpoint_removed` are no longer dropped when a client reads too slowly; a client too far behind on them is disconnected and gets the current state when it reconnects
+- Fix: Python client: an event subscriber that raises an error no longer ends the connection; the error is logged and the other subscribers still receive the event
+
+## 1.5.2 (2026-10-21)
+
+- Fix: Events with a delta timestamp are processed with the calculated device time again instead of the time the server received them
+
+## 1.5.1 (2026-10-21)
+
+- Enhancement: (@lanthaler) Adds the vendor clusters for the Aqara Led Strip T2 to configure the music sync feature to the custom cluster definitions
+- Fix: (@jankowskir) The Python client's node diagnostics no longer show the Thread Extended PAN ID as a garbled network name. Thread devices report the name from their Thread diagnostics, or no name. Ethernet devices no longer report their interface name (for example `eth0`) as network name
+- Fix: Fabric label changes are sent to the nodes in the background and a few at a time, instead of to all nodes at once while the client waits
+- Fix: Migration from the Python Matter Server keeps the Python controller fabric, so the migrated nodes are available. If the storage directory already holds a different controller CA or fabric, the server logs a warning and does not migrate the Python data. Restore the backup from before the migration and start again
+
+## 1.5.0 (2026-10-20)
+
+- Feature: Introduces Websocket Schema version 14 (backward compatible), detectable with `server_info.schema_version >= 14`. Details are in [docs/websockets_api.md](docs/websockets_api.md#camera-streaming-schema-14) and [docs/websocket-api-schema-changelog.md](docs/websocket-api-schema-changelog.md)
+    - Adds a camera API that handles stream management and WebRTC sessions for the client, see[docs/CAMERA_LIMITATIONS.md](docs/CAMERA_LIMITATIONS.md) for information on defaults and known camera quirks. The Matter commands through `send_webrtc_provider_command` and `device_command` stay available
+    - `camera_start_stream` asks the camera to play the client's audio only with `talkback: true`; otherwise the server makes the offer's audio sections not send
+    - Adds error codes 102 to 106 for camera failures in the server and both clients
+    - The TypeScript client's `ServerCommandError` carries typed error details (`details`, `hasDetails(code)`); the Python client has typed camera methods, results, events and errors
+    - The dashboard's camera view uses the new camera API
+        - Talks back to cameras that support two-way audio (needs HTTPS or localhost for the microphone)
+- Enhancement: `nodes_changed` events carry a detail naming the node they concern (`reason`, `nodeId`, and `attributeKey` for attribute updates). A listener interested in one node can skip events for other nodes. Listeners that take no argument are unaffected. `addEventListener` only accepts the known event names, so TypeScript code that passes a `string` must narrow it first
+- Enhancement: Update matter.js to 0.18.0
+    - Adds support for Matter 1.6.1 (including Python client)
+- Enhancement: Finishes the migration to the new matter.js controller API
+- Enhancement: `send_webrtc_provider_command` also relays `ProvideAnswer` and `ProvideIceCandidates`
+- Enhancement: (@RaHehl) `open_commissioning_window` also returns `discriminator`, `vendor_id`, `product_id` and `commissioning_timeout` (seconds) as reported by matter.js, so clients can hand the data to another ecosystem without decoding the QR code.
+- Enhancement: Adds CLI flag `--revocation-sets-dir` (env `REVOCATION_SETS_DIR`): the server installs the device attestation revocation sets from that directory at every start, and refuses devices whose certificates they list. See [README](README.md#installing-device-attestation-revocation-sets)
+- Enhancement: Adds CLI flag `--certificates-dir` (env `CERTIFICATES_DIR`): the server imports PAA certificates from `*.paa.der` and `*.paa.pem` files in that directory at start, so devices with a vendor's own PAA can be commissioned. See [README](README.md#importing-custom-paa-certificates)
+- Enhancement: Adds CLI flag `--dcl-offline` (env `DCL_OFFLINE`): the server never contacts the DCL, uses the bundled DCL data and stored certificates, and skips the DCL revocation lookups. Revocation sets from `--revocation-sets-dir` still apply
+- Enhancement: Adds CLI flag `--disable-auto-subscription` (env `DISABLE_AUTO_SUBSCRIPTION`): the server does not subscribe to nodes and runs no background jobs on its own. Only for special use cases. See [docs/cli.md](docs/cli.md#disabled-auto-subscription)
+- Enhancement: Adds the WebSocket commands `read`, `subscribe`, `unsubscribe`, `enable_auto_subscription` and `disable_auto_subscription` for generic Matter reads and subscriptions in the `--disable-auto-subscription` mode. See [docs/websockets_api.md](docs/websockets_api.md#subscriptions-and-generic-read)
+- Enhancement: Adds the WebSocket command `parse_onboarding_payload` to decode a QR code or manual pairing code without contacting a device
+- Enhancement: When device attestation refuses a device, the commissioning error also names the failed checks, e.g. `Device attestation refused: CertificateRevoked: Device Attestation Certificate has been revoked`
+- Enhancement: `commission_with_code` and `commission_on_network` take an optional `discovery_timeout_s`
+- Enhancement: Error responses carry the device's Matter status (`status`, `cluster_status`), commissioning errors a `reason`, and `write_attribute` results the cluster-specific status
+- Enhancement: Adds the WebSocket command `batched_device_commands` to send several commands to one node in a single InvokeRequest
+- Enhancement: Adds the CHIP UnitTesting test cluster (0xFFF1FC05) as custom cluster that the controller certification suite uses
+- Enhancement: `write_attribute` takes a wildcard endpoint to write all endpoints of a node in one request, and `timed_request_timeout_ms` for a timed write
+- Enhancement: The ws-client has `commissionOnNetwork`, and `deviceCommand` takes an options object with `timedRequestTimeoutMs` and `interactionTimeoutMs` (a number still sets the client timeout)
+- Enhancement: On Windows and macOS, `--bluetooth-adapter` can be given without an HCI ID, or `BLUETOOTH_ADAPTER=true` set, to enable BLE
+- Enhancement: `--port 0` binds a free port, shown in the startup log line `Webserver listening on …`
+- Enhancement: Dashboard network view uses the Thread 1.4 role names: a Thread Router is shown as "Mesh Extender" and a REED as "Standby Mesh Extender". External (non-fabric) neighbors, whose role is only inferred from rx-on-when-idle, are now labeled "Always-on device" instead of a routing role. Wire values and the `ThreadRoutingRole` enum keep the Matter spec names
+- Enhancement: (@cyberb) `--listen-address` (env `LISTEN_ADDRESS`) accepts an absolute unix socket path, so the WebSocket API and dashboard can be served on a local socket, alone or next to TCP addresses; a socket file left behind by an unclean shutdown is replaced on the next start, and the Docker health check queries the socket
+- Enhancement: (@cyberb) The Python client connects over a unix socket when given a `unix://<path>` server URL, including OTA image uploads
+- Enhancement: `LISTEN_ADDRESS` accepts a comma-separated list of addresses or interface names, like the repeatable `--listen-address` option
+- Enhancement: Adds CLI flag `--thread-rest-probe-port` (env `THREAD_REST_PROBE_PORT`) to configure the OTBR REST API port probed on discovered Thread Border Routers (default 8081), and raises the per-request REST probe timeout from 1500 ms to 3000 ms for Border Routers with a slow `/diagnostics` endpoint (a Border Router that accepts the connection and then stalls now delays the first diagnostics batch by up to 9 seconds instead of 4.5)
+- Enhancement: Adds CLI flag `--custom-cluster-poll-interval` (env `CUSTOM_CLUSTER_POLL_INTERVAL`) to configure the polling interval for custom cluster attributes without subscription support (legacy Eve Energy devices); defaults to the previous 60 seconds and accepts 60 to 86400 seconds
+- Enhancement: (@lboue) Dashboard Endpoints list and endpoint's Clusters panel show each endpoint's resolved label and Descriptor semantic tags (TagList) to simplify identification
+- Enhancement: (@lboue) Added a command panel for the OperationalState, RvcOperationalState and OvenCavityOperationalState clusters to the Dashboard
+- Enhancement: (@lboue) Added a command panel for the ServiceArea cluster to the Dashboard
+- Enhancement: (@lboue) Added a command panel for the WaterHeaterManagement cluster to the Dashboard
+- Enhancement: (@lboue) Added a command panel for the DoorLock cluster to the Dashboard
+- Enhancement: (@lboue) Added Presets and Thermostat Suggestions panels for Thermostat cluster to Dashboard
+- Enhancement: (@lboue) Added a Forecast panel for the DeviceEnergyManagement cluster to the Dashboard
+- Enhancement: (@lboue) Added a command panel for the DeviceEnergyManagementMode cluster to the Dashboard
+- Enhancement: (@lboue) Added a command panel for the MediaPlayback cluster to the Dashboard
+- Enhancement: (@lboue) Added a command panel for the ClosureDimension cluster to the Dashboard
+- Enhancement: (@lboue) Added a command panel for the DoorLock cluster to the Dashboard
+- Enhancement: (@lboue) Added a command panel for the EnergyEvse cluster to the Dashboard
+- Enhancement: Adds the IKEA thermostat ValveCalibration vendor cluster (0x117cfc01) to the custom cluster and a Dashboard panel
+- Enhancement: (@lboue) Allows creating temporary/expiring PIN users (UserType=ExpiringUser) and configuring the lock's ExpiringUserTimeout to the Dashboard DoorLock cluster panel
+- Enhancement: (@RAR) Adds the vendor clusters of the Aqara Spatial Multi-Sensor FP400 (AmbientSensingConfiguration 0x115ffc0a with detection zones, RadarSensingUnion 0x115ffc0b, OccupantLocation 0x115ffc0c with the target position event) to the custom cluster definitions
+- Enhancement: (@Leo2442926161) Adds the `indicatorEnable` attribute to the Heiman custom cluster to switch the device LED indicator on or off
+- Enhancement: (@Leo2442926161) Adds the `sirenActivate` command to the Heiman custom cluster to sound or stop the device siren with a siren type, volume and duration
+- Enhancement: Adds the WAGO Home Blind Control `WagoBlindType` (roller shutter or venetian blind) and `WagoManualMode` attributes to the Window Covering cluster
+- Enhancement: Node data carries `endpoint_parents`, the direct parent of each endpoint as matter.js resolves it. The Python client and the Dashboard use it instead of deriving the parents from the Descriptor PartsLists, and keep deriving them for servers that do not send it
+- Enhancement: The env var `MATTER_LOG_FORMAT` (`ansi` or `plain`) sets the console log format. The Docker image defaults to `ansi`; otherwise colors are used only when the output is a terminal
+- Adjustment: Commands that target a node refuse a `node_id` that can never name one (CAT, PAKE, Unspecified, reserved ranges) with error 8 instead of `NODE_NOT_EXISTS`, and only the Temporary Local range is routed to imported test nodes
+- Adjustment: Every command treats a missing or `null` `args` as no arguments and refuses a non-object with error 8
+- Adjustment: `send_webrtc_provider_command` checks `node_id`, `endpoint_id` and every payload field against the cluster definition and refuses a bad one with error 8 instead of failing later or silently dropping data. It accepts the documented `ice_servers` shape and the key spellings `webrtc_callback` uses, and no longer drops streams before the camera's first report
+- Adjustment: A node's availability follows its connection state. The former 3-minute grace period after a connection loss is gone, so an unreachable node is reported as soon as matter.js gives up on reaching it rather than after a fixed timer on top
+- Adjustment: Dashboard network view uses the Thread 1.4 role names
+- Adjustment: `device_command` refuses an invalid `timed_request_timeout_ms` or `interaction_timeout_ms` with error 8
+- Adjustment: Structured values of clusters, attributes and events the server does not know are sent keyed by their TLV tags instead of as `null`
+- Adjustment: `write_attribute`, `set_acl_entry` and `set_node_binding` always send the write to the node and report the node's answer, also when the value equals the current one
+- Fix: The Dashboard shows the data type of custom cluster attributes and of attributes of derived clusters (Mode clusters, Bridged Device Basic Information) instead of `unknown`
+- Fix: `webrtc_callback` events the camera sends while `send_webrtc_provider_command` is still running are no longer lost
+- Fix: A re-offer (`ProvideOffer` naming an existing session) through `send_webrtc_provider_command` no longer ends the session it renegotiates
+- Fix: At start, the server ends the WebRTC sessions a camera still holds for it from an earlier run, so they no longer keep the camera's streams busy. This also ends sessions opened with `device_command` `ProvideOffer` or `SolicitOffer` that the camera lists when the server checks for leftover sessions; open sessions with `send_webrtc_provider_command` instead
+- Fix: A new WebRTC session with `turns:` or `stuns:` ICE servers through `send_webrtc_provider_command` no longer fails on a camera that has no time set, for example after a reboot: when the camera refuses the offer, the server sets the camera's time and sends the offer once more
+- Fix: The camera's answer to an offer sent with `send_webrtc_provider_command` uses only the directions that offer allows, so the browser accepts it also when the camera answers `sendrecv` to a receive-only offer
+- Fix: `device_command` with `EndSession` updates the server's session records for that camera only, and a WebRTC callback with an invalid endpoint id no longer blocks the event for other listeners
+- Fix: A command sent before the controller finished starting fails with the SDK stack error code instead of a generic error
+- Fix: The server's debug log masks Wi-Fi passphrases, Thread datasets, setup codes, credential material in `device_command` requests, TURN credentials and SDP ICE credentials, and no longer logs the `open_commissioning_window` response. `device_command` responses are still logged in full. The TypeScript client logs very long strings as their length
+- Fix: The client delivers `webrtc_callback` and the camera events to subscribers registered with `node_filter`, as Home Assistant does
+- Fix: A wrong pairing code is reported as such instead of as a generic commissioning failure, so a client can ask for the code again. A pairing code that cannot be decoded fails with `InvalidArguments`
+- Fix: Commissioning with a pairing code that names a vendor and product skips a device whose advertisement names another vendor or product
+- Fix: A device that has only its root endpoint is commissioned and reported with its data
+- Fix: `commission_on_network` respects `filter_type` 3 (vendor) and 4 (device type)
+- Fix: `discover_commissionable_nodes` returns every discovered device, not only the last one
+- Fix: `device_command` respects `interaction_timeout_ms`, and refuses a command the cluster does not have or fields that cannot be encoded with error 8
+- Fix: Identical commands sent in parallel by different clients each reach the device
+- Fix: `read_attribute` and `write_attribute` refuse a path with an id that is invalid for its kind (for example cluster 32768) with `InvalidArguments`
+- Fix: Dashboard shows manufacturer-specific enum values (vendor mode tags, operational and error states, closure errors) as "Manufacturer 0x…"
+- Fix: (@RAR) List values of decorator-defined custom clusters are converted in both directions, so bytes inside a list (Aqara `SetZones`) reach the device as bytes instead of strings. The same fix sends `SupportedModes` of the derived Mode clusters (RVC Run/Clean, Dishwasher, Laundry Washer, Oven, Microwave Oven, Refrigerator, Device Energy Management, EVSE and Water Heater Mode) keyed by tag like every other attribute value, instead of keyed by field name
+- Fix: (@RAR) The client generator resolves struct, signed integer, list and response types of decorator-defined custom clusters; the `int32` attributes `DraftElectricalMeasurementCluster.activePower` and `ThirdRealityMeteringCluster.instantaneousDemand` are now generated as signed
+- Fix: WebSocket clients that read slowly are no longer disconnected when the server queues messages for them; the queued messages are now delivered
+- Fix: Large negative 64-bit values keep their precision in WebSocket messages, and a text value starting with `__BIGINT__` is no longer turned into a number or rejected; the server and the ws-client share one bigint-aware JSON implementation
+- Fix: Verified endpoint and cluster existence for `device_command` and `write_attribute` and return proper errors
+- Fix: The server exits with code 1 when it fails to start (for example when the WebSocket port is in use), so systemd or Docker can restart it; before, it logged the error and kept running without a listener
+- Fix: Door Lock PIN fields (`credentialData`, `pinCode`) are redacted from the debug logs
+- Fix: BLE proxy connections are pinged every 15 seconds and terminated after 45 to 60 seconds of silence, so a proxy client that loses power is detected instead of staying registered indefinitely
+- Fix: Commissioning over BLE proxies no longer tries a device that only a disconnected proxy client had seen. The device is offered again as soon as a connected proxy client sees it
+- Fix: The node snapshot that carries a new endpoint is sent before the `endpoint_added` event, so a client that looks the new endpoint up in its node model finds it; an endpoint removed again before that snapshot is built is not announced
+- Fix: A removed endpoint leaves the attribute cache when its removal is announced, and `get_node` waits for a cache rebuild that is already running, so a read after a structure change returns the current structure
+- Fix: An endpoint removed while the server rebuilds its node data no longer comes back in the rebuilt node data
+- Fix: An attribute a device removes (for example in a firmware update) is dropped from the node data. Clients get an `attribute_updated` event with a `null` value and a `node_updated` event without the attribute
+- Fix: An attribute the device no longer has when the server rebuilds the node data (after a restart, a reconnect or a structure change) is also sent as `attribute_updated` with a `null` value, so clients that merge `node_updated` into their data no longer keep the old value
+- Fix: A node that gains or loses custom cluster attributes or Thread diagnostics without reconnecting, for example when a bridge adds a device, is polled for the new set after the structure change, not only after the next reconnect
+- Fix: A node is reported as a bridge when any endpoint carries the Aggregator device type, not only endpoint 1
+- Fix: Python client resolves each endpoint to its closest parent endpoint, available as `MatterNode.get_closest_compose_parent()`; `get_compose_parent()` keeps returning the composed device an endpoint belongs to, now at any depth and independent of the endpoint order. A Bridged Node below a nested Aggregator is reachable through the new `MatterNode.get_bridge_parent()` and `get_bridge_child_ids()`. Children of an Aggregator that do not carry the Bridged Node device type are not treated as bridged devices
+- Fix: Python client keeps an endpoint, its device types and its parent until `endpoint_removed` arrives, also when a node snapshot no longer reports them, so a subscriber handling the removal still resolves the endpoint to its device. Removing a device also removes its parts. Before, Home Assistant could fail with `KeyError` or remove the bridge's own device when the parts of a bridged device were removed
+- Fix: Python client does not signal `endpoint_added` for an endpoint its node model does not contain yet, so a subscriber that looks the endpoint up does not fail
+- Fix: Dashboard resolves the endpoint tree by the same closest-parent rule as the Python client
+- Fix: Python client logs once when a Bridged Node reports no `BridgedDeviceBasicInformation`, and `MatterEndpoint.device_info` is now typed as optional, which it already was at runtime. `MatterNode.get_cluster()` returns `None` for an unknown endpoint instead of raising `KeyError`
+- Fix: (@colin-kiegel) Python client ignores a command result whose future is already done, so a result arriving after a disconnect no longer kills the read loop with `InvalidStateError`
+- Fix: Python client removes the pending command future when the send itself fails or is cancelled, so the entry no longer leaks and a late result can no longer settle a future nobody awaits
+- Fix: Dashboard Thread graph no longer hides an external Thread device whose neighbor-table evidence comes from a single Matter node when a complete Thread diagnostics snapshot for the same network also reports that extended address; such a device now follows the "hide offline nodes" toggle like any other node. A native (non-Matter) Thread router seen by exactly one commissioned device stayed invisible before, while dashboard search still found it
+- Fix: `get_thread_diagnostics` without an `ext_pan_id` no longer returns a diagnostics batch that is past the server cache TTL, so a client cannot act on Thread evidence the server would refuse to serve for a single network. This covers the snapshots of a query that was still running when it was taken (`in_progress`, `meshcop_no_responses_yet`, `rest_no_responses_yet`), whose account of that query is long out of date. A batch that reports a query ending without data — `timeout`, `dtls_failed`, `border_router_unreachable` and the other terminal reasons — is still returned at any age, because the panel that explains the failure shows nothing without it
+- Fix: Thread diagnostics batches state how long they stay current (`expiresInMs`, a duration from delivery so client and server clocks need not agree), and the Dashboard refetches a network once its batch reaches that point, falling back to dropping the batch when the refetch fails. A graph left open longer than the server cache TTL could otherwise keep drawing an external Thread device vouched for by diagnostics the server had already stopped serving
+- Fix: Dashboard applies only the Thread diagnostics batch an update carries, instead of replaying every batch the client has accumulated. Replaying reinstated batches the server had stopped serving, so an update for one Thread network could bring back expired data for another
+- Fix: The Noble BLE proxy reference client implements `write_and_subscribe`, so commissioning over `--ble-proxy` no longer fails at the BTP handshake with `Unknown command: write_and_subscribe`
+- Fix: The Noble BLE proxy reference client honours `start_scan`'s `service_uuids` and `allow_duplicates`, reconciles its scan state through a single serialized path so overlapping scan commands can no longer leave one unanswered or start a scan the server already ended, bounds each scan call so a wedged adapter cannot stall later commands, and drops malformed frames instead of terminating the process
+- Fix: The Noble BLE proxy reference client counts connect scan pauses, so a connect that finishes while another is still interviewing no longer resumes scanning and reinstates the macOS characteristic-discovery hang
+- Fix: A BLE proxy client that answers `already_scanning` stays tracked as scanning, so its later `scan_stopped` still reaches the Matter stack
+- Fix: The Python BLE proxy client tracks subscriptions and the last written characteristic without requiring a prior `discover_services`, and re-arms a running scan when `start_scan` changes its parameters
+- Fix: Ensure a fabric label set with `set_default_fabric_label` is respected also for servers without any commissioned device
+- Fix: `npx matter-server` starts the server; the npm package now provides the `matter-server` command
+
+## 1.4.0 (2026-08-07)
 
 - Fix: (ThirdReality) The server no longer refuses to start for good after an unclean shutdown. A power cut leaves the storage lock files behind, and the upstream stale-lock check is just `kill(pid, 0)`, which carries nothing that survives a reboot and on Linux also resolves thread ids — so once anything at all inherits the recorded id, every start fails with `[storage-lock] Storage is locked by another process`. Before taking the locks the server now reclaims those whose recorded owner holds no file in this storage, which is decisive where a name check is not: a sibling such as the BLE proxy carries a matching name but no storage. Anything short of a definite "not using this storage" leaves the lock alone, since starting a second instance on live storage would be worse than not starting
 - Feature: (ThirdReality) New `@matter-server/mqtt-bridge` package (matter2mqtt): publishes bridge status, device list, availability and OnOff state to an MQTT broker using a zigbee2mqtt-style topic layout, and routes `<device>/set` OnOff commands to the controller. Enabled via new CLI flags `--mqtt-url`, `--mqtt-prefix` and `--mqtt-client-id`; without `--mqtt-url` the server behaves as before
@@ -19,14 +165,14 @@ This page shows a detailed overview of the changes between versions without the 
 ## 1.4.0 (2026-08-07)
 
 - Enhancement: Introduces Websocket Schema version 13 (backward compatible)
-    - (MindFreeze) Adds Websocket command `get_network_topology` and event `network_topology_updated` to expose the Thread and WiFi network details for external visualization
-    - (lboue) Adds Websocket command `initiate_ota_upload` plus HTTP endpoint `POST /ota-upload/<upload_id>` and error code 101 (`OtaUploadError`) to store a local `.ota` firmware image in the server's OTA image store; new CLI flags `--ota-upload-max-in-flight` and `--ota-upload-max-size-mb`
-- Enhancement: (lboue) Dashboard supports uploading a local `.ota` firmware file from a node's detail page
-- Enhancement: (lboue) Python client gained `upload_ota_file()` for the new upload endpoint
+    - (@MindFreeze) Adds Websocket command `get_network_topology` and event `network_topology_updated` to expose the Thread and WiFi network details for external visualization
+    - (@lboue) Adds Websocket command `initiate_ota_upload` plus HTTP endpoint `POST /ota-upload/<upload_id>` and error code 101 (`OtaUploadError`) to store a local `.ota` firmware image in the server's OTA image store; new CLI flags `--ota-upload-max-in-flight` and `--ota-upload-max-size-mb`
+- Enhancement: (@lboue) Dashboard supports uploading a local `.ota` firmware file from a node's detail page
+- Enhancement: (@lboue) Python client gained `upload_ota_file()` for the new upload endpoint
 - Enhancement: Adds support for manufacturer-specific attributes on standard clusters and defines the WAGO Home Blind Control travel time attributes for the Window Covering cluster
-- Enhancement: (lboue) Dashboard endpoint view shows "Client Clusters" of an endpoint and their binding status when also a Binding cluster is available
-- Enhancement: (lboue) Added a Schedule Configuration panel (Thermostat cluster MSCH feature) to Dashboard visualizing schedules
-- Enhancement: (lboue) Added read-only panels for the CommodityTariff and MeterIdentification clusters to Dashboard
+- Enhancement: (@lboue) Dashboard endpoint view shows "Client Clusters" of an endpoint and their binding status when also a Binding cluster is available
+- Enhancement: (@lboue) Added a Schedule Configuration panel (Thermostat cluster MSCH feature) to Dashboard visualizing schedules
+- Enhancement: (@lboue) Added read-only panels for the CommodityTariff and MeterIdentification clusters to Dashboard
 - Enhancement: Dashboard dev mode adds a second read button per attribute that reads across all fabrics and shows the result without caching it
 - Fix: Dashboard endpoint view refreshes its cluster list when a cluster appears or disappears on the node, or the viewed endpoint changes
 - Fix: Dashboard attribute reads are fabric-filtered like the subscription; only a read that needs to see other fabrics' data is non-fabric-filtered, and its result is not cached
@@ -34,7 +180,7 @@ This page shows a detailed overview of the changes between versions without the 
 - Fix: Dashboard writes (node label, ACL, bindings, Chime, dev-mode attribute write) report a device-side rejection instead of appearing to succeed
 - Fix: Improves ICD UI handling when deactivating the LIT mode
 - Fix: `WRITE_ATTRIBUTE` now also accepts struct members keyed by wire field name, not only by TLV tag
-- Fix: (lboue) Python client `write_attribute()` now serializes struct/list-of-struct values keyed by TLV tag instead of field name as the server's `WRITE_ATTRIBUTE` handler expects
+- Fix: (@lboue) Python client `write_attribute()` now serializes struct/list-of-struct values keyed by TLV tag instead of field name as the server's `WRITE_ATTRIBUTE` handler expects
 - Fix: Python client cluster definitions and Dashboard cluster descriptions no longer contain the global `EventList` attribute (0xFFFA), which was provisional and deprecated in the meantime
 - Fix: Update matter.js to 0.17.9
     - BLE improvements and fixes
@@ -48,7 +194,7 @@ This page shows a detailed overview of the changes between versions without the 
 
 ## 1.3.2 (2026-07-28)
 
-- Feature: (lboue) Dashboard cluster view shows a "Semantic Tags (TagList)" panel on the Descriptor cluster
+- Feature: (@lboue) Dashboard cluster view shows a "Semantic Tags (TagList)" panel on the Descriptor cluster
 - Enhancement: Thread nodes' neighbor and route tables are re-read a few minutes after startup and every 24h afterward; disabled together with the rest of the Thread diagnostics via `--disable-thread-diagnostics`
 - Enhancement: Optimized the Dashboard "Update Connection Data" dialog for sleepy ICD LIT devices
 - Enhancement: Optimized periodic node work (time synchronization, energy polling, Thread topology refresh) for sleepy ICD LIT devices
@@ -60,17 +206,17 @@ This page shows a detailed overview of the changes between versions without the 
 
 ## 1.3.1 (2026-07-23)
 
-- Feature: (lboue) Dashboard cluster view shows an "Active Features" panel listing the cluster's supported features by name, decoded from the FeatureMap attribute
-- Fix: (lboue) Dashboard now considers the audio/video features a Camera/Audio device advertises
+- Feature: (@lboue) Dashboard cluster view shows an "Active Features" panel listing the cluster's supported features by name, decoded from the FeatureMap attribute
+- Fix: (@lboue) Dashboard now considers the audio/video features a Camera/Audio device advertises
 - Fix: Update matter.js to the latest 0.17.7 alpha
     - Enhance workarounds in commissioning for devices that drop the BLE connection too early
 
 ## 1.3.0 (2026-07-22)
 
 - Feature: (lboue) Dashboard adds a command panel for the ClosureControl cluster (Stop, Calibrate, MoveTo with position/latch/speed)
-- Enhancement: (lboue) Dashboard node view shows the endpoint list as an indented parent/child tree
-- Fix: (lboue) Detect camera Live View/Snapshot capabilities from the endpoint's clusters instead of hard-coding them by device type, so composed devices (e.g. Floodlight Camera) show the button only on the endpoint that actually supports streaming
-- Fix: (lboue) Dashboard now re-negotiates the snapshot stream when the selected resolution, codec, frame rate, or watermark/OSD settings change, captures at the selected resolution even when reusing an existing stream, and serializes concurrent capture requests
+- Enhancement: (@lboue) Dashboard node view shows the endpoint list as an indented parent/child tree
+- Fix: (@lboue) Detect camera Live View/Snapshot capabilities from the endpoint's clusters instead of hard-coding them by device type, so composed devices (e.g. Floodlight Camera) show the button only on the endpoint that actually supports streaming
+- Fix: (@lboue) Dashboard now re-negotiates the snapshot stream when the selected resolution, codec, frame rate, or watermark/OSD settings change, captures at the selected resolution even when reusing an existing stream, and serializes concurrent capture requests
 - Fix: Update matter.js to the latest 0.17.7 alpha
     - Optimizations and fixes
 
@@ -78,7 +224,7 @@ This page shows a detailed overview of the changes between versions without the 
 
 - Fix: WebRTC camera live view — `ProvideOffer` again selects the stream fields by the provider's cluster revision
 - Fix: Ensures that updating Thread data from nodes in Thread visualization also updates the chart
-- Fix: (lboue) Dashboard no longer offers live-view streaming controls for the Snapshot Camera device type, which doesn't support WebRTC — only Snapshot capture is offered
+- Fix: (@lboue) Dashboard no longer offers live-view streaming controls for the Snapshot Camera device type, which doesn't support WebRTC — only Snapshot capture is offered
 - Fix: Update matter.js to the latest 0.17.7 alpha
     - Optimizes Fallback address handling on connections
     - Ensures correct failsafe timer handling for long sleepy devices
@@ -212,8 +358,8 @@ This page shows a detailed overview of the changes between versions without the 
 ## 0.8.0 (2026-06-02)
 
 - Breaking: The server now requires at least Node.js 22.13.0 (LTS)
-- (Dev)Breaking: (rspier) Change Dev-Docker-Container to use the same user like the production container – might require permission updates
-- Enhancement: (rspier) Added inline NodeLabel editing to the Node detail view
+- (Dev)Breaking: (@rspier) Change Dev-Docker-Container to use the same user like the production container – might require permission updates
+- Enhancement: (@rspier) Added inline NodeLabel editing to the Node detail view
 - Enhancement: Dashboard network visualization fills the full window width on large/4K displays
 - Enhancement: Dashboard Thread mesh icons reflect each node's Thread and Border Router roles
 - Enhancement: Dashboard header shows a Home button in node/endpoint/cluster views for one-click return to the main dashboard
@@ -246,8 +392,8 @@ This page shows a detailed overview of the changes between versions without the 
 - Feature: Updates the generated Python client classes to match Matter 1.5.1
 - Feature: Seeds Certificates and Vendor Information to allow basic functionality also without internet access
 - Feature: Enhances the Dashboard UI to allow to clear and change the Wifi/Thread credentials
-- Feature: (iamadamreed) Adds TCL custom cluster
-- Feature: (burmistrzak) Adds "window open mode" attribute for Eve custom cluster
+- Feature: (@iamadamreed) Adds TCL custom cluster
+- Feature: (@burmistrzak) Adds "window open mode" attribute for Eve custom cluster
 - Feature: Adds experimental Camera Live View support — WebRTC streaming with snapshot capture, exposed via a Live View button on Camera and Video Doorbell device types.
 - Feature: Adds experimental Dashboard UI for the Camera AV Settings User Level Management cluster (MPTZ controls, presets, DPTZ stream info) plus a compact PTZ strip in the live-view overlay.
 - Feature: Adds experimental Dashboard UI for the Chime cluster (sound selection, play, last-played event readout).
@@ -289,7 +435,7 @@ This page shows a detailed overview of the changes between versions without the 
 
 ## 0.6.3 (2026-04-29)
 
-- Feature: (AlixBa) Add a "Hide" menu on the Thread network visualization to hide offline nodes and specific connections
+- Feature: (@AlixBa) Add a "Hide" menu on the Thread network visualization to hide offline nodes and specific connections
 - Feature: Enhances the Thread network visualization with MDNS details of the border routers in the network
 - Fix: Update matter.js to the latest 0.17.0-nightly
     - More optimizations around MDNS discovery
@@ -340,14 +486,14 @@ This page shows a detailed overview of the changes between versions without the 
 ## 0.5.13 (2026-04-02)
 
 - Fix: Ignore directories in the OTA update directory
-- Fix: (FuNK3Y) Enhances network interface name logic for Websocket binding
+- Fix: (@FuNK3Y) Enhances network interface name logic for Websocket binding
 - Fix: Update matter.js to the latest 0.17.0-nightly
     - Fixes some model and Tlv access errors from the latest version
     - Fixes a CASE establishment edge case when multiple IPs are tried
 
 ## 0.5.12 (2026-04-01)
 
-- Feature: (FuNK3Y) Allows network interface name for Websocket binding
+- Feature: (@FuNK3Y) Allows network interface name for Websocket binding
 - Enhancement/Fix: Update matter.js to the latest 0.17.0-nightly
     - RAM usage optimization and other refactorings in the background
     - Fixes a BLE crash case
@@ -461,10 +607,10 @@ This page shows a detailed overview of the changes between versions without the 
 
 ## 0.4.0 (2026-02-19)
 
-- BREAKING: (schildbach) Only for Docker/Podman users: run server as an unprivileged user. Use `chown -R 1000:1000 /path-to-data-volume` once to migrate permissions!
+- BREAKING: (@schildbach) Only for Docker/Podman users: run server as an unprivileged user. Use `chown -R 1000:1000 /path-to-data-volume` once to migrate permissions!
   If you're using rootless Podman or Docker and user namespaces, UIDs and GIDs will be remapped to a different value and the previous command
   needs to be adapted accordingly. If you want to avoid that, use the `--userns=keep-id` option when running the container.
-- Enhancement: (schildbach) Upgrade docker to use Debian Trixie as a base image, improve health checking
+- Enhancement: (@schildbach) Upgrade docker to use Debian Trixie as a base image, improve health checking
 - Enhancement: De-duplicate commands to the same node, endpoint, cluster, and command
 - Fix: (majd) Handle null values for optional command fields to restore Python Matter Server compatibility
 - Fix/Enhancement: Update matter.js to 0.16.10-nightly
@@ -477,9 +623,9 @@ This page shows a detailed overview of the changes between versions without the 
 
 ## 0.3.8 (2026-02-16)
 
-- Enhancement: (lboue) Add Eve childLock custom attributes
+- Enhancement: (@lboue) Add Eve childLock custom attributes
 - Enhancement: Enhance mapping and naming of "Unknown" Nodes in the thread graph
-- Enhancement: (lboue) Also show icons for endpoints in the dashboard
+- Enhancement: (@lboue) Also show icons for endpoints in the dashboard
 - Enhancement: Add clear warnings for test-net and local updates also in the dashboard
 - Fix: Correct write_attribute handling for structs and arrays and correctly convert the values
 - Fix: Restore compatibility to Python Matter Server in command requests and responses
@@ -496,9 +642,9 @@ This page shows a detailed overview of the changes between versions without the 
 ## 0.3.6 (2026-02-11)
 
 - Enhancement: Update Icons in Dashboard graphs and introduce in UI
-- Adjustment: (Leo2442926161) Update the Heiman custom attributes
+- Adjustment: (@Leo2442926161) Update the Heiman custom attributes
 - Adjustment: Defined Inovelli attributes writable
-- Enhancement: (lboue) Add Eve childLock custom attribute
+- Enhancement: (@lboue) Add Eve childLock custom attribute
 - Fix: Add missing package dependencies to the docker container to enable BLE support
 - Fix: Update matter.js to 0.16.9-nightly
     - Add Jitter to max ceiling for subscription when thread to spread datareports a bit better
@@ -534,7 +680,7 @@ This page shows a detailed overview of the changes between versions without the 
 
 - Feature: Expose the Matter version of the device in Node details and the Dashboard (not integrated in HA yet because not returned by the Python server)
 - Enhancement: Delay Unavailability information to websocket a bit when "just" re-establishing the subscription
-- Enhancement: (ximex) Optimizations for Dashboard code
+- Enhancement: (@ximex) Optimizations for Dashboard code
 - Fix: Correctly set the basic Information cluster information for the Controller node
 - Fix: Update matter.js to 0.16.8-nightly
     - Fixes cases where devices were not properly reconnecting as soon as a list of IPs (aka mdns discovery) was requested

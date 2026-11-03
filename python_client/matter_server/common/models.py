@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime  # noqa: TC003
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, Required, TypedDict
 
 # Enums and constants
 
@@ -26,6 +26,10 @@ class EventType(Enum):
     WEBRTC_CALLBACK = "webrtc_callback"
     THREAD_DIAGNOSTICS_UPDATED = "thread_diagnostics_updated"  # schema 12+
     NETWORK_TOPOLOGY_UPDATED = "network_topology_updated"  # schema 13+
+    CAMERA_SESSION_ENDED = "camera_session_ended"  # schema 14+
+    CAMERA_STREAM_EVICTED = "camera_stream_evicted"  # schema 14+
+    SUBSCRIPTION_REPORT = "subscription_report"  # schema 14+
+    SUBSCRIPTION_ENDED = "subscription_ended"  # schema 14+
 
 
 class APICommand(str, Enum):
@@ -46,6 +50,7 @@ class APICommand(str, Enum):
     DISCOVER = "discover"
     INTERVIEW_NODE = "interview_node"
     DEVICE_COMMAND = "device_command"
+    BATCHED_DEVICE_COMMANDS = "batched_device_commands"  # schema 14+
     REMOVE_NODE = "remove_node"
     GET_VENDOR_NAMES = "get_vendor_names"
     READ_ATTRIBUTE = "read_attribute"
@@ -69,6 +74,19 @@ class APICommand(str, Enum):
     UNREGISTER_ICD = "unregister_icd"
     GET_NETWORK_TOPOLOGY = "get_network_topology"
     INITIATE_OTA_UPLOAD = "initiate_ota_upload"
+    CAMERA_GET_CAPABILITIES = "camera_get_capabilities"  # schema 14+
+    CAMERA_START_STREAM = "camera_start_stream"  # schema 14+
+    CAMERA_PROVIDE_ANSWER = "camera_provide_answer"  # schema 14+
+    CAMERA_PROVIDE_ICE_CANDIDATES = "camera_provide_ice_candidates"  # schema 14+
+    CAMERA_STOP_STREAM = "camera_stop_stream"  # schema 14+
+    CAMERA_SNAPSHOT = "camera_snapshot"  # schema 14+
+    CAMERA_RELEASE_STREAM = "camera_release_stream"  # schema 14+
+    READ = "read"  # schema 14+
+    SUBSCRIBE = "subscribe"  # schema 14+
+    UNSUBSCRIBE = "unsubscribe"  # schema 14+
+    ENABLE_AUTO_SUBSCRIPTION = "enable_auto_subscription"  # schema 14+
+    DISABLE_AUTO_SUBSCRIPTION = "disable_auto_subscription"  # schema 14+
+    PARSE_ONBOARDING_PAYLOAD = "parse_onboarding_payload"  # schema 14+
 
 
 EventCallBackType = Callable[[EventType, Any], None]
@@ -104,6 +122,8 @@ class MatterNodeData:
     # a set of tuples in format (endpoint_id, cluster_id, attribute_id)
     # where each value can also be a None for wildcard
     attribute_subscriptions: set[tuple[int | None, int | None, int | None]] = field(default_factory=set)
+    # direct parent endpoint of each endpoint other than 0, None when the server does not send it
+    endpoint_parents: dict[int, int] | None = None
 
 
 @dataclass
@@ -137,19 +157,22 @@ class WebRTCIceCandidate:
 class WebRTCCallbackData:
     """Payload of a webrtc_callback event.
 
+    `event_type` is a `WebRTCEventType` value, as a plain `str`.
     `data` shape varies by event_type:
       - "offer": {"sdp": str, "ice_servers": list | None, "ice_transport_policy": str | None}
       - "answer": {"sdp": str}
       - "ice_candidates": {"ice_candidates": list[WebRTCIceCandidate]}
       - "end": {"reason": int}
+    `client_session_key` is the key the session was started with, absent when it had none.
     """
 
-    event_type: WebRTCEventType
+    event_type: str
     webrtc_session_id: int
     node_id: int
     endpoint_id: int
     fabric_index: int
     data: dict | None
+    client_session_key: str | None = None
 
 
 @dataclass
@@ -196,6 +219,9 @@ class ErrorResultMessage(ResultMessageBase):
 
     error_code: int
     details: str | None = None
+    status: int | None = None
+    cluster_status: int | None = None
+    reason: str | None = None
 
 
 @dataclass
@@ -258,6 +284,10 @@ class CommissioningParameters:
     setup_pin_code: int
     setup_manual_code: str
     setup_qr_code: str
+    discriminator: int | None = None
+    vendor_id: int | None = None
+    product_id: int | None = None
+    commissioning_timeout: int | None = None
 
 
 @dataclass
@@ -307,6 +337,11 @@ class NetworkTopologyNode:
     rloc16: int | None = None
     ext_pan_id: str | None = None
     network_name: str | None = None
+    # Wi-Fi SSID and BSSID, on wifi_ap nodes and the stations joined to them.
+    ssid: str | None = None
+    bssid: str | None = None
+    # Border router mDNS host name, already normalized to a display label.
+    host_name: str | None = None
     vendor_name: str | None = None
     model_name: str | None = None
     last_seen: int | None = None
@@ -412,3 +447,498 @@ class MatterSoftwareVersion:
             "release_notes_url": self.release_notes_url,
             "update_source": self.update_source.value,
         }
+
+
+# Camera API (schema 14+). Names are spelled as on the wire; value sets such as codec names,
+# stream usages and `provenance` stay `str` so a newer server can add values.
+
+
+class CameraResolutionHint(TypedDict):
+    """A resolution in a camera command's arguments."""
+
+    width: int
+    height: int
+
+
+class CameraResolutionTarget(TypedDict, total=False):
+    """The size `camera_snapshot` should aim for. State `width`, `height` or both; at least one."""
+
+    width: int
+    height: int
+
+
+class CameraVideoHints(TypedDict, total=False):
+    """Video hints for `camera_start_stream`; every key set is a hard requirement."""
+
+    codecs: list[str]
+    min_resolution: CameraResolutionHint
+    max_resolution: CameraResolutionHint
+    min_frame_rate: int
+    max_frame_rate: int
+    min_bit_rate: int
+    max_bit_rate: int
+    watermark_enabled: bool
+    osd_enabled: bool
+
+
+class CameraAudioHints(TypedDict, total=False):
+    """Audio hints for `camera_start_stream`; setting any key makes audio required."""
+
+    codecs: list[str]
+    channel_count: int
+    sample_rate: int
+    bit_rate: int
+
+
+class CameraIceServer(TypedDict, total=False):
+    """An ICE server in the W3C `RTCIceServer` spelling."""
+
+    urls: Required[str | list[str]]
+    username: str
+    credential: str
+    caid: int
+
+
+@dataclass
+class CameraResolution:
+    """A resolution as the camera reports it."""
+
+    width: int
+    height: int
+
+
+@dataclass
+class CameraRateDistortionPoint:
+    """A codec/resolution trade-off point and its minimum bit rate."""
+
+    codec: str
+    resolution: CameraResolution
+    min_bit_rate: int
+
+
+@dataclass
+class CameraSnapshotCapability:
+    """One snapshot capability; `image_codec` is the value `camera_snapshot` takes as `codec`."""
+
+    resolution: CameraResolution
+    max_frame_rate: int
+    image_codec: str
+    requires_encoded_pixels: bool
+    requires_hardware_encoder: bool
+
+
+@dataclass
+class CameraAllocatedVideoStream:
+    """A video stream allocated on the camera."""
+
+    # pylint: disable=too-many-instance-attributes
+
+    video_stream_id: int
+    stream_usage: str
+    video_codec: str
+    min_resolution: CameraResolution
+    max_resolution: CameraResolution
+    min_frame_rate: int
+    max_frame_rate: int
+    min_bit_rate: int
+    max_bit_rate: int
+    reference_count: int
+    allocated_by_server: bool
+    watermark_enabled: bool
+    osd_enabled: bool
+
+
+@dataclass
+class CameraAllocatedAudioStream:
+    """An audio stream allocated on the camera."""
+
+    audio_stream_id: int
+    stream_usage: str
+    audio_codec: str
+    channel_count: int
+    sample_rate: int
+    bit_rate: int
+    bit_depth: int
+    reference_count: int
+    allocated_by_server: bool
+
+
+@dataclass
+class CameraAllocatedSnapshotStream:
+    """A snapshot stream allocated on the camera.
+
+    A stream with `hardware_encoder` keeps one of the camera's encoders until it is released,
+    even when `reference_count` is 0.
+    """
+
+    # pylint: disable=too-many-instance-attributes
+
+    snapshot_stream_id: int
+    image_codec: str
+    min_resolution: CameraResolution
+    max_resolution: CameraResolution
+    reference_count: int
+    allocated_by_server: bool
+    frame_rate: int
+    encoded_pixels: bool
+    hardware_encoder: bool
+    watermark_enabled: bool
+    osd_enabled: bool
+
+
+@dataclass
+class CameraWebRtcSession:
+    """A WebRTC session the camera reports for this server's fabric.
+
+    `camera_stop_stream` can end it only when `established_by_this_server` is true.
+    """
+
+    webrtc_session_id: int
+    peer_node_id: int
+    peer_endpoint_id: int
+    stream_usage: str
+    video_stream_ids: list[int]
+    audio_stream_ids: list[int]
+    established_by_this_server: bool
+
+
+@dataclass
+class CameraPrivacy:
+    """The camera's privacy switches; `None` where the camera has no such switch."""
+
+    soft_recording_mode_enabled: bool | None = None
+    soft_livestream_mode_enabled: bool | None = None
+    hard_mode_on: bool | None = None
+
+
+@dataclass
+class CameraVideoCapabilities:
+    """Video facts the camera states."""
+
+    rate_distortion_points: list[CameraRateDistortionPoint]
+    codecs: list[str]
+    sensor: CameraResolution | None = None
+    min_viewport: CameraResolution | None = None
+    max_fps: int | None = None
+    max_hdr_fps: int | None = None
+    hdr_capable: bool | None = None
+
+
+@dataclass
+class CameraAudioCapabilities:
+    """Audio facts the camera states."""
+
+    codecs: list[str]
+    sample_rates: list[int]
+    bit_depths: list[int]
+    channels: int | None = None
+    two_way_talk_support: str | None = None
+
+
+@dataclass
+class CameraSnapshotCapabilities:
+    """Snapshot facts the camera states."""
+
+    capabilities: list[CameraSnapshotCapability]
+
+
+@dataclass
+class CameraLimits:
+    """Capacity limits and stream usages the camera states."""
+
+    supported_stream_usages: list[str]
+    stream_usage_priorities: list[str]
+    max_encoded_pixel_rate: int | None = None
+    max_concurrent_encoders: int | None = None
+    max_network_bandwidth: int | None = None
+
+
+@dataclass
+class CameraAllocatedStreams:
+    """The streams currently allocated on the camera."""
+
+    video: list[CameraAllocatedVideoStream]
+    audio: list[CameraAllocatedAudioStream]
+    snapshot: list[CameraAllocatedSnapshotStream]
+
+
+@dataclass
+class CameraCapabilities:
+    """Result of `camera_get_capabilities`.
+
+    `features` is `None` while the camera has not reported its features; the server then checks
+    nothing against features. An empty list means the camera has none.
+    """
+
+    privacy: CameraPrivacy
+    video: CameraVideoCapabilities
+    audio: CameraAudioCapabilities
+    snapshot: CameraSnapshotCapabilities
+    limits: CameraLimits
+    allocated: CameraAllocatedStreams
+    sessions: list[CameraWebRtcSession]
+    features: list[str] | None = None
+
+
+@dataclass
+class CameraResolutionRange:
+    """A resolution range."""
+
+    min: CameraResolution
+    max: CameraResolution
+
+
+@dataclass
+class CameraValueRange:
+    """A numeric range."""
+
+    min: int
+    max: int
+
+
+@dataclass
+class CameraEncoderBudgetNarrowing:
+    """Ceilings lowered to fit the encoder budget, each with the value it would have had otherwise."""
+
+    max_frame_rate: int | None = None
+    max_resolution: CameraResolution | None = None
+
+
+@dataclass
+class CameraStartStreamVideoResult:
+    """The video track of a `camera_start_stream` result.
+
+    `provenance` is `allocated`, `reused` or `adopted`. `evicted_stream_ids` and
+    `narrowed_by_encoder_budget` are `None` when the request evicted or narrowed nothing.
+    """
+
+    # pylint: disable=too-many-instance-attributes
+
+    stream_id: int
+    codec: str
+    resolution: CameraResolutionRange
+    frame_rate: CameraValueRange
+    bit_rate: CameraValueRange
+    provenance: str
+    degraded: bool
+    watermark_enabled: bool
+    osd_enabled: bool
+    evicted_stream_ids: list[int] | None = None
+    narrowed_by_encoder_budget: CameraEncoderBudgetNarrowing | None = None
+
+
+@dataclass
+class CameraStartStreamAudioResult:
+    """The audio track of a `camera_start_stream` result."""
+
+    stream_id: int
+    codec: str
+    channel_count: int
+    sample_rate: int
+    bit_rate: int
+    bit_depth: int
+    provenance: str
+
+
+@dataclass
+class CameraStartStreamResult:
+    """Result of `camera_start_stream`; `mode` is `solicit_offer` or `provide_offer`.
+
+    `talkback` is true when talkback was asked for, the offer's audio can send, the camera states
+    half or full duplex and `audio` is not None. The audio direction in the camera's answer is the final word.
+    """
+
+    webrtc_session_id: int
+    mode: str
+    video: CameraStartStreamVideoResult | None
+    audio: CameraStartStreamAudioResult | None
+    talkback: bool = False
+
+
+@dataclass
+class CameraStopStreamResult:
+    """Result of `camera_stop_stream`.
+
+    `ended` is false when the camera answered `NOT_FOUND`: an unknown id or another controller's session.
+    """
+
+    ended: bool
+
+
+@dataclass
+class CameraSnapshotResult:
+    """Result of `camera_snapshot`.
+
+    `data` is the base64-encoded image. The snapshot stream `stream_id` stays allocated until
+    `camera_release_stream` frees it. `provenance` is `allocated`, `reused` or `adopted`, as for
+    `camera_start_stream`.
+    """
+
+    data: str
+    codec: str
+    resolution: CameraResolution
+    degraded: bool
+    stream_id: int
+    provenance: str
+
+
+@dataclass
+class CameraSessionEndedData:
+    """Payload of the `camera_session_ended` event.
+
+    `cause` is `peer`, `other_connection`, `camera_restarted`, `camera_dropped` or `node_removed`.
+    `reason` is the camera's WebRTCEndReasonEnum value, sent with `cause` `peer` when the camera stated one.
+    `client_session_key` is the key the session was started with, absent when it had none.
+    """
+
+    node_id: int
+    endpoint_id: int
+    webrtc_session_id: int
+    cause: str
+    reason: int | None = None
+    client_session_key: str | None = None
+
+
+@dataclass
+class CameraStreamEvictedData:
+    """Payload of the `camera_stream_evicted` event; `kind` is `video` or `snapshot`."""
+
+    node_id: int
+    endpoint_id: int
+    kind: str
+    stream_id: int
+
+
+@dataclass
+class CameraStreamIncompatibleBound:
+    """The caller limit error 102 ruled out before asking the camera; values are text."""
+
+    field: str
+    requested: str
+    limit: str
+
+
+@dataclass
+class CameraOccupyingStream:
+    """A stream using capacity that a request refused with error 103 needed."""
+
+    kind: str
+    stream_id: int
+    reference_count: int
+
+
+class EventPath(TypedDict):
+    """Event path of a `read`: "endpoint/cluster/event", wildcards allowed."""
+
+    path: str
+
+
+class SubscribeEventPath(EventPath, total=False):
+    """Event path of a `subscribe`; `is_urgent` is the IsUrgent flag of that path."""
+
+    is_urgent: bool
+
+
+class DataVersionFilter(TypedDict):
+    """Skip a cluster whose data version is still `data_version`; `path` is "endpoint/cluster", both concrete."""
+
+    path: str
+    data_version: int
+
+
+@dataclass
+class PathStatus:
+    """Matter status the device returned for one path; `cluster_status` is the cluster-specific one."""
+
+    status: int
+    cluster_status: int | None = None
+
+
+@dataclass
+class InteractionReport:
+    """Result of `read`, and the shape of every report of a subscription.
+
+    `attributes` is keyed by attribute path as in `read_attribute`. The status maps are keyed by the
+    path in the request format and are `None` when the device returned no status. `data_versions`
+    holds the data version of each cluster with a reported attribute value, keyed by
+    `endpoint/cluster`.
+    """
+
+    attributes: dict[str, Any]
+    events: list[MatterNodeEvent]
+    attribute_status: dict[str, PathStatus] | None = None
+    event_status: dict[str, PathStatus] | None = None
+    data_versions: dict[str, int] | None = None
+
+
+@dataclass(kw_only=True)
+class SubscribeResult(InteractionReport):
+    """Result of `subscribe`: the priming report plus the id the device assigned.
+
+    A subscription id is unique only per node; name a subscription by `node_id` and `subscription_id`.
+    """
+
+    subscription_id: int
+
+
+@dataclass(kw_only=True)
+class SubscriptionReportData(InteractionReport):
+    """Payload of the `subscription_report` event."""
+
+    node_id: int
+    subscription_id: int
+
+
+@dataclass
+class SubscriptionEndedData:
+    """Payload of the `subscription_ended` event."""
+
+    node_id: int
+    subscription_id: int
+
+
+SubscriptionListener = Callable[[EventType, SubscriptionReportData | SubscriptionEndedData], None]
+
+
+@dataclass
+class BatchedCommandResult:
+    """The device's answer to one command of `batched_device_commands`; `status` 0 is success."""
+
+    status: int
+    cluster_status: int | None = None
+    response: Any = None
+
+
+@dataclass
+class QrOnboardingPayload:
+    """One payload of a QR code; `vendor_id`/`product_id` are None where the payload says 0."""
+
+    version: int
+    flow_type: int
+    discovery_capabilities: int
+    discriminator: int
+    setup_pin_code: int
+    vendor_id: int | None = None
+    product_id: int | None = None
+
+
+@dataclass
+class QrOnboardingPayloadResult:
+    """Result of `parse_onboarding_payload` for a QR code: one entry per payload it carries."""
+
+    type: str
+    payloads: list[QrOnboardingPayload]
+
+
+@dataclass
+class ManualOnboardingPayloadResult:
+    """Result of `parse_onboarding_payload` for a manual pairing code.
+
+    `vendor_id`/`product_id` are set only by the 21-digit form, and are None where it says 0.
+    """
+
+    type: str
+    short_discriminator: int
+    setup_pin_code: int
+    vendor_id: int | None = None
+    product_id: int | None = None

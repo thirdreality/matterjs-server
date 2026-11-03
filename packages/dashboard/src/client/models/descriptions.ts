@@ -12,7 +12,7 @@ export interface ClusterAttributeDescription {
     id: number;
     cluster_id: number;
     label: string;
-    type: string;
+    type?: string;
     writable: boolean;
 }
 
@@ -2665,7 +2665,6 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 9,
                 "cluster_id": 51,
                 "label": "DoNotUse",
-                "type": "Optional[unknown]",
                 "writable": true
             },
             "10": {
@@ -3819,7 +3818,7 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 57,
                 "label": "DataModelRevision",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint16]",
                 "writable": false
             },
             "1": {
@@ -3833,7 +3832,7 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 2,
                 "cluster_id": 57,
                 "label": "VendorId",
-                "type": "Optional[unknown]",
+                "type": "Optional[vendor-id]",
                 "writable": false
             },
             "3": {
@@ -3847,7 +3846,7 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 4,
                 "cluster_id": 57,
                 "label": "ProductId",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint16]",
                 "writable": false
             },
             "5": {
@@ -3868,7 +3867,7 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 7,
                 "cluster_id": 57,
                 "label": "HardwareVersion",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint16]",
                 "writable": false
             },
             "8": {
@@ -3882,7 +3881,7 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 9,
                 "cluster_id": 57,
                 "label": "SoftwareVersion",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "10": {
@@ -3952,35 +3951,35 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 19,
                 "cluster_id": 57,
                 "label": "CapabilityMinima",
-                "type": "Optional[unknown]",
+                "type": "Optional[CapabilityMinimaStruct]",
                 "writable": false
             },
             "20": {
                 "id": 20,
                 "cluster_id": 57,
                 "label": "ProductAppearance",
-                "type": "Optional[unknown]",
+                "type": "Optional[ProductAppearanceStruct]",
                 "writable": false
             },
             "21": {
                 "id": 21,
                 "cluster_id": 57,
                 "label": "SpecificationVersion",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "22": {
                 "id": 22,
                 "cluster_id": 57,
                 "label": "MaxPathsPerInvoke",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint16]",
                 "writable": false
             },
             "24": {
                 "id": 24,
                 "cluster_id": 57,
                 "label": "ConfigurationVersion",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "65528": {
@@ -4906,28 +4905,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 73,
                 "label": "SupportedModes",
-                "type": "unknown",
+                "type": "List[ModeOptionStruct]",
                 "writable": false
             },
             "1": {
                 "id": 1,
                 "cluster_id": 73,
                 "label": "CurrentMode",
-                "type": "unknown",
+                "type": "uint8",
                 "writable": false
             },
             "2": {
                 "id": 2,
                 "cluster_id": 73,
                 "label": "StartUpMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "3": {
                 "id": 3,
                 "cluster_id": 73,
                 "label": "OnMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "65528": {
@@ -5145,28 +5144,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 81,
                 "label": "SupportedModes",
-                "type": "unknown",
+                "type": "List[ModeOptionStruct]",
                 "writable": false
             },
             "1": {
                 "id": 1,
                 "cluster_id": 81,
                 "label": "CurrentMode",
-                "type": "unknown",
+                "type": "uint8",
                 "writable": false
             },
             "2": {
                 "id": 2,
                 "cluster_id": 81,
                 "label": "StartUpMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "3": {
                 "id": 3,
                 "cluster_id": 81,
                 "label": "OnMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "65528": {
@@ -5229,28 +5228,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 82,
                 "label": "SupportedModes",
-                "type": "unknown",
+                "type": "List[ModeOptionStruct]",
                 "writable": false
             },
             "1": {
                 "id": 1,
                 "cluster_id": 82,
                 "label": "CurrentMode",
-                "type": "unknown",
+                "type": "uint8",
                 "writable": false
             },
             "2": {
                 "id": 2,
                 "cluster_id": 82,
                 "label": "StartUpMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "3": {
                 "id": 3,
                 "cluster_id": 82,
                 "label": "OnMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "65528": {
@@ -5395,28 +5394,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 84,
                 "label": "SupportedModes",
-                "type": "unknown",
+                "type": "List[ModeOptionStruct]",
                 "writable": false
             },
             "1": {
                 "id": 1,
                 "cluster_id": 84,
                 "label": "CurrentMode",
-                "type": "unknown",
+                "type": "uint8",
                 "writable": false
             },
             "2": {
                 "id": 2,
                 "cluster_id": 84,
                 "label": "StartUpMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "3": {
                 "id": 3,
                 "cluster_id": 84,
                 "label": "OnMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "65528": {
@@ -5484,28 +5483,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 85,
                 "label": "SupportedModes",
-                "type": "unknown",
+                "type": "List[ModeOptionStruct]",
                 "writable": false
             },
             "1": {
                 "id": 1,
                 "cluster_id": 85,
                 "label": "CurrentMode",
-                "type": "unknown",
+                "type": "uint8",
                 "writable": false
             },
             "2": {
                 "id": 2,
                 "cluster_id": 85,
                 "label": "StartUpMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "3": {
                 "id": 3,
                 "cluster_id": 85,
                 "label": "OnMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "65528": {
@@ -5771,28 +5770,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 89,
                 "label": "SupportedModes",
-                "type": "unknown",
+                "type": "List[ModeOptionStruct]",
                 "writable": false
             },
             "1": {
                 "id": 1,
                 "cluster_id": 89,
                 "label": "CurrentMode",
-                "type": "unknown",
+                "type": "uint8",
                 "writable": false
             },
             "2": {
                 "id": 2,
                 "cluster_id": 89,
                 "label": "StartUpMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "3": {
                 "id": 3,
                 "cluster_id": 89,
                 "label": "OnMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "65528": {
@@ -6175,28 +6174,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 94,
                 "label": "SupportedModes",
-                "type": "unknown",
+                "type": "List[ModeOptionStruct]",
                 "writable": false
             },
             "1": {
                 "id": 1,
                 "cluster_id": 94,
                 "label": "CurrentMode",
-                "type": "unknown",
+                "type": "uint8",
                 "writable": false
             },
             "2": {
                 "id": 2,
                 "cluster_id": 94,
                 "label": "StartUpMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "3": {
                 "id": 3,
                 "cluster_id": 94,
                 "label": "OnMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "65528": {
@@ -6620,7 +6619,6 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 98,
                 "label": "DoNotUse",
-                "type": "Optional[unknown]",
                 "writable": false
             },
             "1": {
@@ -6934,28 +6932,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 1,
                 "cluster_id": 101,
                 "label": "MaxMembershipCount",
-                "type": "Optional[uint16]",
+                "type": "uint16",
                 "writable": false
             },
             "2": {
                 "id": 2,
                 "cluster_id": 101,
                 "label": "MaxMcastAddrCount",
-                "type": "Optional[uint16]",
+                "type": "uint16",
                 "writable": false
             },
             "3": {
                 "id": 3,
                 "cluster_id": 101,
                 "label": "UsedMcastAddrCount",
-                "type": "Optional[uint16]",
+                "type": "uint16",
                 "writable": false
             },
             "4": {
                 "id": 4,
                 "cluster_id": 101,
                 "label": "FabricUnderTest",
-                "type": "Optional[fabric-idx]",
+                "type": "fabric-idx",
                 "writable": false
             },
             "65528": {
@@ -8181,7 +8179,7 @@ export const clusters: Record<number, ClusterDescription> = {
             "1": {
                 "id": 1,
                 "cluster_id": 151,
-                "label": "ActiveMessageIDs",
+                "label": "ActiveMessageIds",
                 "type": "List[MessageID]",
                 "writable": false
             },
@@ -8696,7 +8694,7 @@ export const clusters: Record<number, ClusterDescription> = {
             "1": {
                 "bit": 1,
                 "code": "SOC",
-                "label": "So Creporting"
+                "label": "SoC Reporting"
             },
             "2": {
                 "bit": 2,
@@ -8711,7 +8709,7 @@ export const clusters: Record<number, ClusterDescription> = {
             "4": {
                 "bit": 4,
                 "code": "V2X",
-                "label": "V2 X"
+                "label": "V2X"
             }
         }
     },
@@ -8890,28 +8888,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 157,
                 "label": "SupportedModes",
-                "type": "unknown",
+                "type": "List[ModeOptionStruct]",
                 "writable": false
             },
             "1": {
                 "id": 1,
                 "cluster_id": 157,
                 "label": "CurrentMode",
-                "type": "unknown",
+                "type": "uint8",
                 "writable": false
             },
             "2": {
                 "id": 2,
                 "cluster_id": 157,
                 "label": "StartUpMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "3": {
                 "id": 3,
                 "cluster_id": 157,
                 "label": "OnMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "65528": {
@@ -8974,28 +8972,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 158,
                 "label": "SupportedModes",
-                "type": "unknown",
+                "type": "List[ModeOptionStruct]",
                 "writable": false
             },
             "1": {
                 "id": 1,
                 "cluster_id": 158,
                 "label": "CurrentMode",
-                "type": "unknown",
+                "type": "uint8",
                 "writable": false
             },
             "2": {
                 "id": 2,
                 "cluster_id": 158,
                 "label": "StartUpMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "3": {
                 "id": 3,
                 "cluster_id": 158,
                 "label": "OnMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "65528": {
@@ -9058,28 +9056,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 159,
                 "label": "SupportedModes",
-                "type": "unknown",
+                "type": "List[ModeOptionStruct]",
                 "writable": false
             },
             "1": {
                 "id": 1,
                 "cluster_id": 159,
                 "label": "CurrentMode",
-                "type": "unknown",
+                "type": "uint8",
                 "writable": false
             },
             "2": {
                 "id": 2,
                 "cluster_id": 159,
                 "label": "StartUpMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "3": {
                 "id": 3,
                 "cluster_id": 159,
                 "label": "OnMode",
-                "type": "Optional[Nullable[unknown]]",
+                "type": "Optional[Nullable[uint8]]",
                 "writable": true
             },
             "65528": {
@@ -9457,7 +9455,6 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 52,
                 "cluster_id": 257,
                 "label": "SecurityLevel",
-                "type": "Optional[unknown]",
                 "writable": false
             },
             "53": {
@@ -9924,6 +9921,20 @@ export const clusters: Record<number, ClusterDescription> = {
                 "cluster_id": 258,
                 "label": "WagoSlatRotationTime",
                 "type": "Optional[uint32]",
+                "writable": true
+            },
+            "355729412": {
+                "id": 355729412,
+                "cluster_id": 258,
+                "label": "WagoManualMode",
+                "type": "Optional[bool]",
+                "writable": true
+            },
+            "355729413": {
+                "id": 355729413,
+                "cluster_id": 258,
+                "label": "WagoBlindType",
+                "type": "Optional[uint8]",
                 "writable": true
             }
         },
@@ -10731,21 +10742,21 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 7,
                 "cluster_id": 513,
                 "label": "PiCoolingDemand",
-                "type": "Optional[unknown]",
-                "writable": true
+                "type": "Optional[uint8]",
+                "writable": false
             },
             "8": {
                 "id": 8,
                 "cluster_id": 513,
                 "label": "PiHeatingDemand",
-                "type": "Optional[unknown]",
-                "writable": true
+                "type": "Optional[uint8]",
+                "writable": false
             },
             "9": {
                 "id": 9,
                 "cluster_id": 513,
                 "label": "HvacSystemTypeConfiguration",
-                "type": "Optional[unknown]",
+                "type": "Optional[HVACSystemTypeBitmap]",
                 "writable": true
             },
             "16": {
@@ -10864,7 +10875,7 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 37,
                 "cluster_id": 513,
                 "label": "ThermostatProgrammingOperationMode",
-                "type": "Optional[unknown]",
+                "type": "Optional[ProgrammingOperationModeBitmap]",
                 "writable": true
             },
             "41": {
@@ -10899,43 +10910,43 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 52,
                 "cluster_id": 513,
                 "label": "OccupiedSetback",
-                "type": "Optional[unknown]",
+                "type": "Optional[Nullable[UnsignedTemperature]]",
                 "writable": true
             },
             "53": {
                 "id": 53,
                 "cluster_id": 513,
                 "label": "OccupiedSetbackMin",
-                "type": "Optional[unknown]",
-                "writable": true
+                "type": "Optional[Nullable[UnsignedTemperature]]",
+                "writable": false
             },
             "54": {
                 "id": 54,
                 "cluster_id": 513,
                 "label": "OccupiedSetbackMax",
-                "type": "Optional[unknown]",
-                "writable": true
+                "type": "Optional[Nullable[UnsignedTemperature]]",
+                "writable": false
             },
             "55": {
                 "id": 55,
                 "cluster_id": 513,
                 "label": "UnoccupiedSetback",
-                "type": "Optional[unknown]",
+                "type": "Optional[Nullable[UnsignedTemperature]]",
                 "writable": true
             },
             "56": {
                 "id": 56,
                 "cluster_id": 513,
                 "label": "UnoccupiedSetbackMin",
-                "type": "Optional[unknown]",
-                "writable": true
+                "type": "Optional[Nullable[UnsignedTemperature]]",
+                "writable": false
             },
             "57": {
                 "id": 57,
                 "cluster_id": 513,
                 "label": "UnoccupiedSetbackMax",
-                "type": "Optional[unknown]",
-                "writable": true
+                "type": "Optional[Nullable[UnsignedTemperature]]",
+                "writable": false
             },
             "58": {
                 "id": 58,
@@ -12045,7 +12056,7 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 4,
                 "cluster_id": 1024,
                 "label": "LightSensorType",
-                "type": "Optional[Nullable[uint8]]",
+                "type": "Optional[Nullable[LightSensorTypeEnum]]",
                 "writable": false
             },
             "65528": {
@@ -14202,13 +14213,13 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 4,
                 "cluster_id": 1073,
                 "label": "AmbientContextTypeSupported",
-                "type": "List[ModeSelect.SemanticTagStruct]",
+                "type": "List[semtag]",
                 "writable": false
             },
             "5": {
                 "id": 5,
                 "cluster_id": 1073,
-                "label": "ObjectCountReached",
+                "label": "ObjectCountThresholdReached",
                 "type": "Optional[bool]",
                 "writable": false
             },
@@ -14231,7 +14242,7 @@ export const clusters: Record<number, ClusterDescription> = {
                 "cluster_id": 1073,
                 "label": "SimultaneousDetectionLimit",
                 "type": "Optional[uint8]",
-                "writable": true
+                "writable": false
             },
             "9": {
                 "id": 9,
@@ -17712,7 +17723,7 @@ export const clusters: Record<number, ClusterDescription> = {
                 "cluster_id": 1875,
                 "label": "AdministratorFabricIndex",
                 "type": "Nullable[fabric-idx]",
-                "writable": true
+                "writable": false
             },
             "65528": {
                 "id": 65528,
@@ -18000,63 +18011,63 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 1285,
                 "cluster_id": 2820,
                 "label": "RmsVoltage",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "1288": {
                 "id": 1288,
                 "cluster_id": 2820,
                 "label": "RmsCurrent",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "1291": {
                 "id": 1291,
                 "cluster_id": 2820,
                 "label": "ActivePower",
-                "type": "Optional[unknown]",
+                "type": "Optional[int32]",
                 "writable": false
             },
             "1536": {
                 "id": 1536,
                 "cluster_id": 2820,
                 "label": "AcVoltageMultiplier",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "1537": {
                 "id": 1537,
                 "cluster_id": 2820,
                 "label": "AcVoltageDivisor",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "1538": {
                 "id": 1538,
                 "cluster_id": 2820,
                 "label": "AcCurrentMultiplier",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "1539": {
                 "id": 1539,
                 "cluster_id": 2820,
                 "label": "AcCurrentDivisor",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "1540": {
                 "id": 1540,
                 "cluster_id": 2820,
                 "label": "AcPowerMultiplier",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "1541": {
                 "id": 1541,
                 "cluster_id": 2820,
                 "label": "AcPowerDivisor",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "65528": {
@@ -18253,6 +18264,521 @@ export const clusters: Record<number, ClusterDescription> = {
         "commands": {},
         "features": {}
     },
+    "291503114": {
+        "id": 291503114,
+        "label": "AqaraAmbientSensingConfigurationCluster",
+        "attributes": {
+            "0": {
+                "id": 0,
+                "cluster_id": 291503114,
+                "label": "InstallMode",
+                "type": "Optional[uint8]",
+                "writable": true
+            },
+            "1": {
+                "id": 1,
+                "cluster_id": 291503114,
+                "label": "SupportedInstallModes",
+                "type": "List[uint8]",
+                "writable": false
+            },
+            "2": {
+                "id": 2,
+                "cluster_id": 291503114,
+                "label": "SideInstall",
+                "type": "Optional[uint8]",
+                "writable": true
+            },
+            "3": {
+                "id": 3,
+                "cluster_id": 291503114,
+                "label": "SupportedSideInstalls",
+                "type": "List[uint8]",
+                "writable": false
+            },
+            "4": {
+                "id": 4,
+                "cluster_id": 291503114,
+                "label": "InstallHeight",
+                "type": "Optional[uint16]",
+                "writable": true
+            },
+            "5": {
+                "id": 5,
+                "cluster_id": 291503114,
+                "label": "InstallHeightMin",
+                "type": "Optional[uint16]",
+                "writable": false
+            },
+            "6": {
+                "id": 6,
+                "cluster_id": 291503114,
+                "label": "InstallHeightMax",
+                "type": "Optional[uint16]",
+                "writable": false
+            },
+            "7": {
+                "id": 7,
+                "cluster_id": 291503114,
+                "label": "InstallStatus",
+                "type": "Optional[uint8]",
+                "writable": false
+            },
+            "8": {
+                "id": 8,
+                "cluster_id": 291503114,
+                "label": "InstallAngle",
+                "type": "Optional[uint8]",
+                "writable": false
+            },
+            "16": {
+                "id": 16,
+                "cluster_id": 291503114,
+                "label": "Zones",
+                "type": "List[AqaraZoneStruct]",
+                "writable": false
+            },
+            "17": {
+                "id": 17,
+                "cluster_id": 291503114,
+                "label": "MaxZones",
+                "type": "Optional[uint8]",
+                "writable": false
+            },
+            "18": {
+                "id": 18,
+                "cluster_id": 291503114,
+                "label": "EntryExitRegionBitmask",
+                "type": "Optional[bytes]",
+                "writable": true
+            },
+            "19": {
+                "id": 19,
+                "cluster_id": 291503114,
+                "label": "InterferenceRegionBitmask",
+                "type": "Optional[bytes]",
+                "writable": true
+            },
+            "20": {
+                "id": 20,
+                "cluster_id": 291503114,
+                "label": "EdgeRegionBitmask",
+                "type": "Optional[bytes]",
+                "writable": true
+            },
+            "22": {
+                "id": 22,
+                "cluster_id": 291503114,
+                "label": "LearningReportingTimeout",
+                "type": "Optional[uint8]",
+                "writable": false
+            },
+            "35": {
+                "id": 35,
+                "cluster_id": 291503114,
+                "label": "EnableHumanCountDetection",
+                "type": "Optional[bool]",
+                "writable": true
+            },
+            "41": {
+                "id": 41,
+                "cluster_id": 291503114,
+                "label": "EnableAiHighPrecisionRecognition",
+                "type": "Optional[bool]",
+                "writable": true
+            },
+            "42": {
+                "id": 42,
+                "cluster_id": 291503114,
+                "label": "EnableAiAdaptiveSensitivity",
+                "type": "Optional[bool]",
+                "writable": true
+            },
+            "43": {
+                "id": 43,
+                "cluster_id": 291503114,
+                "label": "EnableAiEntryExitRegionRecognition",
+                "type": "Optional[bool]",
+                "writable": true
+            },
+            "44": {
+                "id": 44,
+                "cluster_id": 291503114,
+                "label": "EnableAiInterferenceSourceRecognition",
+                "type": "Optional[bool]",
+                "writable": true
+            },
+            "45": {
+                "id": 45,
+                "cluster_id": 291503114,
+                "label": "CoordinateReverse",
+                "type": "Optional[uint8]",
+                "writable": true
+            },
+            "46": {
+                "id": 46,
+                "cluster_id": 291503114,
+                "label": "DetectionDirection",
+                "type": "Optional[uint8]",
+                "writable": true
+            },
+            "47": {
+                "id": 47,
+                "cluster_id": 291503114,
+                "label": "ProximityDistanceLevel",
+                "type": "Optional[uint8]",
+                "writable": true
+            },
+            "65528": {
+                "id": 65528,
+                "cluster_id": 291503114,
+                "label": "GeneratedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65529": {
+                "id": 65529,
+                "cluster_id": 291503114,
+                "label": "AcceptedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65531": {
+                "id": 65531,
+                "cluster_id": 291503114,
+                "label": "AttributeList",
+                "type": "List[attrib-id]",
+                "writable": false
+            },
+            "65532": {
+                "id": 65532,
+                "cluster_id": 291503114,
+                "label": "FeatureMap",
+                "type": "map32",
+                "writable": false
+            },
+            "65533": {
+                "id": 65533,
+                "cluster_id": 291503114,
+                "label": "ClusterRevision",
+                "type": "uint16",
+                "writable": false
+            }
+        },
+        "commands": {
+            "0": {
+                "id": 0,
+                "cluster_id": 291503114,
+                "name": "subscribeAutoInterferenceSourceRecognitionData",
+                "label": "Subscribe Auto Interference Source Recognition Data"
+            },
+            "1": {
+                "id": 1,
+                "cluster_id": 291503114,
+                "name": "subscribeAutoEdgeRecognitionData",
+                "label": "Subscribe Auto Edge Recognition Data"
+            },
+            "2": {
+                "id": 2,
+                "cluster_id": 291503114,
+                "name": "subscribeAiEntryExitRegionRecognitionData",
+                "label": "Subscribe Ai Entry Exit Region Recognition Data"
+            },
+            "3": {
+                "id": 3,
+                "cluster_id": 291503114,
+                "name": "enableAiSpaceBackgroundLearning",
+                "label": "Enable Ai Space Background Learning"
+            },
+            "4": {
+                "id": 4,
+                "cluster_id": 291503114,
+                "name": "appendZone",
+                "label": "Append Zone"
+            },
+            "6": {
+                "id": 6,
+                "cluster_id": 291503114,
+                "name": "updateZone",
+                "label": "Update Zone"
+            },
+            "8": {
+                "id": 8,
+                "cluster_id": 291503114,
+                "name": "removeZone",
+                "label": "Remove Zone"
+            },
+            "10": {
+                "id": 10,
+                "cluster_id": 291503114,
+                "name": "setZones",
+                "label": "Set Zones"
+            }
+        },
+        "features": {}
+    },
+    "291503115": {
+        "id": 291503115,
+        "label": "AqaraRadarSensingUnionCluster",
+        "attributes": {
+            "0": {
+                "id": 0,
+                "cluster_id": 291503115,
+                "label": "ChildEndpointList",
+                "type": "List[uint16]",
+                "writable": false
+            },
+            "1": {
+                "id": 1,
+                "cluster_id": 291503115,
+                "label": "ZoneId",
+                "type": "Optional[uint8]",
+                "writable": false
+            },
+            "2": {
+                "id": 2,
+                "cluster_id": 291503115,
+                "label": "CurrentHumanCount",
+                "type": "Optional[uint8]",
+                "writable": false
+            },
+            "65528": {
+                "id": 65528,
+                "cluster_id": 291503115,
+                "label": "GeneratedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65529": {
+                "id": 65529,
+                "cluster_id": 291503115,
+                "label": "AcceptedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65531": {
+                "id": 65531,
+                "cluster_id": 291503115,
+                "label": "AttributeList",
+                "type": "List[attrib-id]",
+                "writable": false
+            },
+            "65532": {
+                "id": 65532,
+                "cluster_id": 291503115,
+                "label": "FeatureMap",
+                "type": "map32",
+                "writable": false
+            },
+            "65533": {
+                "id": 65533,
+                "cluster_id": 291503115,
+                "label": "ClusterRevision",
+                "type": "uint16",
+                "writable": false
+            }
+        },
+        "commands": {},
+        "features": {}
+    },
+    "291503116": {
+        "id": 291503116,
+        "label": "AqaraOccupantLocationCluster",
+        "attributes": {
+            "0": {
+                "id": 0,
+                "cluster_id": 291503116,
+                "label": "MaxDetectionTargets",
+                "type": "Optional[uint8]",
+                "writable": false
+            },
+            "7": {
+                "id": 7,
+                "cluster_id": 291503116,
+                "label": "ActivityState",
+                "type": "Optional[uint8]",
+                "writable": false
+            },
+            "65528": {
+                "id": 65528,
+                "cluster_id": 291503116,
+                "label": "GeneratedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65529": {
+                "id": 65529,
+                "cluster_id": 291503116,
+                "label": "AcceptedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65531": {
+                "id": 65531,
+                "cluster_id": 291503116,
+                "label": "AttributeList",
+                "type": "List[attrib-id]",
+                "writable": false
+            },
+            "65532": {
+                "id": 65532,
+                "cluster_id": 291503116,
+                "label": "FeatureMap",
+                "type": "map32",
+                "writable": false
+            },
+            "65533": {
+                "id": 65533,
+                "cluster_id": 291503116,
+                "label": "ClusterRevision",
+                "type": "uint16",
+                "writable": false
+            }
+        },
+        "commands": {
+            "0": {
+                "id": 0,
+                "cluster_id": 291503116,
+                "name": "subscribeLocationData",
+                "label": "Subscribe Location Data"
+            },
+            "1": {
+                "id": 1,
+                "cluster_id": 291503116,
+                "name": "removeDetectionTarget",
+                "label": "Remove Detection Target"
+            }
+        },
+        "features": {}
+    },
+    "291503119": {
+        "id": 291503119,
+        "label": "AqaraLedStripCluster",
+        "attributes": {
+            "19": {
+                "id": 19,
+                "cluster_id": 291503119,
+                "label": "MusicSyncEnabled",
+                "type": "Optional[bool]",
+                "writable": true
+            },
+            "21": {
+                "id": 21,
+                "cluster_id": 291503119,
+                "label": "MusicSyncEffect",
+                "type": "Optional[uint8]",
+                "writable": true
+            },
+            "22": {
+                "id": 22,
+                "cluster_id": 291503119,
+                "label": "MusicSyncSensitivity",
+                "type": "Optional[uint8]",
+                "writable": true
+            },
+            "65528": {
+                "id": 65528,
+                "cluster_id": 291503119,
+                "label": "GeneratedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65529": {
+                "id": 65529,
+                "cluster_id": 291503119,
+                "label": "AcceptedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65531": {
+                "id": 65531,
+                "cluster_id": 291503119,
+                "label": "AttributeList",
+                "type": "List[attrib-id]",
+                "writable": false
+            },
+            "65532": {
+                "id": 65532,
+                "cluster_id": 291503119,
+                "label": "FeatureMap",
+                "type": "map32",
+                "writable": false
+            },
+            "65533": {
+                "id": 65533,
+                "cluster_id": 291503119,
+                "label": "ClusterRevision",
+                "type": "uint16",
+                "writable": false
+            }
+        },
+        "commands": {},
+        "features": {}
+    },
+    "293403649": {
+        "id": 293403649,
+        "label": "IkeaValveCalibrationCluster",
+        "attributes": {
+            "0": {
+                "id": 0,
+                "cluster_id": 293403649,
+                "label": "CalibrationStatus",
+                "type": "Optional[uint8]",
+                "writable": false
+            },
+            "1": {
+                "id": 1,
+                "cluster_id": 293403649,
+                "label": "LastCalibrationError",
+                "type": "Optional[uint8]",
+                "writable": false
+            },
+            "65528": {
+                "id": 65528,
+                "cluster_id": 293403649,
+                "label": "GeneratedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65529": {
+                "id": 65529,
+                "cluster_id": 293403649,
+                "label": "AcceptedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65531": {
+                "id": 65531,
+                "cluster_id": 293403649,
+                "label": "AttributeList",
+                "type": "List[attrib-id]",
+                "writable": false
+            },
+            "65532": {
+                "id": 65532,
+                "cluster_id": 293403649,
+                "label": "FeatureMap",
+                "type": "map32",
+                "writable": false
+            },
+            "65533": {
+                "id": 65533,
+                "cluster_id": 293403649,
+                "label": "ClusterRevision",
+                "type": "uint16",
+                "writable": false
+            }
+        },
+        "commands": {
+            "0": {
+                "id": 0,
+                "cluster_id": 293403649,
+                "name": "triggerCalibration",
+                "label": "Trigger Calibration"
+            }
+        },
+        "features": {}
+    },
     "302775297": {
         "id": 302775297,
         "label": "HeimanCluster",
@@ -18261,49 +18787,56 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 16,
                 "cluster_id": 302775297,
                 "label": "TamperAlarm",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint8]",
                 "writable": false
             },
             "17": {
                 "id": 17,
                 "cluster_id": 302775297,
                 "label": "PreheatingState",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint8]",
                 "writable": false
             },
             "18": {
                 "id": 18,
                 "cluster_id": 302775297,
                 "label": "NoDisturbingState",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint8]",
                 "writable": false
             },
             "19": {
                 "id": 19,
                 "cluster_id": 302775297,
                 "label": "SensorType",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint8]",
                 "writable": false
             },
             "20": {
                 "id": 20,
                 "cluster_id": 302775297,
                 "label": "SirenActive",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint8]",
                 "writable": true
             },
             "21": {
                 "id": 21,
                 "cluster_id": 302775297,
                 "label": "AlarmMute",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint8]",
                 "writable": true
             },
             "22": {
                 "id": 22,
                 "cluster_id": 302775297,
                 "label": "LowPowerMode",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint8]",
+                "writable": true
+            },
+            "4100": {
+                "id": 4100,
+                "cluster_id": 302775297,
+                "label": "IndicatorEnable",
+                "type": "Optional[uint8]",
                 "writable": true
             },
             "65528": {
@@ -18348,6 +18881,12 @@ export const clusters: Record<number, ClusterDescription> = {
                 "cluster_id": 302775297,
                 "name": "mutingSensor",
                 "label": "Muting Sensor"
+            },
+            "1": {
+                "id": 1,
+                "cluster_id": 302775297,
+                "name": "sirenActivate",
+                "label": "Siren Activate"
             }
         },
         "features": {}
@@ -18395,14 +18934,14 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 305070177,
                 "cluster_id": 305134641,
                 "label": "LedIndicatorIntensityOn",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": true
             },
             "305070178": {
                 "id": 305070178,
                 "cluster_id": 305134641,
                 "label": "LedIndicatorIntensityOff",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": true
             },
             "305070342": {
@@ -18459,28 +18998,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 308084769,
                 "cluster_id": 308149265,
                 "label": "WattAccumulated",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "308084770": {
                 "id": 308084770,
                 "cluster_id": 308149265,
                 "label": "Current",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "308084771": {
                 "id": 308084771,
                 "cluster_id": 308149265,
                 "label": "Watt",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "308084772": {
                 "id": 308084772,
                 "cluster_id": 308149265,
                 "label": "Voltage",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             }
         },
@@ -18558,63 +19097,63 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 319422470,
                 "cluster_id": 319486977,
                 "label": "TimesOpened",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "319422471": {
                 "id": 319422471,
                 "cluster_id": 319486977,
                 "label": "LastEventTime",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "319422472": {
                 "id": 319422472,
                 "cluster_id": 319486977,
                 "label": "Voltage",
-                "type": "Optional[unknown]",
+                "type": "Optional[single]",
                 "writable": false
             },
             "319422473": {
                 "id": 319422473,
                 "cluster_id": 319486977,
                 "label": "Current",
-                "type": "Optional[unknown]",
+                "type": "Optional[single]",
                 "writable": false
             },
             "319422474": {
                 "id": 319422474,
                 "cluster_id": 319486977,
                 "label": "Watt",
-                "type": "Optional[unknown]",
+                "type": "Optional[single]",
                 "writable": false
             },
             "319422475": {
                 "id": 319422475,
                 "cluster_id": 319486977,
                 "label": "WattAccumulated",
-                "type": "Optional[unknown]",
+                "type": "Optional[single]",
                 "writable": false
             },
             "319422476": {
                 "id": 319422476,
                 "cluster_id": 319486977,
                 "label": "StatusFault",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint8]",
                 "writable": false
             },
             "319422477": {
                 "id": 319422477,
                 "cluster_id": 319486977,
                 "label": "MotionSensitivity",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "319422478": {
                 "id": 319422478,
                 "cluster_id": 319486977,
                 "label": "WattAccumulatedControlPoint",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "319422480": {
@@ -18635,28 +19174,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 319422482,
                 "cluster_id": 319486977,
                 "label": "Rloc16",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint16]",
                 "writable": false
             },
             "319422483": {
                 "id": 319422483,
                 "cluster_id": 319486977,
                 "label": "Altitude",
-                "type": "Optional[unknown]",
+                "type": "Optional[single]",
                 "writable": false
             },
             "319422484": {
                 "id": 319422484,
                 "cluster_id": 319486977,
                 "label": "Pressure",
-                "type": "Optional[unknown]",
+                "type": "Optional[single]",
                 "writable": false
             },
             "319422485": {
                 "id": 319422485,
                 "cluster_id": 319486977,
                 "label": "WeatherTrend",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "319422487": {
@@ -18670,7 +19209,7 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 319422488,
                 "cluster_id": 319486977,
                 "label": "ValvePosition",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             }
         },
@@ -18685,28 +19224,28 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 319683586,
                 "label": "CurrentSummationDelivered",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "769": {
                 "id": 769,
                 "cluster_id": 319683586,
                 "label": "Multiplier",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "770": {
                 "id": 770,
                 "cluster_id": 319683586,
                 "label": "Divisor",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint32]",
                 "writable": false
             },
             "1024": {
                 "id": 1024,
                 "cluster_id": 319683586,
                 "label": "InstantaneousDemand",
-                "type": "Optional[unknown]",
+                "type": "Optional[int32]",
                 "writable": false
             },
             "65528": {
@@ -18748,6 +19287,386 @@ export const clusters: Record<number, ClusterDescription> = {
         "commands": {},
         "features": {}
     },
+    "320011264": {
+        "id": 320011264,
+        "label": "YeelightBasicCluster",
+        "attributes": {
+            "65528": {
+                "id": 65528,
+                "cluster_id": 320011264,
+                "label": "GeneratedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65529": {
+                "id": 65529,
+                "cluster_id": 320011264,
+                "label": "AcceptedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65531": {
+                "id": 65531,
+                "cluster_id": 320011264,
+                "label": "AttributeList",
+                "type": "List[attrib-id]",
+                "writable": false
+            },
+            "65532": {
+                "id": 65532,
+                "cluster_id": 320011264,
+                "label": "FeatureMap",
+                "type": "map32",
+                "writable": false
+            },
+            "65533": {
+                "id": 65533,
+                "cluster_id": 320011264,
+                "label": "ClusterRevision",
+                "type": "uint16",
+                "writable": false
+            },
+            "319946752": {
+                "id": 319946752,
+                "cluster_id": 320011264,
+                "label": "YeelightId",
+                "type": "Optional[uint32]",
+                "writable": false
+            },
+            "319946753": {
+                "id": 319946753,
+                "cluster_id": 320011264,
+                "label": "SoftwareVersion",
+                "type": "Optional[uint32]",
+                "writable": false
+            },
+            "319946754": {
+                "id": 319946754,
+                "cluster_id": 320011264,
+                "label": "SoftwareVersionString",
+                "type": "Optional[string]",
+                "writable": false
+            }
+        },
+        "commands": {},
+        "features": {}
+    },
+    "320011265": {
+        "id": 320011265,
+        "label": "YeelightBasicConfigCluster",
+        "attributes": {
+            "65528": {
+                "id": 65528,
+                "cluster_id": 320011265,
+                "label": "GeneratedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65529": {
+                "id": 65529,
+                "cluster_id": 320011265,
+                "label": "AcceptedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65531": {
+                "id": 65531,
+                "cluster_id": 320011265,
+                "label": "AttributeList",
+                "type": "List[attrib-id]",
+                "writable": false
+            },
+            "65532": {
+                "id": 65532,
+                "cluster_id": 320011265,
+                "label": "FeatureMap",
+                "type": "map32",
+                "writable": false
+            },
+            "65533": {
+                "id": 65533,
+                "cluster_id": 320011265,
+                "label": "ClusterRevision",
+                "type": "uint16",
+                "writable": false
+            },
+            "319946753": {
+                "id": 319946753,
+                "cluster_id": 320011265,
+                "label": "LanControl",
+                "type": "Optional[bool]",
+                "writable": true
+            },
+            "319946754": {
+                "id": 319946754,
+                "cluster_id": 320011265,
+                "label": "MicMusicOnOff",
+                "type": "Optional[bool]",
+                "writable": false
+            },
+            "319946755": {
+                "id": 319946755,
+                "cluster_id": 320011265,
+                "label": "MicMusicEffectId",
+                "type": "Optional[uint64]",
+                "writable": false
+            }
+        },
+        "commands": {
+            "319946752": {
+                "id": 319946752,
+                "cluster_id": 320011265,
+                "name": "setMicMusicMode",
+                "label": "Set Mic Music Mode"
+            }
+        },
+        "features": {}
+    },
+    "320011266": {
+        "id": 320011266,
+        "label": "YeelightCubeControlCluster",
+        "attributes": {
+            "65528": {
+                "id": 65528,
+                "cluster_id": 320011266,
+                "label": "GeneratedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65529": {
+                "id": 65529,
+                "cluster_id": 320011266,
+                "label": "AcceptedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65531": {
+                "id": 65531,
+                "cluster_id": 320011266,
+                "label": "AttributeList",
+                "type": "List[attrib-id]",
+                "writable": false
+            },
+            "65532": {
+                "id": 65532,
+                "cluster_id": 320011266,
+                "label": "FeatureMap",
+                "type": "map32",
+                "writable": false
+            },
+            "65533": {
+                "id": 65533,
+                "cluster_id": 320011266,
+                "label": "ClusterRevision",
+                "type": "uint16",
+                "writable": false
+            },
+            "319946752": {
+                "id": 319946752,
+                "cluster_id": 320011266,
+                "label": "CubeTopology",
+                "type": "List[uint8]",
+                "writable": false
+            },
+            "319946753": {
+                "id": 319946753,
+                "cluster_id": 320011266,
+                "label": "RotationAngle",
+                "type": "Optional[uint8]",
+                "writable": true
+            }
+        },
+        "commands": {
+            "319946754": {
+                "id": 319946754,
+                "cluster_id": 320011266,
+                "name": "updateTopology",
+                "label": "Update Topology"
+            }
+        },
+        "features": {}
+    },
+    "320011269": {
+        "id": 320011269,
+        "label": "YeelightEnhancedColorEffectConfigV2Cluster",
+        "attributes": {
+            "65528": {
+                "id": 65528,
+                "cluster_id": 320011269,
+                "label": "GeneratedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65529": {
+                "id": 65529,
+                "cluster_id": 320011269,
+                "label": "AcceptedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65531": {
+                "id": 65531,
+                "cluster_id": 320011269,
+                "label": "AttributeList",
+                "type": "List[attrib-id]",
+                "writable": false
+            },
+            "65532": {
+                "id": 65532,
+                "cluster_id": 320011269,
+                "label": "FeatureMap",
+                "type": "map32",
+                "writable": false
+            },
+            "65533": {
+                "id": 65533,
+                "cluster_id": 320011269,
+                "label": "ClusterRevision",
+                "type": "uint16",
+                "writable": false
+            },
+            "319946752": {
+                "id": 319946752,
+                "cluster_id": 320011269,
+                "label": "EffectId",
+                "type": "Optional[uint64]",
+                "writable": false
+            },
+            "319946753": {
+                "id": 319946753,
+                "cluster_id": 320011269,
+                "label": "CustomId",
+                "type": "Optional[uint64]",
+                "writable": false
+            }
+        },
+        "commands": {
+            "319946752": {
+                "id": 319946752,
+                "cluster_id": 320011269,
+                "name": "setEffect",
+                "label": "Set Effect"
+            },
+            "319946754": {
+                "id": 319946754,
+                "cluster_id": 320011269,
+                "name": "setRate",
+                "label": "Set Rate"
+            },
+            "319946758": {
+                "id": 319946758,
+                "cluster_id": 320011269,
+                "name": "setMixer",
+                "label": "Set Mixer"
+            },
+            "319946759": {
+                "id": 319946759,
+                "cluster_id": 320011269,
+                "name": "setData",
+                "label": "Set Data"
+            },
+            "319946760": {
+                "id": 319946760,
+                "cluster_id": 320011269,
+                "name": "setDirection",
+                "label": "Set Direction"
+            },
+            "319946761": {
+                "id": 319946761,
+                "cluster_id": 320011269,
+                "name": "resetEffect",
+                "label": "Reset Effect"
+            },
+            "319946762": {
+                "id": 319946762,
+                "cluster_id": 320011269,
+                "name": "updatePersistEffectList",
+                "label": "Update Persist Effect List"
+            },
+            "319946763": {
+                "id": 319946763,
+                "cluster_id": 320011269,
+                "name": "getPersistEffectList",
+                "label": "Get Persist Effect List"
+            },
+            "319946765": {
+                "id": 319946765,
+                "cluster_id": 320011269,
+                "name": "getCurrentEffect",
+                "label": "Get Current Effect"
+            },
+            "319946766": {
+                "id": 319946766,
+                "cluster_id": 320011269,
+                "name": "setPresetsEffect",
+                "label": "Set Presets Effect"
+            },
+            "319946767": {
+                "id": 319946767,
+                "cluster_id": 320011269,
+                "name": "sendGifDataFragment",
+                "label": "Send Gif Data Fragment"
+            }
+        },
+        "features": {}
+    },
+    "320011281": {
+        "id": 320011281,
+        "label": "YeelightOverTheAirCluster",
+        "attributes": {
+            "65528": {
+                "id": 65528,
+                "cluster_id": 320011281,
+                "label": "GeneratedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65529": {
+                "id": 65529,
+                "cluster_id": 320011281,
+                "label": "AcceptedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65531": {
+                "id": 65531,
+                "cluster_id": 320011281,
+                "label": "AttributeList",
+                "type": "List[attrib-id]",
+                "writable": false
+            },
+            "65532": {
+                "id": 65532,
+                "cluster_id": 320011281,
+                "label": "FeatureMap",
+                "type": "map32",
+                "writable": false
+            },
+            "65533": {
+                "id": 65533,
+                "cluster_id": 320011281,
+                "label": "ClusterRevision",
+                "type": "uint16",
+                "writable": false
+            },
+            "319946752": {
+                "id": 319946752,
+                "cluster_id": 320011281,
+                "label": "YeeUpdateState",
+                "type": "Optional[uint8]",
+                "writable": false
+            },
+            "319946753": {
+                "id": 319946753,
+                "cluster_id": 320011281,
+                "label": "Progress",
+                "type": "Optional[Nullable[uint8]]",
+                "writable": false
+            }
+        },
+        "commands": {},
+        "features": {}
+    },
     "322239491": {
         "id": 322239491,
         "label": "TclDehumidifierCluster",
@@ -18756,21 +19675,21 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 0,
                 "cluster_id": 322239491,
                 "label": "Mode",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint8]",
                 "writable": true
             },
             "1": {
                 "id": 1,
                 "cluster_id": 322239491,
                 "label": "TargetHumidity",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint8]",
                 "writable": true
             },
             "2": {
                 "id": 2,
                 "cluster_id": 322239491,
                 "label": "CurrentHumidity",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint8]",
                 "writable": false
             },
             "3": {
@@ -18855,7 +19774,7 @@ export const clusters: Record<number, ClusterDescription> = {
                 "id": 1,
                 "cluster_id": 355793920,
                 "label": "SwitchType",
-                "type": "Optional[unknown]",
+                "type": "Optional[uint8]",
                 "writable": true
             },
             "65528": {
@@ -18889,6 +19808,77 @@ export const clusters: Record<number, ClusterDescription> = {
             "65533": {
                 "id": 65533,
                 "cluster_id": 355793920,
+                "label": "ClusterRevision",
+                "type": "uint16",
+                "writable": false
+            }
+        },
+        "commands": {},
+        "features": {}
+    },
+    "4294048773": {
+        "id": 4294048773,
+        "label": "UnitTestingCluster",
+        "attributes": {
+            "23": {
+                "id": 23,
+                "cluster_id": 4294048773,
+                "label": "FloatSingle",
+                "type": "Optional[single]",
+                "writable": true
+            },
+            "25": {
+                "id": 25,
+                "cluster_id": 4294048773,
+                "label": "OctetString",
+                "type": "Optional[bytes]",
+                "writable": true
+            },
+            "37": {
+                "id": 37,
+                "cluster_id": 4294048773,
+                "label": "StructAttr",
+                "type": "Optional[UnitTestingSimpleStruct]",
+                "writable": true
+            },
+            "42": {
+                "id": 42,
+                "cluster_id": 4294048773,
+                "label": "ListLongOctetString",
+                "type": "List[octstr]",
+                "writable": true
+            },
+            "65528": {
+                "id": 65528,
+                "cluster_id": 4294048773,
+                "label": "GeneratedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65529": {
+                "id": 65529,
+                "cluster_id": 4294048773,
+                "label": "AcceptedCommandList",
+                "type": "List[command-id]",
+                "writable": false
+            },
+            "65531": {
+                "id": 65531,
+                "cluster_id": 4294048773,
+                "label": "AttributeList",
+                "type": "List[attrib-id]",
+                "writable": false
+            },
+            "65532": {
+                "id": 65532,
+                "cluster_id": 4294048773,
+                "label": "FeatureMap",
+                "type": "map32",
+                "writable": false
+            },
+            "65533": {
+                "id": 65533,
+                "cluster_id": 4294048773,
                 "label": "ClusterRevision",
                 "type": "uint16",
                 "writable": false

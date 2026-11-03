@@ -25,12 +25,15 @@ import {
     WebServerHandler,
     WebSocketControllerHandler,
 } from "@matter-server/ws-controller";
+import { Seconds, Time } from "@matter/main";
 import { Ble } from "@matter/main/protocol";
-import { join } from "node:path";
+import { importCertificates } from "./certificates.js";
 import { getCliOptions, getOriginalArgv, type LogLevel as CliLogLevel } from "./cli.js";
+import { controllerOptionsFrom } from "./controller-options.js";
 import { LegacyDataWriter, loadLegacyData, type LegacyData } from "./converter/index.js";
 import { createFileLogger } from "./file-logger.js";
 import { initializeOta } from "./ota.js";
+import { loadRevocationSets } from "./revocation-sets.js";
 import { HealthHandler } from "./server/HealthHandler.js";
 import { OtaUploadHandler } from "./server/OtaUploadHandler.js";
 import { StaticFileHandler } from "./server/StaticFileHandler.js";
@@ -108,6 +111,7 @@ let legacyData: LegacyData;
 let legacyDataWriter: LegacyDataWriter | undefined;
 let fileLoggerClose: (() => Promise<void>) | undefined;
 let stopping = false;
+const SHUTDOWN_AFTER_START_FAILURE_TIMEOUT = Seconds(30);
 let startCompleted: Promise<void> = Promise.resolve();
 
 async function start() {
@@ -145,7 +149,6 @@ async function start() {
         if (legacyData.fabricConfig) {
             parts.push("1 fabric");
             legacyServerData.fabric = legacyData.fabricConfig;
-            logger.debug("Fabric", legacyServerData.fabric);
         }
         if (legacyData.serverFile) {
             const nodeCount = Object.keys(legacyData.serverFile.nodes).length;
@@ -155,7 +158,6 @@ async function start() {
         if (legacyData.certificateAuthorityConfig) {
             parts.push("CA credentials");
             legacyServerData.credentials = legacyData.certificateAuthorityConfig;
-            logger.debug("Credentials", legacyServerData.credentials);
         }
         logger.info(`Found legacy data: ${parts.join(", ")}`);
     }
@@ -182,27 +184,34 @@ async function start() {
         await config.lockFabricLabel(label);
     }
 
+    // Registered before the controller is built: the controller node records BLE availability as behavior
+    // state at construction, and that state is what decides whether a BLE scanner is installed.
+    let bleProxyHandler: BleProxyHandler | undefined;
+    if (cliOptions.bleProxy) {
+        bleProxyHandler = new BleProxyHandler();
+        env.set(Ble, new ProxyBle(bleProxyHandler, env));
+    }
+
     controller = await MatterController.create(
         env,
         config,
-        {
-            enableTestNetDcl: cliOptions.enableTestNetDcl,
-            disableOtaProvider: cliOptions.disableOta,
-            disableDclSeed: cliOptions.disableDclSeed,
-            serverId: legacyData.serverId,
-            serverVersion: MATTER_SERVER_VERSION,
-            bleProxyEnabled: cliOptions.bleProxy,
-            enableTimeSync: cliOptions.enableTimeSync,
-            disableThreadDiagnostics: cliOptions.disableThreadDiagnostics,
-            otaUpload: {
-                // Staged next to the images it feeds, so importing one never crosses a filesystem.
-                tempDir: join(cliOptions.otaProviderDir ?? cliOptions.storagePath, "ota-uploads"),
-                maxInFlight: cliOptions.otaUploadMaxInFlight,
-                maxSizeBytes: cliOptions.otaUploadMaxSizeMb * 1024 * 1024,
-            },
-        },
+        controllerOptionsFrom(cliOptions, legacyData.serverId, MATTER_SERVER_VERSION),
         legacyServerData,
     );
+
+    // Before the web server starts: no commissioning can be requested until the sets are in force.
+    if (cliOptions.revocationSetsDir) {
+        await loadRevocationSets(controller, cliOptions.revocationSetsDir);
+    }
+
+    // Not awaited: the import waits for the first DCL update, which must not delay the start
+    if (cliOptions.certificatesDir) {
+        const directory = cliOptions.certificatesDir;
+        controller
+            .certificateService()
+            .then(service => importCertificates(service, directory))
+            .catch(error => logger.error("Failed to import certificates:", error));
+    }
 
     if (!cliOptions.disableOta) {
         await controller.otaUploads.cleanupOrphans();
@@ -210,7 +219,7 @@ async function start() {
     }
 
     // Subscribe to node events for legacy data file updates
-    if (legacyData.serverFile && legacyData.fabricConfig) {
+    if (legacyData.serverFile && legacyData.fabricConfig && controller.legacyDataMigrated) {
         legacyDataWriter = new LegacyDataWriter(env, cliOptions.storagePath, legacyData.fabricConfig);
 
         controller.commandHandler.events.nodeAdded.on(nodeId => {
@@ -221,19 +230,6 @@ async function start() {
         controller.commandHandler.events.nodeDecommissioned.on(nodeId => {
             legacyDataWriter!.queueRemoval(nodeId);
         });
-    }
-
-    // Register the proxy Ble on the environment and the /ble WebSocket handler.
-    // Done after MatterController.create() because the controller's BLE bootstrap reads env.Ble
-    // and we want the proxy to win even if some path auto-installs a default.
-    let bleProxyHandler: BleProxyHandler | undefined;
-    if (cliOptions.bleProxy) {
-        const existingBle = env.has(Ble) ? env.get(Ble) : undefined;
-        if (existingBle) {
-            logger.info(`Replacing existing BLE implementation (${existingBle.constructor.name}) with ProxyBle`);
-        }
-        bleProxyHandler = new BleProxyHandler();
-        env.set(Ble, new ProxyBle(bleProxyHandler, env));
     }
 
     const wsHandler = new WebSocketControllerHandler(controller, config, MATTER_SERVER_VERSION);
@@ -287,12 +283,13 @@ async function stop() {
 
     // Wait for start() to finish (or fail) before tearing down, so we don't
     // race against in-flight initialization that could re-create resources.
-    try {
-        await startCompleted;
-    } catch {
-        // start() failed - that's fine, we still need to clean up
-    }
+    await startCompleted;
 
+    await shutdown();
+}
+
+/** Open handles (controller, mDNS, runtime workers) keep the process alive until this has run. */
+async function shutdown() {
     try {
         await mqttBridge?.stop();
     } catch (err) {
@@ -338,11 +335,17 @@ async function stop() {
 }
 
 startCompleted = start().catch(async err => {
-    if (!stopping) {
-        logger.fatal("Server failed to start", err);
-        process.exitCode = 1;
+    if (stopping) {
+        // stop() owns the teardown when it ran first; it continues once this settles.
+        return;
     }
-    await config?.close();
+    // Makes a later SIGINT/SIGTERM return early instead of starting a second teardown.
+    stopping = true;
+    logger.fatal("Server failed to start", err);
+    // The process must not outlive a failed start, even if the teardown hangs.
+    Time.getTimer("Shutdown after start failure", SHUTDOWN_AFTER_START_FAILURE_TIMEOUT, () => process.exit(1)).start();
+    await shutdown();
+    process.exit(1);
 });
 
 process.on("SIGINT", () => void stop().catch(err => console.error(err)));

@@ -6,7 +6,7 @@ For testing/evaluation purposes or as a guideline for application developers tha
 > **Attention Home Assistant users:** The Docker image is provided as-is and without official support (due to all the complex requirements to the underlying host/OS). Use it at your own risk if you know what you're doing.
 
 > [!NOTE]
-> **Attention Python server docker users:** This Matter server is designed as a drop-in replacement for the Python Matter Server, and supports the same WebSocket API. The only difference is that the new container runs unprivileged by default and so needs a [permission-change of the data dir](#permission-issues)! Content-wise just use the same data directory and command-line arguments. The first start will include a data migration.
+> **Attention Python server docker users:** This Matter server is designed as a drop-in replacement for the Python Matter Server, and supports the same WebSocket API. The only difference is that the new container runs unprivileged by default and so needs a [permission-change of the data dir](#permission-issues)! Content-wise just use the same data directory and command-line arguments. The first start will include a data migration, see the [migration guide](migration.md).
 
 We strongly recommend using Home Assistant OS along with the official Matter Server add-on to use Matter with Home Assistant. The Matter integration automatically installs the Matter Server as an add-on. Please refer to the [Home Assistant documentation](https://www.home-assistant.io/integrations/matter/).
 
@@ -99,13 +99,17 @@ All CLI options can be configured via environment variables, making it easy to c
 | Variable              | Description                                                                 | Default          | Values / Notes                                                                                                      |
 | --------------------- | --------------------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `STORAGE_PATH`        | Path to store Matter fabric data                                            | `/data`          | Any valid path                                                                                                      |
-| `PORT`                | WebSocket server port                                                       | `5580`           | Any valid port number                                                                                               |
-| `LISTEN_ADDRESS`      | IP address(es) to bind WebSocket server                                     | (all interfaces) | Set a specific IP address to bind to a single address. Using `ifname` expands to all IPs on that interface (v4/v6). |
+| `PORT`                | WebSocket server port                                                       | `5580`           | Any valid port number. `0` binds a free port, which the health check cannot find unless it queries a unix socket   |
+| `LISTEN_ADDRESS`      | IP address(es) to bind WebSocket server                                     | (all interfaces) | Comma-separated IP addresses, interface names or unix socket paths, see the note below. |
 | `LOG_LEVEL`           | Server logging verbosity                                                    | `info`           | `critical`, `error`, `warning`, `info`, `debug`, `verbose`                                                          |
 | `LOG_FILE`            | Log file path (must include filename, not just dir)                         | (none)           | e.g. `/data/logs/matter-server.log`                                                                                 |
+| `MATTER_LOG_FORMAT`   | Console log format, colored even without a TTY; `--log-file` output stays plain | `ansi`           | `ansi`, `plain`                                                                                                     |
 | `PRIMARY_INTERFACE`   | Primary network interface for mDNS                                          | (auto-detect)    | e.g., `eth0`, `en0`                                                                                                 |
 | `ENABLE_TEST_NET_DCL` | Enable test-net DCL certificates/OTA updates additionally to Production DCL | `false`          | `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`                                                                     |
 | `DISABLE_DCL_SEED`    | Disable bundled offline DCL seed; network DCL only                          | `false`          | `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`                                                                     |
+| `DCL_OFFLINE`         | Check attestation against the DCL seed and stored certificates only, without DCL traffic | `false` | `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`. Cannot be combined with `DISABLE_DCL_SEED`                          |
+| `REVOCATION_SETS_DIR` | Directory with device attestation revocation sets (`*.json`) installed at start | (none) | Any valid directory path, e.g. a mounted `/data/revocation-sets`. See [Installing Device Attestation Revocation Sets](../README.md#installing-device-attestation-revocation-sets) |
+| `DISABLE_AUTO_SUBSCRIPTION` | Do not subscribe to nodes automatically; see the [CLI documentation](cli.md#disabled-auto-subscription) | `false` | `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`. Only recommended for very special use cases                  |
 | `BLUETOOTH_ADAPTER`   | Bluetooth adapter HCI ID                                                    | (none)           | e.g., `0` for `hci0`, but see [this workaround](#device-discovery-via-host-ble)                                     |
 | `BLE_PROXY`           | Expose `/ble` WebSocket endpoint for a remote BLE proxy client              | `false`          | `true`/`false`. Mutually exclusive with `BLUETOOTH_ADAPTER` — `BLE_PROXY` wins with a warning.                      |
 | `DISABLE_OTA`         | Disable OTA update functionality                                            | `false`          | `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`                                                                     |
@@ -123,12 +127,13 @@ All CLI options can be configured via environment variables, making it easy to c
 > keeping up to seven daily backup files (≈ 7 days of history). No further cleanup is performed.
 
 > [!NOTE]
-> The `LISTEN_ADDRESS` environment variable only supports a single address. Use the CLI `--listen-address` option (repeatable) to bind to multiple addresses.
-> The value can either be an ip address or the network interface name (i.e. `192.168.1.10` or `eth0`)
+> `LISTEN_ADDRESS` takes one address or a comma-separated list, the same as repeating the CLI `--listen-address` option.
+> Each value can be an IP address, a network interface name or an absolute unix socket path (e.g. `192.168.1.10,eth0` or `/data/matter-server.sock`).
+> An interface name expands to all IPs on that interface (v4/v6). The `--listen-address` CLI option takes precedence over
+> the environment variable; the two are not combined.
 >
-> When `LISTEN_ADDRESS` is an interface name the built-in container health
-> check cannot resolve it and will mark the container unhealthy — see
-> [Health Check](#health-check) for the workaround.
+> The built-in container health check probes the first entry, so put an IP literal first when you also list an
+> interface name (e.g. `127.0.0.1,eth0`) — see [Health Check](#health-check).
 
 ### Node.js Memory Limit
 
@@ -257,17 +262,17 @@ docker inspect --format='{{.State.Health.Status}}' matterjs-server
 ```
 
 The health check honours `LISTEN_ADDRESS` and `PORT`: it uses the first
-address from `LISTEN_ADDRESS` (or `localhost` when unset) and the configured
-port. IPv6 literals are bracketed automatically.
+non-empty entry of `LISTEN_ADDRESS` (or `localhost` when unset) and the configured
+port. IPv6 literals are bracketed automatically. An absolute path is queried as a
+unix socket, and the port is ignored. It does not see `--listen-address`
+passed on the command line.
 
 > [!NOTE]
 > **Limitation:** The health check cannot resolve interface names. If you set
 > `LISTEN_ADDRESS=eth0` (or another interface name), the server binds to the
 > resolved IPs but the health check still receives `eth0` and fails to
-> connect. To keep the health check working in that case, either set
-> `LISTEN_ADDRESS` to an explicit IP literal, or use the CLI form with the
-> repeatable `--listen-address` flag and include a literal IP that resolves
-> from inside the container (e.g. `--listen-address eth0 --listen-address 127.0.0.1`).
+> connect. To keep the health check working in that case, list an IP literal
+> that is reachable from inside the container first (e.g. `LISTEN_ADDRESS=127.0.0.1,eth0`).
 
 ## Troubleshooting
 

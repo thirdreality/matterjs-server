@@ -11,6 +11,9 @@
         "type": "git",
         "url": "git+https://github.com/matter-js/matterjs-server.git"
     },
+    "bin": {
+        "matter-server": "dist/esm/bin.js"
+    },
     "files": [
         "dist/**/*",
         "src/**/*",
@@ -46,9 +49,9 @@
         "@matter-server/mqtt-bridge": "*",
         "@matter-server/ws-client": "*",
         "@matter-server/ws-controller": "*",
-        "@matter/main": "0.17.9",
+        "@matter/main": "0.18.0",
         "commander": "^15.0.0",
-        "express": "^5.2.1"
+        "express": "^5.3.0"
     },
     "bundleDependencies": [
         "@matter-server/ble-proxy",
@@ -59,10 +62,10 @@
         "@matter-server/ws-controller"
     ],
     "devDependencies": {
-        "@matter/nodejs": "0.17.9",
-        "@matter/testing": "0.17.9",
+        "@matter/nodejs": "0.18.0",
+        "@matter/testing": "0.18.0",
         "@types/express": "^5.0.6",
-        "@types/node": "^26.1.2"
+        "@types/node": "^26.6.5"
     },
     "engines": {
         "node": ">=22.13.0"

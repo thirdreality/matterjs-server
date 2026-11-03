@@ -4,14 +4,21 @@ name: Matter.js Nightly Validation
 
 on:
   schedule:
-    # Run at 6am CET (5am UTC) daily
-    - cron: '0 5 * * *'
+    # Run at 8am CET (7am UTC) daily
+    - cron: '0 7 * * *'
   workflow_dispatch:
-    # Allow manual triggering
+    inputs:
+      force-cert:
+        description: "Run the certification suite even when the server already uses the newest nightly"
+        type: boolean
+        default: false
 
 jobs:
   validate-nightly:
     runs-on: ubuntu-latest
+    outputs:
+      matterjs_version: ${{ steps.sync.outputs.matterjs_version }}
+      version_changed: ${{ steps.sync.outputs.version_changed }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -27,8 +34,14 @@ jobs:
           # Capture the version being synced to
           MATTERJS_VERSION=$(npm view @matter/main@dev version)
           echo "matterjs_version=$MATTERJS_VERSION" >> $GITHUB_OUTPUT
+          CURRENT_VERSION=$(node -p "require('./packages/matter-server/package.json').dependencies['@matter/main']")
+          if [ "$CURRENT_VERSION" = "$MATTERJS_VERSION" ]; then
+            echo "version_changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "version_changed=true" >> $GITHUB_OUTPUT
+          fi
           echo "Syncing to matter.js version: $MATTERJS_VERSION"
-          npm run sync-matterjs
+          npm run sync-matterjs -- "$MATTERJS_VERSION"
           npm run relock
 
       - name: Check for changes
@@ -68,3 +81,15 @@ jobs:
           echo "matter.js version **${{ steps.sync.outputs.matterjs_version }}** is already in use." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "No new nightly version to validate." >> $GITHUB_STEP_SUMMARY
+
+  cert:
+    needs: validate-nightly
+    if: needs.validate-nightly.outputs.version_changed == 'true' || inputs.force-cert
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [chip-local, matterjs]
+    uses: ./.github/workflows/cert-controller.yml
+    with:
+      device: ${{ matrix.device }}
+      matterjs-version: ${{ needs.validate-nightly.outputs.matterjs_version }}

@@ -31,7 +31,7 @@ BLE proxies) to a Matter.js server for BLE-based device commissioning.
 
 ## Connection Lifecycle
 
-1. The server exposes the `/ble` WebSocket endpoint accepting a single client connection
+1. The server exposes the `/ble` WebSocket endpoint, which accepts any number of client connections
 2. The client connects as soon as BLE is available, latest when BLE operations are needed (e.g., at commissioning time)
 3. The client sends a `hello` handshake message (see below)
 4. The server responds with `hello_response` confirming the protocol version
@@ -39,8 +39,39 @@ BLE proxies) to a Matter.js server for BLE-based device commissioning.
 6. Either side may close the WebSocket when BLE operations are complete
 7. The client should clean up all active BLE connections when the WebSocket closes
 
-Only one client connection is allowed at a time. If a second client attempts to connect while
-one is already active, the server rejects the new connection.
+### Multiple Clients
+
+Any number of clients may be connected at the same time, each with its own BLE hardware.
+`connection_handle` values are assigned by the client and are only unique within one client
+connection, so the server never compares handles across clients. Work is distributed as
+follows:
+
+- **Scanning is broadcast.** `start_scan` and `stop_scan` go to every connected client. A
+  client that completes its handshake while a scan is already active is sent `start_scan`
+  immediately, so it joins the scan in progress.
+- **Peripherals are owned by one client.** The first client to report a peripheral in a
+  `device_discovered` event becomes its owner. Every subsequent command for that peripheral
+  — `connect`, GATT operations, binary frames — is sent only to the owner.
+- **Duplicate discoveries are expected.** Several clients may report the same peripheral;
+  the server keys peripherals by address and tracks all clients that have seen one.
+- **Ownership survives client loss.** If a peripheral's owner disconnects, ownership moves
+  to another connected client that has also reported that peripheral. If no such client
+  remains, the peripheral is dropped and must be rediscovered.
+- **Ownership expires.** A peripheral that no client reported for 15 minutes, counted from
+  its last report or the end of the last scan, whichever is later, is dropped when the next
+  scan starts and must be rediscovered.
+
+### Liveness
+
+After the handshake the server sends a WebSocket ping every 15 seconds. A client must answer with
+a pong — every compliant WebSocket implementation does this automatically. When neither a pong nor
+a protocol message has arrived for more than 45 seconds, the server terminates the connection and
+runs the normal disconnect cleanup. The check runs on the same 15-second schedule as the ping, so
+a dead client is dropped between 45 and 60 seconds after its last sign of life.
+
+This is what detects a client that lost power: such a client sends neither a close frame nor a
+TCP FIN, and the server enables no TCP keepalive, so without the ping the socket stays open
+indefinitely and its peripherals stay routed to a client that can no longer answer.
 
 ### Handshake
 
@@ -178,9 +209,15 @@ device found matching the filter criteria.
 | `already_scanning`      | A scan is already in progress   |
 
 **Notes:**
-- Only one scan can be active at a time
+- Only one scan can be active at a time per client
 - The client should start sending `device_discovered` events after responding with success
 - Scanning continues until `stop_scan` is sent or the WebSocket closes
+- The server broadcasts `start_scan` to every connected client, including clients that
+  connect while the scan is already running
+- The server may send `start_scan` while a scan is active, with different parameters. The
+  client should apply the new parameters and answer success; a repeat of the parameters
+  already running needs no action. `already_scanning` is for a client that cannot re-arm —
+  the server then keeps treating it as scanning, with the parameters of its running scan.
 
 ---
 
@@ -336,6 +373,11 @@ Read the current value of a characteristic.
 
 For large or frequent reads, the client may alternatively send a binary frame with
 opcode `0x03` instead of a JSON result (see in the Binary Frames section).
+
+The server must not read a characteristic it is subscribed to. A read delivers its value through
+the same stack notification path as an indication, so a client cannot distinguish the two and will
+forward the read value as a `NOTIFICATION` frame, injecting it into the BTP stream. The Matter
+mapping honours this: C3 is read and never subscribed, C2 is subscribed and never read.
 
 **Errors:**
 
@@ -557,6 +599,11 @@ Sent when scanning stops unexpectedly (not initiated by a `stop_scan` command).
 |----------|--------|----------|--------------------------------------------------------------------|
 | `reason` | string | yes      | Reason for stopping (e.g. `"adapter_off"`, `"proxy_disconnected"`) |
 
+The event is per client: the server stops treating that one client as scanning and only
+reports scanning as stopped to the Matter stack once no connected client is scanning
+anymore. A client whose scan dies while others keep scanning therefore does not abort
+discovery.
+
 ---
 
 ### characteristic_notification
@@ -608,14 +655,16 @@ Binary frames do not include the characteristic UUID. The characteristic context
 by the preceding JSON command:
 
 - **`WRITE_DATA` (0x01):** Writes to the characteristic most recently targeted by a
-  `write_characteristic` JSON command for this connection handle. In practice, this is always
-  the Matter BTP characteristic C1 (`18EE2EF5-263D-4559-959F-4F9C429F9D11`). Clients MUST use
-  ATT Write Request (with response) for these writes — same constraint as the initial
-  `write_characteristic` handshake on C1.
+  `write_characteristic` or `write_and_subscribe` JSON command for this connection handle. In
+  practice, this is always the Matter BTP characteristic C1
+  (`18EE2EF5-263D-4559-959F-4F9C429F9D11`), established by the `write_and_subscribe` that
+  carries the BTP handshake request. Clients MUST use ATT Write Request (with response) for
+  these writes — same constraint as that handshake write.
 
 - **`NOTIFICATION` (0x02):** Contains data from the characteristic most recently subscribed
-  via `subscribe_characteristic` for this connection handle. In practice, this is always
-  the Matter BTP characteristic C2 (`18EE2EF5-263D-4559-959F-4F9C429F9D12`).
+  via `subscribe_characteristic` or `write_and_subscribe` for this connection handle. In
+  practice, this is always the Matter BTP characteristic C2
+  (`18EE2EF5-263D-4559-959F-4F9C429F9D12`), established by the same `write_and_subscribe`.
 
 - **`READ_RESPONSE` (0x03):** Contains the response to the most recent `read_characteristic`
   command for this connection handle. Used as an alternative to the JSON result when the

@@ -140,7 +140,10 @@ export async function resolveServerId(
                         return DEFAULT_SERVER_ID;
                     }
                 } else {
-                    logger.error(`Multiple fabrics found, using new storage`, fabrics);
+                    logger.error(
+                        `Multiple fabrics found, using new storage`,
+                        fabrics.map(({ fabricId, rootVendorId }) => ({ fabricId, rootVendorId })),
+                    );
                 }
             } finally {
                 if (!closed) {

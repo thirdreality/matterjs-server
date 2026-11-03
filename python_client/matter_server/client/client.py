@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Self, cast
@@ -25,13 +26,29 @@ from matter_server.common.helpers.util import (
 )
 from matter_server.common.models import (
     APICommand,
+    BatchedCommandResult,
+    CameraAudioHints,
+    CameraCapabilities,
+    CameraIceServer,
+    CameraResolutionHint,
+    CameraResolutionTarget,
+    CameraSessionEndedData,
+    CameraSnapshotResult,
+    CameraStartStreamResult,
+    CameraStopStreamResult,
+    CameraStreamEvictedData,
+    CameraVideoHints,
     CommandMessage,
     CommissionableNodeData,
     CommissioningParameters,
+    DataVersionFilter,
     ErrorResultMessage,
     EventMessage,
+    EventPath,
     EventType,
     IcdStateData,
+    InteractionReport,
+    ManualOnboardingPayloadResult,
     MatterNodeData,
     MatterNodeEvent,
     MatterSoftwareVersion,
@@ -39,10 +56,17 @@ from matter_server.common.models import (
     NetworkTopology,
     NodePingResult,
     OtaUploadTicket,
+    QrOnboardingPayloadResult,
     ResultMessageBase,
     ServerDiagnostics,
     ServerInfoMessage,
+    SubscribeEventPath,
+    SubscribeResult,
+    SubscriptionEndedData,
+    SubscriptionListener,
+    SubscriptionReportData,
     SuccessResultMessage,
+    WebRTCIceCandidate,
 )
 
 from .connection import MatterClientConnection
@@ -61,7 +85,7 @@ from .models.node import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from os import PathLike
     from types import TracebackType
 
@@ -71,7 +95,41 @@ if TYPE_CHECKING:
 
 SUB_WILDCARD: Final = "*"
 
+WebRtcProviderCommandName = Literal[
+    "ProvideOffer",
+    "SolicitOffer",
+    "ProvideAnswer",
+    "ProvideIceCandidates",
+]
+
+# Relayed from schema 14; the offer commands need only schema 12.
+SIGNALLING_PROVIDER_COMMANDS: Final = frozenset({"ProvideAnswer", "ProvideIceCandidates"})
+
+# Payload carries node_id, so node_filter subscribers receive these events.
+NODE_SCOPED_CAMERA_EVENTS: Final = frozenset(
+    {
+        EventType.WEBRTC_CALLBACK,
+        EventType.CAMERA_SESSION_ENDED,
+        EventType.CAMERA_STREAM_EVICTED,
+    }
+)
+
 # pylint: disable=too-many-public-methods,too-many-locals,too-many-branches
+
+
+def _session_reference(webrtc_session_id: int | None, client_session_key: str | None) -> dict[str, Any]:
+    """Return the arguments naming a session; the server refuses both or neither with error 8."""
+    reference: dict[str, Any] = {}
+    if webrtc_session_id is not None:
+        reference["webrtc_session_id"] = webrtc_session_id
+    if client_session_key is not None:
+        reference["client_session_key"] = client_session_key
+    return reference
+
+
+def _command_name(command: ClusterCommand) -> str:
+    """Return the wire name of a command: the name of its class."""
+    return type(command).__name__
 
 
 class MatterClient:
@@ -83,6 +141,9 @@ class MatterClient:
         self.logger = logging.getLogger(__package__)
         self._nodes: dict[int, MatterNode] = {}
         self._result_futures: dict[str, asyncio.Future] = {}
+        self._result_hooks: dict[str, Callable[[Any], None]] = {}
+        self._subscription_listeners: dict[tuple[int, int], SubscriptionListener] = {}
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self._subscribers: dict[str, list[Callable[[EventType, Any], None]]] = {}
         self._stop_called: bool = False
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -102,13 +163,12 @@ class MatterClient:
         """
         Subscribe to node and server events.
 
-        Optionally filter by specific events or node attributes.
+        Optionally filter by specific events or node attributes. An exception raised by the callback
+        is logged and does not stop the delivery of the event to other subscribers. A callback that
+        is subscribed or unsubscribed while an event is delivered may or may not get that event; the
+        change applies to every later event.
         Returns:
             function to unsubscribe.
-
-        NOTE: To receive attribute changed events,
-        you must also register the attributes to subscribe to
-        with the `subscribe_attributes` method.
         """
         # for fast lookups we create a key based on the filters, allowing
         # a "catch all" with a wildcard (*).
@@ -155,6 +215,7 @@ class MatterClient:
         network_only: bool = False,
         wifi_credentials_id: str | None = None,
         thread_dataset_id: str | None = None,
+        discovery_timeout_s: float | None = None,
     ) -> MatterNodeData:
         """
         Commission a device using a QR Code or Manual Pairing Code.
@@ -163,6 +224,8 @@ class MatterClient:
         :param network_only: If True, restricts device discovery to network only.
         :param wifi_credentials_id: Optional id of the WiFi credentials entry to use.
         :param thread_dataset_id: Optional id of the Thread dataset entry to use.
+        :param discovery_timeout_s: Optional seconds to find and pair with the device, at most 172800.
+            Needs schema 14. Without it the server searches for 3 minutes.
 
         :return: The NodeInfo of the commissioned device.
         """
@@ -171,29 +234,58 @@ class MatterClient:
             extra["wifi_credentials_id"] = wifi_credentials_id
         if thread_dataset_id is not None:
             extra["thread_dataset_id"] = thread_dataset_id
+        require_schema = 12 if extra else (6 if network_only else None)
+        if discovery_timeout_s is not None:
+            require_schema = 14
         data = await self.send_command(
             APICommand.COMMISSION_WITH_CODE,
-            require_schema=12 if extra else (6 if network_only else None),
+            require_schema=require_schema,
             code=code,
             network_only=network_only,
             **extra,
+            **({} if discovery_timeout_s is None else {"discovery_timeout_s": discovery_timeout_s}),
         )
         return dataclass_from_dict(MatterNodeData, data)
 
-    async def commission_on_network(self, setup_pin_code: int, ip_addr: str | None = None) -> MatterNodeData:
+    async def commission_on_network(
+        self,
+        setup_pin_code: int,
+        ip_addr: str | None = None,
+        discovery_timeout_s: float | None = None,
+        filter_type: int | None = None,
+        filter: int | None = None,  # noqa: A002  (the wire name)
+    ) -> MatterNodeData:
         """
         Do the routine for OnNetworkCommissioning.
 
         NOTE: For advanced usecases only, use `commission_with_code`
         for regular commissioning.
 
+        ``filter_type`` (1=ShortDiscriminator, 2=LongDiscriminator, 3=VendorId, 4=DeviceType) and
+        ``filter`` select the device to commission; they are sent only when given. ``filter_type`` 0
+        means no filter.
+        ``filter_type`` 4 and ``discovery_timeout_s`` (as for ``commission_with_code``) need schema 14;
+        an older server ignores ``filter_type`` 4 and commissions any device with the setup code.
+
         Returns basic MatterNodeData once complete.
         """
+        require_schema = 6 if ip_addr is not None else None
+        if discovery_timeout_s is not None or filter_type == 4:
+            require_schema = 14
         data = await self.send_command(
             APICommand.COMMISSION_ON_NETWORK,
-            require_schema=6 if ip_addr is not None else None,
+            require_schema=require_schema,
             setup_pin_code=setup_pin_code,
             ip_addr=ip_addr,
+            **{
+                key: value
+                for key, value in (
+                    ("filter_type", filter_type),
+                    ("filter", filter),
+                    ("discovery_timeout_s", discovery_timeout_s),
+                )
+                if value is not None
+            },
         )
         return dataclass_from_dict(MatterNodeData, data)
 
@@ -521,10 +613,20 @@ class MatterClient:
                     node_type = NodeType.END_DEVICE
         elif network_type == NetworkType.WIFI:
             node_type = NodeType.END_DEVICE
+        # NetworkID is an SSID only on a Wi-Fi instance; Thread uses the binary Extended PAN ID
+        network_commissioning_features = node.get_attribute_value(
+            0,
+            cluster=None,
+            attribute=Clusters.NetworkCommissioning.Attributes.FeatureMap,
+        )
+        network_id_is_ssid = network_type in (NetworkType.WIFI, NetworkType.UNKNOWN) and bool(
+            (network_commissioning_features or 0)
+            & Clusters.NetworkCommissioning.Bitmaps.Feature.kWiFiNetworkInterface
+        )
         # use lastNetworkID from NetworkCommissioning cluster as fallback to get the network name
         # this allows getting the SSID as the wifi diagnostics cluster only has the BSSID
         last_network_id: bytes | str | None
-        if not network_name and (
+        if network_id_is_ssid and not network_name and (
             last_network_id := node.get_attribute_value(
                 0,
                 cluster=None,
@@ -538,7 +640,7 @@ class MatterClient:
         # last resort to get the (wifi) networkname;
         # enumerate networks on the NetworkCommissioning cluster
         networks: list[Clusters.NetworkCommissioning.Structs.NetworkInfoStruct]
-        if not network_name and (
+        if network_id_is_ssid and not network_name and (
             networks := node.get_attribute_value(
                 0,
                 cluster=None,
@@ -583,22 +685,48 @@ class MatterClient:
         interaction_timeout_ms: int | None = None,
     ) -> Any:
         """Send a command to a Matter node/device."""
-        try:
-            command_name = command.__class__.__name__
-        except AttributeError:
-            # handle case where only the class was provided instead of an instance of it.
-            command_name = command.__name__
         return await self.send_command(
             APICommand.DEVICE_COMMAND,
             node_id=node_id,
             endpoint_id=endpoint_id,
             cluster_id=command.cluster_id,
-            command_name=command_name,
+            command_name=_command_name(command),
             payload=dataclass_to_dict(command),
             response_type=response_type,
             timed_request_timeout_ms=timed_request_timeout_ms,
             interaction_timeout_ms=interaction_timeout_ms,
         )
+
+    async def send_batched_device_commands(
+        self,
+        node_id: int,
+        commands: Sequence[tuple[int, ClusterCommand]],
+        timed_request_timeout_ms: int | None = None,
+        interaction_timeout_ms: int | None = None,
+    ) -> list[BatchedCommandResult]:
+        """Send `(endpoint_id, command)` pairs to one node in a single InvokeRequest.
+
+        The commands go out in the given order, never split and never combined with other
+        commands. The result has one entry per command, in the same order; one command failing
+        does not fail the others. Requires schema 14.
+        """
+        data = await self.send_command(
+            APICommand.BATCHED_DEVICE_COMMANDS,
+            require_schema=14,
+            node_id=node_id,
+            commands=[
+                {
+                    "endpoint_id": endpoint_id,
+                    "cluster_id": command.cluster_id,
+                    "command_name": _command_name(command),
+                    "payload": dataclass_to_dict(command),
+                }
+                for endpoint_id, command in commands
+            ],
+            timed_request_timeout_ms=timed_request_timeout_ms,
+            interaction_timeout_ms=interaction_timeout_ms,
+        )
+        return [dataclass_from_dict(BatchedCommandResult, entry) for entry in cast(list[Any], data)]
 
     async def read_attribute(
         self,
@@ -613,6 +741,187 @@ class MatterClient:
             attribute_path=attribute_path,
         )
         return cast(dict[str, Any], updated_values)
+
+    async def read(
+        self,
+        node_id: int,
+        attribute_paths: Sequence[str] | None = None,
+        event_paths: Sequence[EventPath] | None = None,
+        event_min: int | None = None,
+        fabric_filtered: bool | None = None,
+        data_version_filters: Sequence[DataVersionFilter] | None = None,
+    ) -> InteractionReport:
+        """Read attributes and events in one Matter Read request.
+
+        At least one attribute or event path is needed. An argument left ``None`` is not sent;
+        the server then reads fabric-filtered and applies no event filter. Events the read
+        returns are only in the result, not sent as ``node_event``.
+
+        Requires schema 14.
+        """
+        optional = {
+            "attribute_paths": attribute_paths,
+            "event_paths": event_paths,
+            "event_min": event_min,
+            "fabric_filtered": fabric_filtered,
+            "data_version_filters": data_version_filters,
+        }
+        data = await self.send_command(
+            APICommand.READ,
+            require_schema=14,
+            node_id=node_id,
+            **{key: value for key, value in optional.items() if value is not None},
+        )
+        return dataclass_from_dict(InteractionReport, data)
+
+    async def subscribe(
+        self,
+        node_id: int,
+        min_interval: int,
+        max_interval: int,
+        attribute_paths: Sequence[str] | None = None,
+        event_paths: Sequence[SubscribeEventPath] | None = None,
+        event_min: int | None = None,
+        fabric_filtered: bool | None = None,
+        data_version_filters: Sequence[DataVersionFilter] | None = None,
+        keep_subscriptions: bool | None = None,
+        listener: SubscriptionListener | None = None,
+    ) -> SubscribeResult:
+        """Open a Matter subscription for this connection.
+
+        Returns the priming report; later reports arrive as ``subscription_report`` events and an
+        end the caller did not ask for as ``subscription_ended``. ``keep_subscriptions`` left out or
+        ``False`` ends all other subscriptions of this controller to the node, on the device and in
+        the server, including those of other connections; ``True`` keeps them. An argument left
+        ``None`` is not sent. Only available when the server runs with auto subscription disabled.
+
+        ``listener`` receives every ``subscription_report`` and ``subscription_ended`` of this
+        subscription, including those the server sent right behind the response, which node
+        subscribers get before this call returns. When the connection is lost or ``disconnect`` is
+        called, it receives a ``subscription_ended`` built by the client, because the server ends
+        the subscription without sending one. After ``subscription_ended`` or ``unsubscribe`` it
+        gets no further calls.
+
+        If this call does not return the result, for example because it was cancelled or timed out
+        with ``asyncio.wait_for``, the client ends the subscription with ``unsubscribe`` itself, also
+        when the response arrives later, and ``listener`` gets no further calls. A failure of that
+        ``unsubscribe`` is logged.
+
+        Requires schema 14.
+        """
+        optional = {
+            "attribute_paths": attribute_paths,
+            "event_paths": event_paths,
+            "event_min": event_min,
+            "fabric_filtered": fabric_filtered,
+            "data_version_filters": data_version_filters,
+            "keep_subscriptions": keep_subscriptions,
+        }
+        subscription_id: int | None = None
+        caller_waits = True
+
+        # Whichever of on_result and the except block below runs second ends the subscription.
+        def on_result(result: Any) -> None:
+            nonlocal subscription_id
+            if not caller_waits:
+                self._end_abandoned_subscription(node_id, result["subscription_id"])
+                return
+            subscription_id = result["subscription_id"]
+            if listener is not None:
+                self._subscription_listeners[(node_id, subscription_id)] = listener
+
+        try:
+            data = await self.send_command(
+                APICommand.SUBSCRIBE,
+                require_schema=14,
+                on_result=on_result,
+                node_id=node_id,
+                min_interval=min_interval,
+                max_interval=max_interval,
+                **{key: value for key, value in optional.items() if value is not None},
+            )
+            return dataclass_from_dict(SubscribeResult, data)
+        except BaseException:
+            caller_waits = False
+            if subscription_id is not None:
+                key = (node_id, subscription_id)
+                if listener is None:
+                    self._end_abandoned_subscription(node_id, subscription_id)
+                # Otherwise a missing listener means subscription_ended already arrived.
+                elif self._subscription_listeners.get(key) is listener:
+                    del self._subscription_listeners[key]
+                    self._end_abandoned_subscription(node_id, subscription_id)
+            raise
+
+    def _end_abandoned_subscription(self, node_id: int, subscription_id: int) -> None:
+        if self._stop_called:
+            # The server ends the subscriptions of a closed connection itself.
+            return
+
+        async def end() -> None:
+            try:
+                await self.send_command(
+                    APICommand.UNSUBSCRIBE, require_schema=14, node_id=node_id, subscription_id=subscription_id
+                )
+            except asyncio.CancelledError:
+                self.logger.debug("Ending subscription %s of node %s was cancelled", subscription_id, node_id)
+                raise
+            except Exception as err:
+                self.logger.warning(
+                    "Could not end subscription %s of node %s after its subscribe call was abandoned: %r",
+                    subscription_id,
+                    node_id,
+                    err,
+                )
+
+        task = asyncio.get_running_loop().create_task(end())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def unsubscribe(self, node_id: int, subscription_id: int) -> None:
+        """End a subscription opened by this connection with ``subscribe``.
+
+        Its listener gets no further calls, also when this call fails.
+        Only available when the server runs with auto subscription disabled.
+
+        Requires schema 14.
+        """
+        self._subscription_listeners.pop((node_id, subscription_id), None)
+        await self.send_command(
+            APICommand.UNSUBSCRIBE,
+            require_schema=14,
+            node_id=node_id,
+            subscription_id=subscription_id,
+        )
+
+    async def enable_auto_subscription(self, node_id: int) -> None:
+        """Switch the server's own subscription to a node on, until the server restarts.
+
+        Returns once the subscription is active. Ends the node's subscriptions opened with
+        ``subscribe``. Only available when the server runs with auto subscription disabled.
+
+        Requires schema 14.
+        """
+        await self.send_command(APICommand.ENABLE_AUTO_SUBSCRIPTION, require_schema=14, node_id=node_id)
+
+    async def parse_onboarding_payload(self, code: str) -> QrOnboardingPayloadResult | ManualOnboardingPayloadResult:
+        """Decode a QR code payload (``MT:...``) or a manual pairing code without contacting any device.
+
+        Requires schema 14.
+        """
+        data = await self.send_command(APICommand.PARSE_ONBOARDING_PAYLOAD, require_schema=14, code=code)
+        if data["type"] == "qr":
+            return dataclass_from_dict(QrOnboardingPayloadResult, data)
+        return dataclass_from_dict(ManualOnboardingPayloadResult, data)
+
+    async def disable_auto_subscription(self, node_id: int) -> None:
+        """Switch the server's own subscription to a node off again.
+
+        Only available when the server runs with auto subscription disabled.
+
+        Requires schema 14.
+        """
+        await self.send_command(APICommand.DISABLE_AUTO_SUBSCRIPTION, require_schema=14, node_id=node_id)
 
     async def refresh_attribute(
         self,
@@ -629,14 +938,24 @@ class MatterClient:
         node_id: int,
         attribute_path: str,
         value: Any,
+        timed_request_timeout_ms: int | None = None,
     ) -> Any:
-        """Write an attribute(value) on a target node."""
+        """Write an attribute(value) on a target node.
+
+        ``*`` as the endpoint in ``attribute_path`` writes every endpoint of the node that has
+        the attribute (schema 14). ``timed_request_timeout_ms`` sends a timed write (schema 14).
+        """
         return await self.send_command(
             APICommand.WRITE_ATTRIBUTE,
-            require_schema=4,
+            require_schema=4 if timed_request_timeout_ms is None else 14,
             node_id=node_id,
             attribute_path=attribute_path,
             value=dataclass_to_tag_dict(value),
+            **(
+                {}
+                if timed_request_timeout_ms is None
+                else {"timed_request_timeout_ms": timed_request_timeout_ms}
+            ),
         )
 
     async def remove_node(self, node_id: int) -> None:
@@ -718,23 +1037,220 @@ class MatterClient:
         self,
         node_id: int,
         endpoint_id: int,
-        command_name: Literal["ProvideOffer", "SolicitOffer"],
+        command_name: WebRtcProviderCommandName,
         payload: dict,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         """Invoke a WebRTCTransportProvider command on a commissioned camera.
 
         The server hard-codes the cluster id (0x0553) and injects
         originatingEndpointId — payload should omit both.
+
+        ``ProvideOffer`` and ``SolicitOffer`` start a session and return the camera's response.
+        ``ProvideAnswer`` and ``ProvideIceCandidates`` act on an existing session, return ``None``
+        and need schema 14. For ``EndSession``, use ``camera_stop_stream``.
         """
         response = await self.send_command(
             APICommand.SEND_WEBRTC_PROVIDER_COMMAND,
-            require_schema=12,
+            require_schema=14 if command_name in SIGNALLING_PROVIDER_COMMANDS else 12,
             node_id=node_id,
             endpoint_id=endpoint_id,
             command_name=command_name,
             payload=payload,
         )
-        return cast(dict[str, Any], response)
+        return cast("dict[str, Any] | None", response)
+
+    async def camera_get_capabilities(self, node_id: int, endpoint_id: int) -> CameraCapabilities:
+        """Return what the camera states and what is allocated on it. Allocates nothing.
+
+        Requires schema 14.
+        """
+        data = await self.send_command(
+            APICommand.CAMERA_GET_CAPABILITIES, require_schema=14, node_id=node_id, endpoint_id=endpoint_id
+        )
+        return dataclass_from_dict(CameraCapabilities, data)
+
+    async def camera_start_stream(  # noqa: PLR0913
+        self,
+        node_id: int,
+        endpoint_id: int,
+        stream_usage: str,
+        sdp: str | None = None,
+        video: CameraVideoHints | Literal[False] | None = None,
+        audio: CameraAudioHints | Literal[False] | None = None,
+        ice_servers: list[CameraIceServer] | None = None,
+        ice_transport_policy: str | None = None,
+        metadata_enabled: bool | None = None,
+        allow_eviction: bool | None = None,
+        talkback: bool | None = None,
+        client_session_key: str | None = None,
+    ) -> CameraStartStreamResult:
+        """Open a WebRTC session, allocating or reusing the streams it needs.
+
+        Sends ``ProvideOffer`` when ``sdp`` is given, ``SolicitOffer`` otherwise; then the camera's
+        offer arrives as a ``webrtc_callback`` ``offer`` event. For ``video`` and ``audio``, ``None``
+        lets the server decide, a hints dict sets hard requirements, and ``False`` leaves the track
+        out. ``talkback=True`` (requires ``sdp``) forwards the offer unchanged so the camera can play
+        the caller's audio; otherwise the server makes the offer's audio sections not send. A camera
+        that answers ``sendrecv`` anyway gets its answer narrowed by the server to the directions the
+        offer allows. Arguments left ``None`` are not sent.
+
+        ``client_session_key`` (1 to 128 characters, unique among this connection's starting and open
+        sessions) is the caller's own name for the session. Every ``webrtc_callback`` and
+        ``camera_session_ended`` event of the session carries it, so a handler can match events
+        before this call returns. ``camera_provide_ice_candidates`` and ``camera_stop_stream`` accept
+        it in place of the session id, also while this call is still running.
+
+        Requires schema 14.
+        """
+        optional = {
+            "sdp": sdp,
+            "video": video,
+            "audio": audio,
+            "ice_servers": ice_servers,
+            "ice_transport_policy": ice_transport_policy,
+            "metadata_enabled": metadata_enabled,
+            "allow_eviction": allow_eviction,
+            "talkback": talkback,
+            "client_session_key": client_session_key,
+        }
+        data = await self.send_command(
+            APICommand.CAMERA_START_STREAM,
+            require_schema=14,
+            node_id=node_id,
+            endpoint_id=endpoint_id,
+            stream_usage=stream_usage,
+            **{key: value for key, value in optional.items() if value is not None},
+        )
+        return dataclass_from_dict(CameraStartStreamResult, data)
+
+    async def camera_provide_answer(self, node_id: int, endpoint_id: int, webrtc_session_id: int, sdp: str) -> None:
+        """Send the SDP answer for a session started without ``sdp``.
+
+        Requires schema 14.
+        """
+        await self.send_command(
+            APICommand.CAMERA_PROVIDE_ANSWER,
+            require_schema=14,
+            node_id=node_id,
+            endpoint_id=endpoint_id,
+            webrtc_session_id=webrtc_session_id,
+            sdp=sdp,
+        )
+
+    async def camera_provide_ice_candidates(
+        self,
+        node_id: int,
+        endpoint_id: int,
+        webrtc_session_id: int | None,
+        ice_candidates: Sequence[WebRTCIceCandidate | dict[str, Any]],
+        *,
+        client_session_key: str | None = None,
+    ) -> None:
+        """Send one or more ICE candidates to a session.
+
+        Name the session by ``webrtc_session_id`` or by ``client_session_key`` (pass ``None`` for the
+        id then), not both. With the key of a session whose ``camera_start_stream`` is still running,
+        the server queues the candidates and this call returns once they were sent, after that
+        response. A candidate from a ``webrtc_callback`` ``ice_candidates`` event can be passed
+        unchanged.
+
+        Requires schema 14.
+        """
+        await self.send_command(
+            APICommand.CAMERA_PROVIDE_ICE_CANDIDATES,
+            require_schema=14,
+            node_id=node_id,
+            endpoint_id=endpoint_id,
+            **_session_reference(webrtc_session_id, client_session_key),
+            ice_candidates=[
+                asdict(candidate) if isinstance(candidate, WebRTCIceCandidate) else candidate
+                for candidate in ice_candidates
+            ],
+        )
+
+    async def camera_stop_stream(
+        self,
+        node_id: int,
+        endpoint_id: int,
+        webrtc_session_id: int | None = None,
+        *,
+        client_session_key: str | None = None,
+    ) -> CameraStopStreamResult:
+        """End a WebRTC session; the stream allocation is kept.
+
+        Name the session by ``webrtc_session_id`` or by ``client_session_key``, not both. The key of a
+        session whose ``camera_start_stream`` is still running cancels that start; ``ended`` then says
+        whether the camera had opened a session that the server ended.
+
+        Requires schema 14.
+        """
+        data = await self.send_command(
+            APICommand.CAMERA_STOP_STREAM,
+            require_schema=14,
+            node_id=node_id,
+            endpoint_id=endpoint_id,
+            **_session_reference(webrtc_session_id, client_session_key),
+        )
+        return dataclass_from_dict(CameraStopStreamResult, data)
+
+    async def camera_snapshot(
+        self,
+        node_id: int,
+        endpoint_id: int,
+        max_resolution: CameraResolutionHint | None = None,
+        codec: str | None = None,
+        watermark_enabled: bool | None = None,
+        osd_enabled: bool | None = None,
+        resolution: CameraResolutionTarget | None = None,
+    ) -> CameraSnapshotResult:
+        """Capture one image. An argument left ``None`` is not sent.
+
+        ``resolution`` is the size you want, such as a thumbnail's: ``{"width": 320}``,
+        ``{"height": 240}`` or both. The server uses the smallest capability that reaches it
+        (within ``max_resolution``) and asks the camera to scale to it. The camera may return
+        a larger frame, so check the result's ``resolution``.
+
+        The snapshot stream stays allocated; free it with ``camera_release_stream``.
+
+        Requires schema 14.
+        """
+        optional = {
+            "max_resolution": max_resolution,
+            "resolution": resolution,
+            "codec": codec,
+            "watermark_enabled": watermark_enabled,
+            "osd_enabled": osd_enabled,
+        }
+        data = await self.send_command(
+            APICommand.CAMERA_SNAPSHOT,
+            require_schema=14,
+            node_id=node_id,
+            endpoint_id=endpoint_id,
+            **{key: value for key, value in optional.items() if value is not None},
+        )
+        return dataclass_from_dict(CameraSnapshotResult, data)
+
+    async def camera_release_stream(
+        self,
+        node_id: int,
+        endpoint_id: int,
+        kind: Literal["video", "audio", "snapshot"],
+        stream_id: int,
+    ) -> None:
+        """Deallocate a stream, whoever allocated it.
+
+        Raises ``CameraStreamInUse`` while the camera still references the stream.
+
+        Requires schema 14.
+        """
+        await self.send_command(
+            APICommand.CAMERA_RELEASE_STREAM,
+            require_schema=14,
+            node_id=node_id,
+            endpoint_id=endpoint_id,
+            kind=kind,
+            stream_id=stream_id,
+        )
 
     def _prepare_message(
         self,
@@ -765,17 +1281,30 @@ class MatterClient:
         self,
         command: str,
         require_schema: int | None = None,
+        on_result: Callable[[Any], None] | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Send a command and get a response."""
+        """Send a command and get a response.
+
+        ``on_result`` is called with the result while the response message is handled, before the
+        receive loop reads the next message. It is called also when the caller stopped waiting, so
+        it stays registered until the response arrives, the send raises or the client disconnects.
+        A send that is cancelled keeps it too, since the message may have gone out.
+        """
         if not self._loop:
             raise InvalidState("Not connected")
 
         message = self._prepare_message(command, require_schema, **kwargs)
         future: asyncio.Future[Any] = self._loop.create_future()
         self._result_futures[message.message_id] = future
-        await self.connection.send_message(message)
+        if on_result is not None:
+            self._result_hooks[message.message_id] = on_result
         try:
+            try:
+                await self.connection.send_message(message)
+            except Exception:
+                self._result_hooks.pop(message.message_id, None)
+                raise
             return await future
         finally:
             self._result_futures.pop(message.message_id)
@@ -838,7 +1367,36 @@ class MatterClient:
         # cancel all command-tasks awaiting a result
         for future in self._result_futures.values():
             future.cancel()
-        await self.connection.disconnect()
+        self._result_hooks.clear()
+        try:
+            await self.connection.disconnect()
+        finally:
+            self._end_all_subscriptions()
+
+    def _end_all_subscriptions(self) -> None:
+        # The server ends a closed connection's subscriptions without sending subscription_ended.
+        listeners = list(self._subscription_listeners.items())
+        self._subscription_listeners.clear()
+        for (node_id, subscription_id), listener in listeners:
+            self._call_subscription_listener(
+                listener,
+                EventType.SUBSCRIPTION_ENDED,
+                SubscriptionEndedData(node_id=node_id, subscription_id=subscription_id),
+            )
+
+    def _call_subscription_listener(
+        self,
+        listener: SubscriptionListener,
+        event: EventType,
+        data: SubscriptionReportData | SubscriptionEndedData,
+    ) -> None:
+        # A raising listener must not starve the other listeners, end the message loop or fail disconnect().
+        try:
+            listener(event, data)
+        except Exception:
+            self.logger.exception(
+                "Subscription listener for %s/%s failed on %s", data.node_id, data.subscription_id, event.value
+            )
 
     def _handle_incoming_message(self, msg: MessageType) -> None:
         """
@@ -848,18 +1406,29 @@ class MatterClient:
         """
         # handle result message
         if isinstance(msg, ResultMessageBase):
+            hook = self._result_hooks.pop(msg.message_id, None)
+            if hook is not None and isinstance(msg, SuccessResultMessage):
+                hook(msg.result)
             future = self._result_futures.get(msg.message_id)
 
             if future is None:
-                # no listener for this result
+                self.logger.debug("No listener for result of message id %s", msg.message_id)
+                return
+            if future.done():
+                self.logger.debug("Result arrived for already settled message id %s", msg.message_id)
                 return
 
             if isinstance(msg, SuccessResultMessage):
                 future.set_result(msg.result)
                 return
             if isinstance(msg, ErrorResultMessage):
-                exc = exception_from_error_code(msg.error_code)
-                future.set_exception(exc(msg.details))
+                error = exception_from_error_code(msg.error_code)(msg.details)
+                error.status = msg.status
+                error.cluster_status = msg.cluster_status
+                # Camera errors carry their own reason in the details; keep it when the reply has none.
+                if msg.reason is not None:
+                    error.reason = msg.reason
+                future.set_exception(error)
                 return
 
         # handle EventMessage
@@ -905,7 +1474,7 @@ class MatterClient:
             self._signal_event(EventType.ENDPOINT_REMOVED, data=msg.data, node_id=node_id)
             # cleanup endpoint only after signalling subscribers
             if node := self._nodes.get(node_id):
-                node.endpoints.pop(endpoint_id, None)
+                node._remove_endpoint(endpoint_id)
             return
         if msg.event == EventType.ATTRIBUTE_UPDATED:
             # data is tuple[node_id, attribute_path, new_value]
@@ -929,6 +1498,14 @@ class MatterClient:
             node_id = msg.data["node_id"]
             endpoint_id = msg.data["endpoint_id"]
             self.logger.debug("Endpoint added: %s/%s", node_id, endpoint_id)
+            # subscribers look the endpoint up; the node snapshot that carries it reaches them later
+            if (node := self._nodes.get(node_id)) is None or endpoint_id not in node.endpoints:
+                self.logger.debug(
+                    "Not signalling endpoint %s/%s that the node model does not contain",
+                    node_id,
+                    endpoint_id,
+                )
+                return
         if msg.event == EventType.NODE_EVENT:
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
@@ -945,6 +1522,26 @@ class MatterClient:
         if msg.event == EventType.NETWORK_TOPOLOGY_UPDATED:
             topology = dataclass_from_dict(NetworkTopology, msg.data)
             self._signal_event(EventType.NETWORK_TOPOLOGY_UPDATED, data=topology)
+            return
+        if msg.event == EventType.SUBSCRIPTION_REPORT:
+            report = dataclass_from_dict(SubscriptionReportData, msg.data)
+            self._signal_event(EventType.SUBSCRIPTION_REPORT, data=report, node_id=report.node_id)
+            if listener := self._subscription_listeners.get((report.node_id, report.subscription_id)):
+                self._call_subscription_listener(listener, EventType.SUBSCRIPTION_REPORT, report)
+            return
+        if msg.event == EventType.SUBSCRIPTION_ENDED:
+            ended = dataclass_from_dict(SubscriptionEndedData, msg.data)
+            self._signal_event(EventType.SUBSCRIPTION_ENDED, data=ended, node_id=ended.node_id)
+            if listener := self._subscription_listeners.pop((ended.node_id, ended.subscription_id), None):
+                self._call_subscription_listener(listener, EventType.SUBSCRIPTION_ENDED, ended)
+            return
+        if msg.event in NODE_SCOPED_CAMERA_EVENTS:
+            payload: Any = msg.data
+            if msg.event == EventType.CAMERA_SESSION_ENDED:
+                payload = dataclass_from_dict(CameraSessionEndedData, msg.data)
+            elif msg.event == EventType.CAMERA_STREAM_EVICTED:
+                payload = dataclass_from_dict(CameraStreamEvictedData, msg.data)
+            self._signal_event(msg.event, data=payload, node_id=msg.data["node_id"])
             return
         # An event type unknown to this (older) client is passed through by parse_value as a raw
         # string; forwarding it would crash on `event.value` in _signal_event. Drop it instead so a
@@ -975,8 +1572,13 @@ class MatterClient:
                     if attribute_path_key is None:
                         continue
                     key = f"{evt_key}/{node_key}/{attribute_path_key}"
-                    for callback in self._subscribers.get(key, []):
-                        callback(event, data)
+                    # A snapshot, so a callback that unsubscribes does not make the loop skip the next one.
+                    for callback in list(self._subscribers.get(key, ())):
+                        # A raising subscriber must not skip the model cleanup, starve the others or end the loop.
+                        try:
+                            callback(event, data)
+                        except Exception:
+                            self.logger.exception("Event subscriber failed on %s (node_id=%s)", event.value, node_id)
 
     async def __aenter__(self) -> Self:
         """Initialize and connect the Matter Websocket client."""

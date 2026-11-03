@@ -8,25 +8,20 @@ import "@material/web/button/filled-button";
 import "@material/web/button/outlined-button";
 import "@material/web/progress/circular-progress";
 import "@material/web/radio/radio";
-import {
-    ICD_MULTI_ADMIN_ERROR_CODE,
-    isLongIdleTimeCapable,
-    ServerCommandError,
-    type IcdStateData,
-    type MatterNode,
-} from "@matter-server/ws-client";
+import { isLongIdleTimeCapable, type IcdStateData, type MatterNode } from "@matter-server/ws-client";
 import { css, html, nothing, type CSSResultGroup, type TemplateResult } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { showAlertDialog, showPromptDialog } from "../../../components/dialog-box/show-dialog-box.js";
 import { handleAsync } from "../../../util/async-handler.js";
 import { formatDuration } from "../../../util/duration.js";
+import { errorText } from "../../../util/error-text.js";
 import {
     decodeRegisteredClients,
     ICD_CLUSTER_ID,
     icdInfo,
     isRegisteredByUs,
+    multiAdminVendorIds,
     otherFabricClientCount,
-    parseMultiAdminDetails,
     wakeInstruction,
     type IcdInfo,
 } from "../../../util/icd.js";
@@ -371,8 +366,8 @@ export class IcdManagementClusterCommands extends BaseClusterCommands {
 
     /** Returns true when the error was a handled multi-admin rejection. */
     private async _handleMultiAdmin(node: MatterNode, endpoint: number, error: unknown): Promise<boolean> {
-        if (!(error instanceof ServerCommandError) || error.errorCode !== ICD_MULTI_ADMIN_ERROR_CODE) return false;
-        const vendorIds = parseMultiAdminDetails(error.message) ?? new Array<number>();
+        const vendorIds = multiAdminVendorIds(error);
+        if (vendorIds === undefined) return false;
         let names: string;
         if (vendorIds.length === 0) {
             names = "unknown ecosystems";
@@ -489,7 +484,7 @@ export class IcdManagementClusterCommands extends BaseClusterCommands {
         try {
             await action();
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
+            const message = errorText(error);
             if (this.isSameContext(node, endpoint)) {
                 await showAlertDialog({ title: "ICD operation failed", text: message });
             }

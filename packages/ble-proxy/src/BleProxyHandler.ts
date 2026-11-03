@@ -5,15 +5,34 @@
  */
 
 import type { WebServerHandler } from "@matter-server/ws-controller";
-import { Logger, Observable } from "@matter/main";
+import { Logger, Minutes, Observable, Time, Timestamp } from "@matter/main";
 import type { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { BleProxyConnection } from "./BleProxyConnection.js";
-import { BleProxyCommand, BleProxyEvent, type DeviceDiscoveredData, type StartScanArgs } from "./BleProxyProtocol.js";
+import {
+    BleProxyCommand,
+    BleProxyCommandError,
+    BleProxyErrorCode,
+    type BleProxyErrorCodeValue,
+    BleProxyEvent,
+    type DeviceDiscoveredData,
+    type StartScanArgs,
+} from "./BleProxyProtocol.js";
 
 type HttpServer = ReturnType<typeof createServer>;
 
 const logger = Logger.get("BleProxyHandler");
+
+/**
+ * Age after which an ownership entry is dropped when a new scan starts. The entry ages like the BLE scanner's record for
+ * a client without listening time: from the later of its last report and the end of the last scan, so it never expires
+ * while the scanner still offers the device.
+ */
+const OWNER_MAX_AGE = Minutes(15);
+
+function isErrorCode(err: unknown, code: BleProxyErrorCodeValue): boolean {
+    return err instanceof BleProxyCommandError && err.code === code;
+}
 
 /**
  * WebSocket server handler (hub) for the `/ble` BLE proxy endpoint.
@@ -32,11 +51,15 @@ export class BleProxyHandler implements WebServerHandler {
     /** Active scan intent + args, so clients joining mid-scan can be synced. */
     #scanActive = false;
     #scanArgs?: StartScanArgs;
+    #scanStoppedAt?: Timestamp;
     /** Connections currently told to scan, for aggregate `scanStopped`. */
     #scanning = new Set<BleProxyConnection>();
 
-    /** address -> owning connection + every connection that has seen it. */
-    #owners = new Map<string, { owner: BleProxyConnection; seers: Set<BleProxyConnection> }>();
+    /** address -> owning connection, every connection that has seen it, and when it was last reported. */
+    #owners = new Map<
+        string,
+        { owner: BleProxyConnection; seers: Set<BleProxyConnection>; lastReportedAt: Timestamp }
+    >();
 
     /** Emitted whenever a connection completes its handshake. */
     readonly connectionEstablished = new Observable<[]>();
@@ -125,14 +148,32 @@ export class BleProxyHandler implements WebServerHandler {
         });
     }
 
-    /** Returns the connection that owns `address`, if it is still connected. */
+    /**
+     * Returns the connected connection that owns `address`. An owner that is no longer connected but whose close has
+     * not been processed yet hands ownership to a connected seer, so the peripheral stays reachable meanwhile.
+     */
     getOwner(address: string): BleProxyConnection | undefined {
         const entry = this.#owners.get(address);
-        if (entry && entry.owner.connected) return entry.owner;
+        if (entry === undefined) return undefined;
+        if (!entry.owner.connected) {
+            const seer = this.#connectedSeer(entry.seers);
+            if (seer === undefined) return undefined;
+            entry.owner = seer;
+        }
+        return entry.owner;
+    }
+
+    #connectedSeer(seers: Set<BleProxyConnection>): BleProxyConnection | undefined {
+        for (const seer of seers) {
+            if (seer.connected) return seer;
+        }
         return undefined;
     }
 
     async startScan(args: StartScanArgs): Promise<void> {
+        if (!this.#scanActive) {
+            this.#forgetUnreportedOwners();
+        }
         this.#scanActive = true;
         this.#scanArgs = args;
         const sends = new Array<Promise<unknown>>();
@@ -141,8 +182,7 @@ export class BleProxyHandler implements WebServerHandler {
                 this.#scanning.add(connection);
                 sends.push(
                     connection.sendCommand(BleProxyCommand.StartScan, args).catch(err => {
-                        logger.warn(`[${connection.id}] Failed to start scan:`, err);
-                        this.#markNotScanning(connection, "start scan failed");
+                        this.#onStartScanRejected(connection, err);
                     }),
                 );
             }
@@ -152,13 +192,18 @@ export class BleProxyHandler implements WebServerHandler {
 
     async stopScan(): Promise<void> {
         this.#scanActive = false;
+        this.#scanStoppedAt = Time.nowUs;
         const sends = new Array<Promise<unknown>>();
         for (const connection of this.#connections) {
             if (connection.connected) {
                 sends.push(
-                    connection
-                        .sendCommand(BleProxyCommand.StopScan)
-                        .catch(err => logger.warn(`[${connection.id}] Failed to stop scan:`, err)),
+                    connection.sendCommand(BleProxyCommand.StopScan).catch(err => {
+                        if (isErrorCode(err, BleProxyErrorCode.NotScanning)) {
+                            logger.debug(`[${connection.id}] was not scanning`);
+                            return;
+                        }
+                        logger.warn(`[${connection.id}] Failed to stop scan:`, err);
+                    }),
                 );
             }
         }
@@ -171,8 +216,7 @@ export class BleProxyHandler implements WebServerHandler {
         if (this.#scanActive && this.#scanArgs) {
             this.#scanning.add(connection);
             connection.sendCommand(BleProxyCommand.StartScan, this.#scanArgs).catch(err => {
-                logger.warn(`[${connection.id}] Failed to sync scan to joining client:`, err);
-                this.#markNotScanning(connection, "start scan failed");
+                this.#onStartScanRejected(connection, err);
             });
         }
     }
@@ -183,6 +227,17 @@ export class BleProxyHandler implements WebServerHandler {
         } else if (event === BleProxyEvent.ScanStopped) {
             this.#markNotScanning(connection, (data as { reason?: string }).reason ?? "unknown");
         }
+    }
+
+    #onStartScanRejected(connection: BleProxyConnection, err: unknown): void {
+        // `already_scanning` means the client is scanning. A client that cannot re-arm keeps the
+        // parameters of its running scan, so this is only equivalent while the args do not change.
+        if (isErrorCode(err, BleProxyErrorCode.AlreadyScanning)) {
+            logger.debug(`[${connection.id}] was already scanning`);
+            return;
+        }
+        logger.warn(`[${connection.id}] Failed to start scan:`, err);
+        this.#markNotScanning(connection, "start scan failed");
     }
 
     /** Drop a connection from the scanning set; emit aggregate scanStopped once none remain. */
@@ -198,10 +253,11 @@ export class BleProxyHandler implements WebServerHandler {
     #onDeviceDiscovered(connection: BleProxyConnection, data: DeviceDiscoveredData): void {
         let entry = this.#owners.get(data.address);
         if (!entry) {
-            entry = { owner: connection, seers: new Set([connection]) };
+            entry = { owner: connection, seers: new Set([connection]), lastReportedAt: Time.nowUs };
             this.#owners.set(data.address, entry);
         } else {
             entry.seers.add(connection);
+            entry.lastReportedAt = Time.nowUs;
             if (!entry.owner.connected) {
                 entry.owner = connection;
             }
@@ -212,6 +268,18 @@ export class BleProxyHandler implements WebServerHandler {
         this.deviceDiscovered.emit(data, connection);
     }
 
+    #forgetUnreportedOwners(): void {
+        const now = Time.nowUs;
+        if (this.#scanStoppedAt !== undefined && Timestamp.delta(this.#scanStoppedAt, now) <= OWNER_MAX_AGE) {
+            return;
+        }
+        for (const [address, { lastReportedAt }] of this.#owners) {
+            if (Timestamp.delta(lastReportedAt, now) > OWNER_MAX_AGE) {
+                this.#owners.delete(address);
+            }
+        }
+    }
+
     #onConnectionClosed(connection: BleProxyConnection): void {
         this.#connections.delete(connection);
         this.#markNotScanning(connection, "client disconnected");
@@ -219,13 +287,7 @@ export class BleProxyHandler implements WebServerHandler {
         for (const [address, entry] of this.#owners) {
             entry.seers.delete(connection);
             if (entry.owner === connection) {
-                let next: BleProxyConnection | undefined;
-                for (const seer of entry.seers) {
-                    if (seer.connected) {
-                        next = seer;
-                        break;
-                    }
-                }
+                const next = this.#connectedSeer(entry.seers);
                 if (next) {
                     entry.owner = next;
                     logger.info(`Reassigned ownership of ${address} to [${next.id}]`);

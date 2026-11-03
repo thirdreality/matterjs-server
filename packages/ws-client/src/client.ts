@@ -4,8 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Connection, WebSocketFactory } from "./connection.js";
+import { Connection, ConnectionOptions, WebSocketFactory } from "./connection.js";
 import { CommandTimeoutError, ConnectionClosedError, InvalidServerVersion, ServerCommandError } from "./exceptions.js";
+import { redactIncomingMessage } from "./logging-redaction.js";
 import {
     AccessControlEntry,
     AllCredentialsSummary,
@@ -23,14 +24,24 @@ import {
     MatterSoftwareVersion,
     NodePingResult,
     ResponseOf,
+    SubscriptionReportData,
     SuccessResultMessage,
     ThreadDiagnosticsBatch,
+    CameraSessionEndedData,
+    CameraStreamEvictedData,
     WebRtcCallbackData,
+    WebRtcProviderCommandName,
 } from "./models/model.js";
 import { MatterNode } from "./models/node.js";
 
 /** Union type for all incoming WebSocket messages */
 type IncomingMessage = EventMessage | ErrorResultMessage | SuccessResultMessage;
+
+/** Schema 14 is when the server started relaying these two; the offer commands need only schema 12. */
+const SIGNALLING_PROVIDER_COMMANDS: ReadonlySet<WebRtcProviderCommandName> = new Set([
+    "ProvideAnswer",
+    "ProvideIceCandidates",
+]);
 
 /** Converts node_id to string for use as object key (works for both number and bigint without precision loss) */
 function toNodeKey(nodeId: number | bigint): string {
@@ -60,6 +71,64 @@ export interface CommissionWithCodeOptions {
     wifiCredentialsId?: string;
     /** Stored Thread dataset id to use (schema 12; omit for the reserved `default` entry). */
     threadDatasetId?: string;
+    /**
+     * Schema 14. Seconds the server looks for the device and sets up PASE; see the API docs for the limit. The call
+     * still ends after `timeout`, so a long value needs a larger `timeout` too.
+     */
+    discoveryTimeoutS?: number;
+    /** Per-call command timeout in ms (overrides {@link MatterClient.commandTimeout}). */
+    timeout?: number;
+}
+
+/** Options for {@link MatterClient.commissionOnNetwork}. */
+export interface CommissionOnNetworkOptions {
+    /** Discovery filter type: 0=None, 1=ShortDiscriminator, 2=LongDiscriminator, 3=VendorId, 4=DeviceType. */
+    filterType?: number;
+    /** Filter value (discriminator, vendor ID or device type depending on `filterType`). */
+    filter?: number;
+    /** Direct IP address of the device (schema 6). */
+    ipAddr?: string;
+    /**
+     * Schema 14. Seconds the server looks for the device and sets up PASE; see the API docs for the limit. The call
+     * still ends after `timeout`, so a long value needs a larger `timeout` too.
+     */
+    discoveryTimeoutS?: number;
+    /** Per-call command timeout in ms (overrides {@link MatterClient.commandTimeout}). */
+    timeout?: number;
+}
+
+/** Options for {@link MatterClient.deviceCommand}. */
+export interface DeviceCommandOptions {
+    /** Timeout for timed interactions, as required by some commands (door lock). */
+    timedRequestTimeoutMs?: number;
+    /** Time the device may take to process the command. */
+    interactionTimeoutMs?: number;
+    /** Per-call command timeout in ms (overrides {@link MatterClient.commandTimeout}). */
+    timeout?: number;
+}
+
+/** One command of {@link MatterClient.batchedDeviceCommands}. */
+export interface BatchedDeviceCommand {
+    endpointId: number;
+    clusterId: number;
+    commandName: string;
+    payload?: Record<string, unknown>;
+}
+
+/** Options for {@link MatterClient.batchedDeviceCommands}. */
+export interface BatchedDeviceCommandsOptions {
+    /** Sends the batch after one Timed Request with this timeout (0 to 65535 ms). */
+    timedRequestTimeoutMs?: number;
+    /** Time the device may take to process the batch. */
+    interactionTimeoutMs?: number;
+    /** Per-call command timeout in ms (overrides {@link MatterClient.commandTimeout}). */
+    timeout?: number;
+}
+
+/** Options for {@link MatterClient.writeAttribute}. */
+export interface WriteAttributeOptions {
+    /** Schema 14. Sends the write as a timed write with this timeout (0 to 65535 ms). */
+    timedRequestTimeoutMs?: number;
     /** Per-call command timeout in ms (overrides {@link MatterClient.commandTimeout}). */
     timeout?: number;
 }
@@ -70,6 +139,43 @@ export interface CredentialCommandOptions {
     id?: string;
     /** Per-call command timeout in ms (overrides {@link MatterClient.commandTimeout}). */
     timeout?: number;
+}
+
+/** Subscription ids are assigned by each device, so only node and id together name one subscription. */
+function subscriptionKey(nodeId: number | bigint, subscriptionId: number) {
+    return `${nodeId}/${subscriptionId}`;
+}
+
+/**
+ * Says which node a `nodes_changed` event concerns and why it fired. `nodeId` is a bigint for large ids, so compare
+ * it via `String()`.
+ */
+export type NodesChangedDetail =
+    | { reason: "node_added" | "node_removed" | "node_updated"; nodeId: number | bigint }
+    | {
+          reason: "attribute_updated";
+          nodeId: number | bigint;
+          /** `endpoint/cluster/attribute` of the changed attribute. */
+          attributeKey: string;
+      };
+
+/** Listener arguments for each event name that {@link MatterClient.addEventListener} accepts. */
+export interface ClientEventMap {
+    nodes_changed: [detail: NodesChangedDetail];
+    server_info_updated: [];
+    server_shutdown: [];
+    connection_lost: [];
+    thread_diagnostics_updated: [];
+}
+
+type ClientEventListeners = { [E in keyof ClientEventMap]: Array<(...args: ClientEventMap[E]) => void> };
+
+/** Receives the events of one subscription opened with {@link MatterClient.subscribe}. */
+export interface SubscriptionListener {
+    /** A report after the first one, which the `subscribe` result carries. */
+    report(data: SubscriptionReportData): void;
+    /** The subscription ended without `unsubscribe`, the connection to the server was lost, or {@link MatterClient.disconnect} was called. */
+    ended?(): void;
 }
 
 export class MatterClient {
@@ -95,25 +201,36 @@ export class MatterClient {
             timeoutId?: ReturnType<typeof setTimeout>;
         }
     > = {};
+    /** Keyed by {@link subscriptionKey}. */
+    private subscriptionListeners = new Map<string, SubscriptionListener>();
     // Start with random offset for defense-in-depth and easier debugging across sessions
     private msgId = Math.floor(Math.random() * 0x7fffffff);
-    private eventListeners: Record<string, Array<() => void>> = {};
+    private eventListeners: ClientEventListeners = {
+        nodes_changed: [],
+        server_info_updated: [],
+        server_shutdown: [],
+        connection_lost: [],
+        thread_diagnostics_updated: [],
+    };
     private webrtcCallbackListeners: Array<(data: WebRtcCallbackData) => void> = [];
+    private cameraSessionEndedListeners: Array<(data: CameraSessionEndedData) => void> = [];
+    private cameraStreamEvictedListeners: Array<(data: CameraStreamEvictedData) => void> = [];
+    private threadDiagnosticsListeners: Array<(batch: ThreadDiagnosticsBatch) => void> = [];
     private nodeEventListeners: Array<(event: MatterNodeEvent) => void> = [];
 
     /**
      * Create a new MatterClient.
      * @param url WebSocket URL to connect to
-     * @param wsFactory Optional factory function to create WebSocket instances.
-     *                  For Node.js, pass: (url) => new WebSocket(url) from the 'ws' package.
-     *                  For browser, leave undefined to use native WebSocket.
+     * @param options The {@link ConnectionOptions}, or only a {@link WebSocketFactory}.
+     *                For Node.js, pass a factory: (url) => new WebSocket(url) from the 'ws' package.
+     *                For browser, leave the factory undefined to use native WebSocket.
      */
     constructor(
         public url: string,
-        wsFactory?: WebSocketFactory,
+        options?: WebSocketFactory | ConnectionOptions,
     ) {
         this.url = url;
-        this.connection = new Connection(this.url, wsFactory);
+        this.connection = new Connection(this.url, options);
         this.serverBaseAddress = this.url.split("://")[1].split(":")[0] ?? "";
     }
 
@@ -121,13 +238,21 @@ export class MatterClient {
         return this.connection.serverInfo!;
     }
 
-    addEventListener(event: string, listener: () => void) {
-        if (!this.eventListeners[event]) {
-            this.eventListeners[event] = [];
-        }
-        this.eventListeners[event].push(listener);
+    /**
+     * Listen for a client event. `nodes_changed` passes a {@link NodesChangedDetail} naming the node it
+     * concerns, so a listener interested in one node can ignore the rest; other events pass nothing.
+     * Returns an unsubscribe function.
+     */
+    addEventListener<E extends keyof ClientEventMap>(event: E, listener: (...args: ClientEventMap[E]) => void) {
+        const listeners = this.eventListeners[event];
+        // Wrapper per registration: the same listener added twice must unsubscribe separately
+        const entry = (...args: ClientEventMap[E]) => listener(...args);
+        listeners.push(entry);
         return () => {
-            this.eventListeners[event] = this.eventListeners[event].filter(l => l !== listener);
+            const index = listeners.indexOf(entry);
+            if (index !== -1) {
+                listeners.splice(index, 1);
+            }
         };
     }
 
@@ -139,6 +264,40 @@ export class MatterClient {
         this.webrtcCallbackListeners.push(listener);
         return () => {
             this.webrtcCallbackListeners = this.webrtcCallbackListeners.filter(l => l !== listener);
+        };
+    }
+
+    /**
+     * Subscribe to camera_session_ended events. Returns an unsubscribe function.
+     *
+     * The server sends them only to a connection that has issued a camera command.
+     */
+    addCameraSessionEndedListener(listener: (data: CameraSessionEndedData) => void): () => void {
+        this.cameraSessionEndedListeners.push(listener);
+        return () => {
+            this.cameraSessionEndedListeners = this.cameraSessionEndedListeners.filter(l => l !== listener);
+        };
+    }
+
+    /** Subscribe to camera_stream_evicted events. Returns an unsubscribe function. */
+    addCameraStreamEvictedListener(listener: (data: CameraStreamEvictedData) => void): () => void {
+        this.cameraStreamEvictedListeners.push(listener);
+        return () => {
+            this.cameraStreamEvictedListeners = this.cameraStreamEvictedListeners.filter(l => l !== listener);
+        };
+    }
+
+    /**
+     * Subscribe to thread_diagnostics_updated with the batch that arrived.
+     *
+     * {@link threadDiagnostics} accumulates batches for the life of the connection and drops one
+     * only when the whole map is reset, so a consumer that rebuilds its own state from that map
+     * reinstates batches the server has since stopped serving. Take the batch from here.
+     */
+    addThreadDiagnosticsListener(listener: (batch: ThreadDiagnosticsBatch) => void): () => void {
+        this.threadDiagnosticsListeners.push(listener);
+        return () => {
+            this.threadDiagnosticsListeners = this.threadDiagnosticsListeners.filter(l => l !== listener);
         };
     }
 
@@ -161,14 +320,37 @@ export class MatterClient {
         const usesIds = opts.wifiCredentialsId !== undefined || opts.threadDatasetId !== undefined;
         const data = await this.sendCommand(
             "commission_with_code",
-            usesIds ? 12 : 0,
+            opts.discoveryTimeoutS !== undefined ? 14 : usesIds ? 12 : 0,
             {
                 code,
                 network_only: networkOnly,
                 wifi_credentials_id: opts.wifiCredentialsId,
                 thread_dataset_id: opts.threadDatasetId,
+                discovery_timeout_s: opts.discoveryTimeoutS,
             },
             opts.timeout,
+        );
+        return new MatterNode(data);
+    }
+
+    /** Commissions a device that is already on the network, found by setup PIN code and optional filter or IP. */
+    async commissionOnNetwork(setupPinCode: number, options: CommissionOnNetworkOptions = {}): Promise<MatterNode> {
+        const data = await this.sendCommand(
+            "commission_on_network",
+            // An older server ignores filter type 4 and commissions any device with the setup code.
+            options.discoveryTimeoutS !== undefined || options.filterType === 4
+                ? 14
+                : options.ipAddr !== undefined
+                  ? 6
+                  : 0,
+            {
+                setup_pin_code: setupPinCode,
+                filter_type: options.filterType,
+                filter: options.filter,
+                ip_addr: options.ipAddr,
+                discovery_timeout_s: options.discoveryTimeoutS,
+            },
+            options.timeout,
         );
         return new MatterNode(data);
     }
@@ -360,22 +542,96 @@ export class MatterClient {
         );
     }
 
+    /** Schema 14. A Matter Read with full control over the request. */
+    async read(args: APICommands["read"]["requestArgs"], timeout?: number): Promise<ResponseOf<"read">> {
+        return await this.sendCommand("read", 14, args, timeout);
+    }
+
+    /**
+     * Schema 14. Opens a Matter subscription owned by this connection. The result carries the first report; later
+     * reports and the end go to `listener` until {@link unsubscribe}.
+     */
+    async subscribe(
+        args: APICommands["subscribe"]["requestArgs"],
+        listener: SubscriptionListener,
+        timeout = this.commandTimeout,
+    ): Promise<ResponseOf<"subscribe">> {
+        let timedOut = false;
+        // Registered when the response is handled, because a report can arrive in the same socket read.
+        const response = this.sendCommand("subscribe", 14, args, 0, ({ subscription_id }) => {
+            if (timedOut) {
+                // The caller never learned this id, so nobody else can end the subscription.
+                this.unsubscribe(args.node_id, subscription_id).catch(error =>
+                    this.connection.logger.warn(
+                        `Could not end subscription ${subscription_id} after its subscribe timed out`,
+                        () => error,
+                    ),
+                );
+                return;
+            }
+            this.subscriptionListeners.set(subscriptionKey(args.node_id, subscription_id), listener);
+        });
+        if (timeout <= 0) {
+            return await response;
+        }
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            return await Promise.race([
+                response,
+                new Promise<never>((_resolve, reject) => {
+                    timer = setTimeout(() => {
+                        timedOut = true;
+                        reject(new CommandTimeoutError("subscribe", timeout));
+                    }, timeout);
+                }),
+            ]);
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    /** Schema 14. Ends a subscription opened with {@link subscribe}; its listener gets no further calls. */
+    async unsubscribe(nodeId: number | bigint, subscriptionId: number, timeout?: number): Promise<void> {
+        this.subscriptionListeners.delete(subscriptionKey(nodeId, subscriptionId));
+        await this.sendCommand("unsubscribe", 14, { node_id: nodeId, subscription_id: subscriptionId }, timeout);
+    }
+
+    /**
+     * Schema 14. Switches the server's own subscription to the node on; see the API docs for when this fails. Only
+     * available with the server running with auto subscription disabled.
+     */
+    async enableAutoSubscription(nodeId: number | bigint, timeout?: number): Promise<void> {
+        await this.sendCommand("enable_auto_subscription", 14, { node_id: nodeId }, timeout);
+    }
+
+    /** Schema 14. Decodes a QR code payload (`MT:…`) or a manual pairing code without contacting any device. */
+    async parseOnboardingPayload(code: string, timeout?: number): Promise<ResponseOf<"parse_onboarding_payload">> {
+        return await this.sendCommand("parse_onboarding_payload", 14, { code }, timeout);
+    }
+
+    /** Schema 14. Switches the server's own subscription to the node off. Only available with auto subscription disabled. */
+    async disableAutoSubscription(nodeId: number | bigint, timeout?: number): Promise<void> {
+        await this.sendCommand("disable_auto_subscription", 14, { node_id: nodeId }, timeout);
+    }
+
+    /** Writes an attribute; `*` as the endpoint writes every endpoint of the node that has it (schema 14). */
     async writeAttribute(
         nodeId: number | bigint,
         attributePath: string,
         value: unknown,
-        timeout?: number,
+        optsOrTimeout?: number | WriteAttributeOptions,
     ): Promise<ResponseOf<"write_attribute">> {
-        // Write an attribute(value) on a target node.
+        const opts = typeof optsOrTimeout === "number" ? { timeout: optsOrTimeout } : (optsOrTimeout ?? {});
         return await this.sendCommand(
             "write_attribute",
-            0,
+            opts.timedRequestTimeoutMs !== undefined ? 14 : 0,
             {
                 node_id: nodeId,
                 attribute_path: attributePath,
                 value: value,
+                timed_request_timeout_ms: opts.timedRequestTimeoutMs,
             },
-            timeout,
+            opts.timeout,
         );
     }
 
@@ -460,9 +716,10 @@ export class MatterClient {
         endpointId: number,
         clusterId: number,
         commandName: string,
-        payload: Record<string, unknown> = {},
-        timeout?: number,
+        payload?: Record<string, unknown>,
+        optsOrTimeout?: number | DeviceCommandOptions,
     ): Promise<unknown> {
+        const opts = typeof optsOrTimeout === "number" ? { timeout: optsOrTimeout } : (optsOrTimeout ?? {});
         return await this.sendCommand(
             "device_command",
             0,
@@ -471,23 +728,52 @@ export class MatterClient {
                 endpoint_id: endpointId,
                 cluster_id: clusterId,
                 command_name: commandName,
-                payload,
+                payload: payload ?? {},
                 response_type: null,
+                timed_request_timeout_ms: opts.timedRequestTimeoutMs,
+                interaction_timeout_ms: opts.interactionTimeoutMs,
             },
-            timeout,
+            opts.timeout,
+        );
+    }
+
+    /**
+     * Schema 14. Sends all commands to the node in one InvokeRequest, in order, never split and never combined with
+     * other commands. Answers one entry per command; one command failing does not fail the others.
+     */
+    async batchedDeviceCommands(
+        nodeId: number | bigint,
+        commands: BatchedDeviceCommand[],
+        opts: BatchedDeviceCommandsOptions = {},
+    ): Promise<ResponseOf<"batched_device_commands">> {
+        return await this.sendCommand(
+            "batched_device_commands",
+            14,
+            {
+                node_id: nodeId,
+                commands: commands.map(({ endpointId, clusterId, commandName, payload }) => ({
+                    endpoint_id: endpointId,
+                    cluster_id: clusterId,
+                    command_name: commandName,
+                    payload: payload ?? {},
+                })),
+                timed_request_timeout_ms: opts.timedRequestTimeoutMs,
+                interaction_timeout_ms: opts.interactionTimeoutMs,
+            },
+            opts.timeout,
         );
     }
 
     async sendWebRtcProviderCommand(
         nodeId: number | bigint,
         endpointId: number,
-        commandName: "ProvideOffer" | "SolicitOffer",
+        commandName: WebRtcProviderCommandName,
         payload: Record<string, unknown>,
         timeout?: number,
     ): Promise<unknown> {
         return await this.sendCommand(
             "send_webrtc_provider_command",
-            0,
+            SIGNALLING_PROVIDER_COMMANDS.has(commandName) ? 14 : 12,
             { node_id: nodeId, endpoint_id: endpointId, command_name: commandName, payload },
             timeout,
         );
@@ -559,6 +845,7 @@ export class MatterClient {
      * @param require_schema Minimum schema version required (0 for any version)
      * @param args Command arguments
      * @param timeout Optional timeout in milliseconds. Defaults to `commandTimeout`. Set to 0 to disable.
+     * @param onResult Called with the result while the response message is handled, before the next message
      * @returns Promise that resolves with the command result
      * @throws Error if the command times out or fails
      */
@@ -567,6 +854,7 @@ export class MatterClient {
         require_schema: number | undefined = undefined,
         args: APICommands[T]["requestArgs"],
         timeout = this.commandTimeout,
+        onResult?: (result: APICommands[T]["response"]) => void,
     ): Promise<APICommands[T]["response"]> {
         if (require_schema && this.serverInfo.schema_version < require_schema) {
             throw new InvalidServerVersion(
@@ -607,7 +895,13 @@ export class MatterClient {
 
             // Type-erased storage: resolve/reject are stored as unknown handlers
             this.result_futures[messageId] = {
-                resolve,
+                resolve:
+                    onResult === undefined
+                        ? resolve
+                        : result => {
+                              onResult(result);
+                              resolve(result);
+                          },
                 reject,
                 timeoutId,
             };
@@ -647,6 +941,20 @@ export class MatterClient {
         }
     }
 
+    /** The server ends every subscription of a connection when it closes, without a `subscription_ended`. */
+    private _endAllSubscriptions(): void {
+        const listeners = [...this.subscriptionListeners.values()];
+        this.subscriptionListeners.clear();
+        for (const listener of listeners) {
+            // Runs inside disconnect and the connection-lost handling, which must complete.
+            try {
+                listener.ended?.();
+            } catch (error) {
+                this.connection.logger.error("Subscription listener failed on end", () => error);
+            }
+        }
+    }
+
     /**
      * Reject all pending commands with a ConnectionClosedError.
      * Called when the connection is closed or lost.
@@ -667,6 +975,7 @@ export class MatterClient {
             msg => this._handleIncomingMessage(msg as IncomingMessage),
             () => {
                 this._rejectAllPendingCommands();
+                this._endAllSubscriptions();
                 this.fireEvent("connection_lost");
             },
         );
@@ -675,6 +984,7 @@ export class MatterClient {
     disconnect(clearStorage = false) {
         // Reject all pending commands before disconnecting
         this._rejectAllPendingCommands();
+        this._endAllSubscriptions();
         // disconnect from the server
         if (this.connection && this.connection.connected) {
             this.connection.disconnect();
@@ -711,7 +1021,11 @@ export class MatterClient {
             const details = msg.details ?? "";
             this._rejectPendingCommand(
                 msg.message_id,
-                new ServerCommandError(details !== "" ? details : `Server error ${msg.error_code}`, msg.error_code),
+                new ServerCommandError(details !== "" ? details : `Server error ${msg.error_code}`, msg.error_code, {
+                    status: msg.status,
+                    clusterStatus: msg.cluster_status,
+                    reason: msg.reason,
+                }),
             );
             return;
         }
@@ -721,32 +1035,30 @@ export class MatterClient {
             return;
         }
 
-        console.warn("Received message with unknown format", msg);
+        this.connection.logger.warn("Received message with unknown format", () => redactIncomingMessage(msg));
     }
 
     private _handleEventMessage(event: EventMessage) {
-        console.debug("Incoming event", event);
-
         // Allow subclasses to hook into raw events (for testing)
         this.onRawEvent(event);
 
         if (event.event === "node_added") {
             const node = new MatterNode(event.data);
             this.nodes = { ...this.nodes, [toNodeKey(node.node_id)]: node };
-            this.fireEvent("nodes_changed");
+            this.fireEvent("nodes_changed", { reason: "node_added", nodeId: node.node_id });
             return;
         }
         if (event.event === "node_removed") {
             delete this.nodes[toNodeKey(event.data)];
             this.nodes = { ...this.nodes };
-            this.fireEvent("nodes_changed");
+            this.fireEvent("nodes_changed", { reason: "node_removed", nodeId: event.data });
             return;
         }
 
         if (event.event === "node_updated") {
             const node = new MatterNode(event.data);
             this.nodes = { ...this.nodes, [toNodeKey(node.node_id)]: node };
-            this.fireEvent("nodes_changed");
+            this.fireEvent("nodes_changed", { reason: "node_updated", nodeId: node.node_id });
             return;
         }
 
@@ -758,7 +1070,7 @@ export class MatterClient {
                 const node = new MatterNode(existingNode.data);
                 node.attributes[attributeKey] = attributeValue;
                 this.nodes = { ...this.nodes, [nodeKey]: node };
-                this.fireEvent("nodes_changed");
+                this.fireEvent("nodes_changed", { reason: "attribute_updated", nodeId, attributeKey });
             }
             return;
         }
@@ -779,6 +1091,9 @@ export class MatterClient {
             const next = new Map(this.threadDiagnostics);
             next.set(event.data.extPanIdHex.toUpperCase(), event.data);
             this.threadDiagnostics = next;
+            for (const listener of this.threadDiagnosticsListeners) {
+                listener(event.data);
+            }
             this.fireEvent("thread_diagnostics_updated");
             return;
         }
@@ -790,20 +1105,47 @@ export class MatterClient {
             return;
         }
 
+        if (event.event === "camera_session_ended") {
+            for (const listener of this.cameraSessionEndedListeners) {
+                listener(event.data);
+            }
+            return;
+        }
+
+        if (event.event === "camera_stream_evicted") {
+            for (const listener of this.cameraStreamEvictedListeners) {
+                listener(event.data);
+            }
+            return;
+        }
+
         if (event.event === "node_event") {
             for (const listener of this.nodeEventListeners) {
                 listener(event.data);
             }
             return;
         }
+
+        if (event.event === "subscription_report") {
+            this.subscriptionListeners
+                .get(subscriptionKey(event.data.node_id, event.data.subscription_id))
+                ?.report(event.data);
+            return;
+        }
+
+        if (event.event === "subscription_ended") {
+            const key = subscriptionKey(event.data.node_id, event.data.subscription_id);
+            const listener = this.subscriptionListeners.get(key);
+            this.subscriptionListeners.delete(key);
+            listener?.ended?.();
+            return;
+        }
     }
 
-    private fireEvent(event: string) {
-        const listeners = this.eventListeners[event];
-        if (listeners) {
-            for (const listener of listeners) {
-                listener();
-            }
+    private fireEvent<E extends keyof ClientEventMap>(event: E, ...args: ClientEventMap[E]) {
+        // Copy: a listener unsubscribing mid-loop must not make the loop skip the next one
+        for (const listener of [...this.eventListeners[event]]) {
+            listener(...args);
         }
     }
 

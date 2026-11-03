@@ -20,7 +20,8 @@ import { WebRtcTransportRequestorServer } from "@matter/node/behaviors/web-rtc-t
 import { CameraControllerDevice } from "@matter/node/devices/camera-controller";
 import { StreamUsage } from "@matter/types";
 import { WebRtcTransportDefinitions } from "@matter/types/clusters/web-rtc-transport-definitions";
-import { attachWebRtcCallbackBridge } from "../src/controller/WebRtcCallbackBridge.js";
+import { toProviderCommandFields } from "../src/camera/webRtcProviderArguments.js";
+import { attachWebRtcCallbackBridge, type WebRtcCallbackBridge } from "../src/controller/WebRtcCallbackBridge.js";
 
 type WebRtcSession = WebRtcTransportDefinitions.WebRtcSession;
 
@@ -65,13 +66,14 @@ describe("WebRtcCallbackBridge", () => {
     let node: ServerNode;
     let cameraEndpoint: ReturnType<(typeof node)["parts"]["get"]>;
     let recorded: WebRtcCallbackData[];
+    let bridge: WebRtcCallbackBridge;
 
     beforeEach(async () => {
         node = await createTestNode();
         cameraEndpoint = node.parts.get("camera-controller");
         recorded = [];
         await cameraEndpoint!.act(agent => {
-            attachWebRtcCallbackBridge(agent.get(WebRtcTransportRequestorServer).events, data => {
+            bridge = attachWebRtcCallbackBridge(agent.get(WebRtcTransportRequestorServer).events, data => {
                 recorded.push(data);
             });
         });
@@ -89,7 +91,7 @@ describe("WebRtcCallbackBridge", () => {
             server.events.offer.emit(session, {
                 webRtcSessionId: session.id,
                 sdp: "v=0\nm=video",
-                iceServers: [{ urLs: ["stun:stun.example:3478"] }],
+                iceServers: [{ urls: ["stun:stun.example:3478"], username: "u", credential: "p", caid: 7 }],
                 iceTransportPolicy: "all",
             });
         });
@@ -103,7 +105,7 @@ describe("WebRtcCallbackBridge", () => {
             fabric_index: session.fabricIndex,
             data: {
                 sdp: "v=0\nm=video",
-                ice_servers: [{ urLs: ["stun:stun.example:3478"] }],
+                ice_servers: [{ urls: ["stun:stun.example:3478"], username: "u", credential: "p", caid: 7 }],
                 ice_transport_policy: "all",
             },
         });
@@ -125,6 +127,111 @@ describe("WebRtcCallbackBridge", () => {
             endpoint_id: session.peerEndpointId,
             fabric_index: session.fabricIndex,
             data: { sdp: "answer-sdp" },
+        });
+    });
+
+    describe("answer directions", () => {
+        const OFFER = ["v=0", "m=video 9 UDP/TLS/RTP/SAVPF 96", "a=recvonly", ""].join("\r\n");
+        const CAMERA_ANSWER = ["v=0", "m=video 9 UDP/TLS/RTP/SAVPF 96", "a=sendrecv", ""].join("\r\n");
+        const NARROWED = ["v=0", "m=video 9 UDP/TLS/RTP/SAVPF 96", "a=sendonly", ""].join("\r\n");
+
+        async function answer(session: WebRtcSession): Promise<unknown> {
+            await cameraEndpoint!.act(agent => {
+                const server = agent.get(WebRtcTransportRequestorServer);
+                server.upsertSession(session);
+                server.events.answer.emit(session, CAMERA_ANSWER);
+            });
+            const event = recorded.at(-1);
+            return event?.event_type === "answer" ? event.data?.sdp : undefined;
+        }
+
+        it("narrows the answer to the offer sent for the session", async () => {
+            const session = makeSession();
+            bridge.offerSent(session, OFFER);
+
+            expect(await answer(session)).to.equal(NARROWED);
+        });
+
+        it("narrows only the first answer to an offer", async () => {
+            const session = makeSession();
+            bridge.offerSent(session, OFFER);
+            await answer(session);
+
+            expect(await answer(session)).to.equal(CAMERA_ANSWER);
+        });
+
+        it("forwards the answer unchanged for an offer of another fabric", async () => {
+            bridge.offerSent(makeSession({ fabricIndex: FabricIndex(4) }), OFFER);
+
+            expect(await answer(makeSession())).to.equal(CAMERA_ANSWER);
+        });
+
+        it("forwards the answer unchanged for an offer to another camera", async () => {
+            bridge.offerSent(makeSession({ peerNodeId: NodeId(43n) }), OFFER);
+
+            expect(await answer(makeSession())).to.equal(CAMERA_ANSWER);
+        });
+
+        it("forwards the answer unchanged for an offer to another endpoint of the same camera", async () => {
+            bridge.offerSent(makeSession({ peerEndpointId: EndpointNumber(2) }), OFFER);
+
+            expect(await answer(makeSession())).to.equal(CAMERA_ANSWER);
+        });
+
+        it("forwards the answer unchanged for an offer of another session id", async () => {
+            bridge.offerSent(makeSession({ id: 8 }), OFFER);
+
+            expect(await answer(makeSession())).to.equal(CAMERA_ANSWER);
+        });
+
+        it("keeps the offer when its withdraw comes after the answer consumed it and a new offer was sent", async () => {
+            const session = makeSession();
+            const withdraw = bridge.offerSent(session, OFFER);
+            await answer(session);
+            bridge.offerSent(session, OFFER);
+
+            withdraw();
+
+            expect(await answer(session)).to.equal(NARROWED);
+        });
+
+        it("puts back the earlier offer when a later one is withdrawn before any answer", async () => {
+            const session = makeSession();
+            bridge.offerSent(session, OFFER);
+            const withdraw = bridge.offerSent(session, CAMERA_ANSWER);
+
+            withdraw();
+
+            expect(await answer(session)).to.equal(NARROWED);
+        });
+
+        it("drops the offer on withdraw", async () => {
+            const session = makeSession();
+            const withdraw = bridge.offerSent(session, OFFER);
+
+            withdraw();
+
+            expect(await answer(session)).to.equal(CAMERA_ANSWER);
+        });
+
+        it("forgets the offer when the peer ends the session", async () => {
+            const session = makeSession();
+            bridge.offerSent(session, OFFER);
+            await cameraEndpoint!.act(agent => {
+                const server = agent.get(WebRtcTransportRequestorServer);
+                server.upsertSession(session);
+                server.events.end.emit(session, WebRtcTransportDefinitions.WebRtcEndReason.UserHangup);
+            });
+
+            expect(await answer(session)).to.equal(CAMERA_ANSWER);
+        });
+
+        it("forgets the offer of a session ended locally", async () => {
+            const session = makeSession();
+            bridge.offerSent(session, OFFER);
+            bridge.sessionEnded(session);
+
+            expect(await answer(session)).to.equal(CAMERA_ANSWER);
         });
     });
 
@@ -173,6 +280,31 @@ describe("WebRtcCallbackBridge", () => {
             fabric_index: session.fabricIndex,
             data: { reason: WebRtcTransportDefinitions.WebRtcEndReason.UserHangup },
         });
+    });
+
+    it("a candidate this event reports is what ProvideIceCandidates takes back", async () => {
+        const session = makeSession();
+        const candidates: WebRtcTransportDefinitions.IceCandidate[] = [
+            { candidate: "candidate:1 1 udp 2113937151 1.2.3.4 54321 typ host", sdpMid: "0", sdpmLineIndex: 0 },
+            { candidate: "candidate:2 1 udp 2113937151 5.6.7.8 12345 typ host", sdpMid: null, sdpmLineIndex: null },
+        ];
+        await cameraEndpoint!.act(agent => {
+            const server = agent.get(WebRtcTransportRequestorServer);
+            server.upsertSession(session);
+            server.events.iceCandidates.emit(session, candidates);
+        });
+
+        const event = recorded[0];
+        if (event.event_type !== "ice_candidates" || event.data === null) {
+            throw new Error(`expected an ice_candidates event with data, got ${JSON.stringify(event)}`);
+        }
+        // Input is the event's own wire payload, so this asserts the round trip, not the conversion against itself.
+        const fields = toProviderCommandFields("ProvideIceCandidates", {
+            webrtc_session_id: event.webrtc_session_id,
+            ice_candidates: event.data.ice_candidates,
+        });
+
+        expect(fields).to.deep.equal({ webRtcSessionId: session.id, iceCandidates: candidates });
     });
 
     it("session identifying fields are taken from the session, not the request payload", async () => {

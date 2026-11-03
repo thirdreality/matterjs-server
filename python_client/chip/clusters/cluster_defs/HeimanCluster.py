@@ -29,6 +29,7 @@ class HeimanCluster(Cluster):
                 ClusterObjectFieldDescriptor(Label="sirenActive", Tag=0x00000014, Type=typing.Optional[uint]),
                 ClusterObjectFieldDescriptor(Label="alarmMute", Tag=0x00000015, Type=typing.Optional[uint]),
                 ClusterObjectFieldDescriptor(Label="lowPowerMode", Tag=0x00000016, Type=typing.Optional[uint]),
+                ClusterObjectFieldDescriptor(Label="indicatorEnable", Tag=0x00001004, Type=typing.Optional[uint]),
                 ClusterObjectFieldDescriptor(Label="generatedCommandList", Tag=0x0000FFF8, Type=typing.List[uint]),
                 ClusterObjectFieldDescriptor(Label="acceptedCommandList", Tag=0x0000FFF9, Type=typing.List[uint]),
                 ClusterObjectFieldDescriptor(Label="attributeList", Tag=0x0000FFFB, Type=typing.List[uint]),
@@ -43,6 +44,7 @@ class HeimanCluster(Cluster):
     sirenActive: typing.Optional[uint] = None
     alarmMute: typing.Optional[uint] = None
     lowPowerMode: typing.Optional[uint] = None
+    indicatorEnable: typing.Optional[uint] = None
     generatedCommandList: typing.List[uint] = field(default_factory=lambda: [])
     acceptedCommandList: typing.List[uint] = field(default_factory=lambda: [])
     attributeList: typing.List[uint] = field(default_factory=lambda: [])
@@ -61,10 +63,30 @@ class HeimanCluster(Cluster):
             def descriptor(cls) -> ClusterObjectDescriptor:
                 return ClusterObjectDescriptor(
                     Fields=[
-                        ClusterObjectFieldDescriptor(Label="mutingTime", Tag=0, Type=typing.Optional[uint]),
+                        ClusterObjectFieldDescriptor(Label="mutingTime", Tag=0, Type=uint),
                     ])
 
-            mutingTime: typing.Optional[uint] = None
+            mutingTime: uint = 0
+
+        @dataclass
+        class SirenActivate(ClusterCommand):
+            cluster_id: typing.ClassVar[int] = 0x120BFC01
+            command_id: typing.ClassVar[int] = 0x00000001
+            is_client: typing.ClassVar[bool] = True
+            response_type: typing.ClassVar[typing.Optional[str]] = None
+
+            @ChipUtility.classproperty
+            def descriptor(cls) -> ClusterObjectDescriptor:
+                return ClusterObjectDescriptor(
+                    Fields=[
+                        ClusterObjectFieldDescriptor(Label="sirenType", Tag=0, Type=uint),
+                        ClusterObjectFieldDescriptor(Label="volume", Tag=1, Type=uint),
+                        ClusterObjectFieldDescriptor(Label="duration", Tag=2, Type=uint),
+                    ])
+
+            sirenType: uint = 0
+            volume: uint = 0
+            duration: uint = 0
 
     class Attributes:
         @dataclass
@@ -172,6 +194,22 @@ class HeimanCluster(Cluster):
             @ChipUtility.classproperty
             def attribute_id(cls) -> int:
                 return 0x00000016
+
+            @ChipUtility.classproperty
+            def attribute_type(cls) -> ClusterObjectFieldDescriptor:
+                return ClusterObjectFieldDescriptor(Type=typing.Optional[uint])
+
+            value: typing.Optional[uint] = None
+
+        @dataclass
+        class IndicatorEnable(ClusterAttributeDescriptor):
+            @ChipUtility.classproperty
+            def cluster_id(cls) -> int:
+                return 0x120BFC01
+
+            @ChipUtility.classproperty
+            def attribute_id(cls) -> int:
+                return 0x00001004
 
             @ChipUtility.classproperty
             def attribute_type(cls) -> ClusterObjectFieldDescriptor:

@@ -1,0 +1,86 @@
+# Runs the matter.js controller certification suite against this server (npm run cert). See cert/README.md.
+name: Controller certification tests
+
+on:
+    workflow_dispatch:
+        inputs:
+            matterjs-ref:
+                description: "matter.js branch, tag or commit with the certification suite (empty: the matter.js version this server uses)"
+                required: false
+                default: ""
+            device:
+                description: "Test devices: chip-local (official chip-cert-bins apps) or matterjs (matter.js test devices)"
+                type: choice
+                options: ["chip-local", "matterjs"]
+                default: "chip-local"
+            chip-bins-tag:
+                description: "chip-cert-bins image tag for chip-local (empty: matter.js default, latest: newest)"
+                required: false
+                default: ""
+            tc:
+                description: "Single test case, for example TC-IDM-2.1 (empty: whole suite)"
+                required: false
+                default: ""
+    workflow_call:
+        inputs:
+            device:
+                description: "Test devices: chip-local or matterjs"
+                type: string
+                default: "chip-local"
+            matterjs-version:
+                description: "Update the server to this matter.js version first and run that version's suite (empty: keep the server's version)"
+                type: string
+                default: ""
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ${{ github.ref }}-cert-controller-${{ inputs.matterjs-ref }}-${{ inputs.matterjs-version }}-${{ inputs.device }}-${{ inputs.chip-bins-tag }}-${{ inputs.tc }}
+    cancel-in-progress: true
+
+jobs:
+    cert:
+        # chip-cert-bins is published for linux/arm64 only.
+        runs-on: ${{ inputs.device == 'matterjs' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+        timeout-minutes: 90
+        env:
+            MATTERJS_REF: ${{ inputs.matterjs-ref }}
+            DEVICE: ${{ inputs.device || 'chip-local' }}
+            MATTER_CHIP_BINS_TAG: ${{ inputs.chip-bins-tag }}
+            # Lets TC-SC-3.5 and TC-DA-1.9 run instead of skipping themselves; only the chip-local leg has these bins.
+            MATTER_CERT_TH_SERVER_APP_PATH: ${{ (inputs.device || 'chip-local') == 'chip-local' && '/official-chip-bins/chip-all-clusters-app-nlfaultinject' || '' }}
+            MATTER_CERT_OTA_FAST_RETRY: "1"
+            TC: ${{ inputs.tc }}
+        steps:
+            - uses: actions/checkout@v7
+            - name: Prepare environment
+              uses: ./.github/actions/prepare-env
+            - name: Update to matter.js ${{ inputs.matterjs-version }}
+              if: inputs.matterjs-version != ''
+              env:
+                  MATTERJS_VERSION: ${{ inputs.matterjs-version }}
+              run: npm run sync-matterjs -- "$MATTERJS_VERSION"
+            - name: Start mDNS responder
+              if: env.DEVICE == 'chip-local'
+              run: |
+                  # The CHIP apps publish over the platform mDNS responder, which the runners lack.
+                  sudo apt-get update
+                  sudo apt-get install -y avahi-daemon
+                  sudo systemctl start avahi-daemon
+            - name: Run certification tests
+              run: |
+                  if [ -n "$TC" ]; then
+                      npm run cert -- --device "$DEVICE" --tc "$TC"
+                  else
+                      npm run cert -- --device "$DEVICE"
+                  fi
+            - name: Upload evidence
+              if: always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: cert-evidence-${{ inputs.device || 'chip-local' }}${{ inputs.matterjs-version != '' && '-nightly' || '' }}
+                  path: |
+                      .cert/evidence
+                      .cert/matter.js/support/chip-testing/build/cert-evidence
+                  if-no-files-found: warn

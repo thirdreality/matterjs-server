@@ -2,12 +2,6 @@
 
 ![Matter Logo](docs/matter_logo.svg)
 
-> [!WARNING]
-> This is an Beta version of a matter.js-based controller with a [Python Matter Server](https://github.com/matter-js/python-matter-server) compatible WebSocket interface.
-> This version is not yet officially re-certified by the CSA, but will be in the future.
->
-> Please refer to the [Beta testing instructions](ALPHABETATESTS.md) how to test this version.
-
 The Open Home Foundation Matter Server serves as the foundation to provide Matter support to [Home Assistant](https://home-assistant.io) but its universal approach makes it suitable to be used in other projects too.
 
 This project implements a Matter Controller Server over WebSockets using JavaScript Matter SDK [matter.js](https://github.com/matter-js/matter.js)
@@ -25,17 +19,15 @@ This repository consists of multiple packages that are provided in the `packages
 - `custom-clusters`: A set of community-provided custom Matter clusters used by the Matter Server (published to npmjs as `@matter-server/custom-clusters`)
 - `dashboard`: A dashboard to interact with the Matter Server and show node detailed data (published to npmjs as `@matter-server/dashboard`)
 
-## Beta testing instructions
+## Migrating from the Python Matter Server
 
-As mentioned above the enw Matter server is currently in a Testing phase.
-
-Please see the [Beta testing instructions](ALPHABETATESTS.md) for more information.
+The server reads the data files of the Python Matter Server and migrates them on the first start. See the [migration guide](docs/migration.md) for the steps, what to expect on the first start, how to switch back, and troubleshooting.
 
 ## Support
 
-During the Beta phase of the matter.js-based Matter server, we enabled issue creation for this version via GitHub issues. If you use the Python Matter server and your issue is not related to a Migration-issue from/to matter.js-Server, please use the options listed below.
+Report bugs in the Matter Server itself as [GitHub issues](https://github.com/matter-js/matterjs-server/issues) in this repository. Attach the complete log, see [Getting logs](docs/migration.md#getting-logs).
 
-For users of Home Assistant, seek support in the official Home Assistant support channels.
+For general questions about using Matter with Home Assistant, use the official Home Assistant support channels.
 
 - The Home Assistant [Community Forum](https://community.home-assistant.io/).
 - The Home Assistant [Discord Chat Server](https://discord.gg/c5DvZ4e).
@@ -66,7 +58,7 @@ comments posted without human review — are not accepted and will be closed.
 
 ## Installation / Running the Matter Server
 
-- Endusers of Home Assistant, refer to the [Home Assistant documentation](https://www.home-assistant.io/integrations/matter/) how to run Matter in Home Assistant using the official Matter Server add-on, which is based on this project. Choose the "Beta" version if you want to test the matter.js based server (soon)
+- Endusers of Home Assistant, refer to the [Home Assistant documentation](https://www.home-assistant.io/integrations/matter/) how to run Matter in Home Assistant using the official Matter Server add-on, which is based on this project.
 
 - For running the server and/or client in your development environment, see the [Development documentation](DEVELOPMENT.md).
 
@@ -78,7 +70,7 @@ comments posted without human review — are not accepted and will be closed.
 - `npm install matter-server`
 - `npx matter-server` or alternatively `cd node_modules/matter-server && npm run server`
 
-If you want to provide more parameters when using "npm run" (not needed when using npx!) use an extra "--" to separate parameters, see below.
+If you want to provide more parameters when using "npm run" (not needed when using npx) use an extra "--" to separate parameters, see below.
 
 ### Manual installation (for local development)
 
@@ -87,7 +79,7 @@ If you want to provide more parameters when using "npm run" (not needed when usi
 - (`npm run build`) if ever needed after changing code
 - `npm run server` to start it
 
-The server is started on port localhost:5580 and listens fpr WS on "/ws"
+The server is started on port localhost:5580 and listens for WebSocket connections on "/ws".
 
 Configure the HA instance against this server and have fun :-)
 
@@ -122,9 +114,9 @@ docker run ... -e PRODUCTION_MODE=true ghcr.io/matter-js/matterjs-server:stable
 
 This tells the dashboard to automatically connect to the WebSocket server at the current URL instead of prompting for a server address.
 
-It was in general tested with a simply slight bulb on network.
+### BLE commissioning
 
-Ble and Wifi should work when server gets startes with `--ble` flag, but Wifi only will work. For Thread Matter.js currently requires a network Name which is not provided.
+To commission devices over BLE with a local Bluetooth adapter, start the server with `--bluetooth-adapter <HCI ID>` (the ID is optional on Windows and macOS). See the [BLE requirements](docs/os_requirements.md#bluetooth-low-energy-requirements).
 
 ### BLE Proxy mode
 
@@ -162,7 +154,7 @@ Ideally, the Matter server has access to the internet which is needed for the fo
 - Checking for OTA device updates (requires access to the CSA DCL)
 - Download OTA device updates (requires access to vendor specific Download locations returned by the CSA DCL)
 
-Without Internet access no OTA update checks or OTA update download is possible. You can still add [OTA files manually to the server](#importing-custom-ota-firmware-files).
+Without Internet access no OTA update checks or OTA update download is possible. You can still add [OTA files manually to the server](#importing-custom-ota-firmware-files), [certificate revocation sets as files](#installing-device-attestation-revocation-sets), and [custom PAA certificates](#importing-custom-paa-certificates).
 For Certificates, Certification verifications, and vendor lookup the server uses a package of seed data and will (if not disabled, see above) pre-install data from the time from release of this matter server version. These data might be outdated and certificates might be missing depending on your devices, which could lead to errors when you try to commission devices.
 
 ## Dashboard Network Visualization
@@ -177,9 +169,9 @@ Displays the Thread mesh network topology showing how your Thread devices connec
 
 - **Device nodes** with icons based on device type (lights, sensors, plugs, etc.)
 - **Mesh connections** between Thread devices, with line style, color, and arrows encoding link state and signal strength (see the legend linked above)
-- **Thread roles**: Leader, Router, End Device, Sleepy End Device — shown as corner badges (see the legend linked above)
+- **Thread roles**: Leader, Mesh Extender, Standby Mesh Extender, End Device, Sleepy End Device — shown as corner badges (see the legend linked above)
 - **Border Routers**: External devices identified via mDNS (`_meshcop._udp` + `_trel._udp`) are rendered with a router icon and a two-line label showing the device hostname and the Thread network name. Click a Border Router node to see its full mDNS-derived details — vendor, model, Thread version, hostname, IP addresses, MeshCoP/TREL ports, extended PAN ID, partition ID, active timestamp, state bitmap, border-agent ID, and which commissioned nodes report it as a neighbor.
-- **Unknown / External devices**: Thread routers that appear in commissioned-node neighbor tables but cannot be matched to a known Border Router are shown with a question-mark icon and dashed edges. When their Thread network can be resolved (because at least one Border Router on the same extended PAN ID is known via mDNS), the network name is shown as a second line on the label and in the details panel.
+- **Unknown / External devices**: Thread devices that appear in commissioned-node neighbor tables but cannot be matched to a known Border Router are shown with dashed edges and, depending on the neighbor entry, an access-point icon (rx-on-when-idle, so always listening) or a question-mark icon (sleepy). When their Thread network can be resolved (because at least one Border Router on the same extended PAN ID is known via mDNS), the network name is shown as a second line on the label and in the details panel.
 
 ### WiFi Network Graph
 
@@ -191,7 +183,7 @@ The network topology data is obtained **directly from the commissioned Matter de
 
 1. **Border Routers are best-effort identified via mDNS**: The server subscribes to `_meshcop._udp.local` and `_trel._udp.local` to learn each BR's friendly name, vendor, model, addresses, and Thread network identity. The BR is then matched against external entries seen in commissioned-node neighbor tables by extended address.
 
-2. **Some routers may still appear as "Unknown" even on a recognized network**: Several Border Router vendors (notably Apple and Aqara) advertise a stable border-agent identifier as the MeshCoP `xa` field while their Thread radio MAC visible to neighboring routers is a different value (sometimes randomized at every boot for privacy). When that happens the same physical device shows up twice — once as a known Border Router (matched via its MeshCoP `xa`) and once as an "External Router" carrying its current Thread radio MAC. The unknown-device details panel labels these with the Thread network name (resolved via the shared extended PAN ID) so the relationship is visible. There is no protocol-level way to merge them today; widening the match would require Thread to expose a cross-reference between the border-agent ID and the radio MAC.
+2. **Some devices may still appear as "Unknown" even on a recognized network**: Several Border Router vendors (notably Apple and Aqara) advertise a stable border-agent identifier as the MeshCoP `xa` field while their Thread radio MAC visible to neighboring Mesh Extenders is a different value (sometimes randomized at every boot for privacy). When that happens the same physical device shows up twice — once as a known Border Router (matched via its MeshCoP `xa`) and once as an "External always-on device" carrying its current Thread radio MAC. The unknown-device details panel labels these with the Thread network name (resolved via the shared extended PAN ID) so the relationship is visible. There is no protocol-level way to merge them today; widening the match would require Thread to expose a cross-reference between the border-agent ID and the radio MAC.
 
 3. **Connection data is device-reported**: The neighbor tables and signal strength values come from what each device reports about its neighbors. This may not represent a complete picture of the network.
 
@@ -263,9 +255,65 @@ npx matter-server
 - To disable OTA functionality entirely, use `--disable-ota` (or env var `DISABLE_OTA=true`)
 - Check the server logs for information about successfully imported OTA files
 
+## Installing Device Attestation Revocation Sets
+
+During commissioning, the server checks whether the device's attestation certificates (DAC and PAI) have been revoked. Normally it asks the DCL. With `--revocation-sets-dir <path>` (or env var `REVOCATION_SETS_DIR=<path>`) you can give it revocation sets as files, for example when the server has no DCL access or for certification tests. A device whose certificate is listed in one of these sets is refused, with an error that names `CertificateRevoked`.
+
+- The server reads every `*.json` file in the directory (not subdirectories) at start, before it accepts WebSocket connections. Other files are ignored.
+- The sets are kept in memory only. The files stay in the directory and are read again on every start.
+- The sets only add revocations. Certificates not listed in them are still checked against the DCL (unless `--dcl-offline` is set).
+- The option works with and without `--dcl-offline` and `--enable-test-net-dcl`.
+- The server trusts the files as they are: it does not check any signature in them. Only put files there that you got from a source you trust.
+- A file that cannot be read or is not a valid revocation set is skipped with an error in the log. The other files are still installed. A missing directory is logged as an error, and the server starts without revocation sets.
+- At the end the server logs `Loaded revocation sets from <path>: <F> files, <N> entries`.
+
+### File format
+
+The files use the format that the CHIP SDK tool [`credentials/generate_revocation_set.py`](https://github.com/project-chip/connectedhomeip/blob/master/credentials/generate_revocation_set.py) writes. The tool reads the revocation distribution points from the DCL, downloads and checks the CRLs, and writes the result (for example `python3 generate_revocation_set.py from-dcl --use-main-net-http --output revocation_set.json`).
+
+A file is a JSON array. Each entry describes the revoked certificates of one issuer:
+
+| Field                    | Type             | Encoding                     | Required | Used by the server | Meaning                                                                                                                       |
+| ------------------------ | ---------------- | ---------------------------- | -------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `type`                   | string           | -                            | No       | Checked            | Must be `"revocation_set"` if present                                                                                         |
+| `issuer_subject_key_id`  | string           | hex (`:` separators allowed) | Yes      | Yes                | Subject Key Identifier of the certificate that issued the revoked certificates (PAA for a revoked PAI, PAI for a revoked DAC) |
+| `issuer_name`            | string           | base64 of DER name           | No       | Yes                | Subject name of that issuer. May be missing or an empty string, then entries match on `issuer_subject_key_id` alone. `null` makes the file invalid                            |
+| `revoked_serial_numbers` | array of strings | hex, even number of digits   | Yes      | Yes                | Serial numbers of the revoked certificates. Leading zero bytes do not matter                                                  |
+| `crl_signer_cert`        | string           | base64 of DER                | No       | No (ignored)       | Certificate that signed the CRL the entry was made from                                                                       |
+| `crl_signer_delegator`   | string or `null` | base64 of DER                | No       | No (ignored)       | Certificate that delegated CRL signing, if any                                                                                |
+
+Hex values are not case sensitive. Other fields are ignored. The tool always writes `type`, `issuer_name` and `crl_signer_cert`, and writes `crl_signer_delegator` as `null` when there is none.
+
+Example with one entry (the values are made up):
+
+```json
+[
+    {
+        "type": "revocation_set",
+        "issuer_subject_key_id": "3A1F5C9E0B7D24E68F1A2B3C4D5E6F7081920A1B",
+        "issuer_name": "MB0xGzAZBgNVBAMMEkV4YW1wbGUgVmVuZG9yIFBBSQ==",
+        "revoked_serial_numbers": ["5C2E91A0D7B34F18", "0A"],
+        "crl_signer_cert": "MIIBnDCCAUKgAwIBAgIIGq3cE5b0Wl8wCgYIKoZIzj0EAwI=",
+        "crl_signer_delegator": null
+    }
+]
+```
+
+## Importing Custom PAA Certificates
+
+A device can only pass device attestation when the server knows the PAA (Product Attestation Authority) root certificate at the end of its attestation chain. A PAA that is not on the DCL, for example a vendor's own test PAA, can be imported from files with `--certificates-dir <path>` (or env var `CERTIFICATES_DIR=<path>`).
+
+- File names must end in `.paa.der` (one DER-encoded certificate) or `.paa.pem` (one or more PEM-encoded certificates). Other files stay in the directory, and the server logs that it ignored them. Subdirectories are not read.
+- A certificate is imported as a test certificate. The server only trusts a test certificate when `--enable-test-net-dcl` is set. Without it, commissioning of a device that uses the certificate fails with an error that asks to enable the test-net DCL option.
+- A file named `<name>.prod.paa.der` or `<name>.prod.paa.pem` (for example `vendor.prod.paa.der`) is imported as a production certificate, which is trusted without `--enable-test-net-dcl`. A `.prod` file also turns a certificate that is already stored as test into production. A file without `.prod` never changes a stored certificate. Only use `.prod` for certificates you got from a source you trust.
+- The server imports the files at every start, after it has loaded the bundled DCL data and finished its first DCL update. The server starts without waiting for the import, so a device that needs an imported certificate can only be commissioned after the import has logged its summary line. On a server without Internet access this takes until the first DCL update gives up; use `--dcl-offline` to skip that update.
+- The certificates are stored with the other certificates in the server storage and stay there. A file is deleted when each of its certificates is stored, also when a certificate was already stored before.
+- A file that cannot be read or holds an invalid certificate or PEM block is logged as an error and stays in the directory. None of its certificates is stored. A missing directory is logged as a warning.
+- The server logs one line per certificate and, when it read at least one `.paa.der` or `.paa.pem` file, a summary `Certificates from <path>: <N> imported, <U> upgraded to production, <K> already stored, <F> files failed`.
+
 ## Differences from Python Matter Server
 
-This implementation aims to be API-compatible with the [Python Matter Server](https://github.com/home-assistant-libs/python-matter-server), but there are some intentional differences:
+This implementation aims to be API-compatible with the [Python Matter Server](https://github.com/matter-js/python-matter-server), but there are some intentional differences:
 
 | Feature                 | Python Matter Server                                       | Matter.js Server                                                                                           |
 | ----------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
@@ -273,4 +321,5 @@ This implementation aims to be API-compatible with the [Python Matter Server](ht
 | Fabric Label            | Accepts null/empty to clear                                | Resets to "Home" when null/empty                                                                           |
 | Storage Format          | Single `chip.json` and `{fabricId}.json` file              | matter.js native storage (migration supported)                                                             |
 | Attribute Subscriptions | Tracks per-node in `attribute_subscriptions`               | Always empty (handled internally)                                                                          |
+| Endpoint Parents        | Not sent                                                   | `endpoint_parents` in node data: the direct parent endpoint of each endpoint whose parent is known         |
 | Custom OTA Files        | Allows to import them independently from the test-dcl flag | Only imports them when also test-dcl is enabled                                                            |

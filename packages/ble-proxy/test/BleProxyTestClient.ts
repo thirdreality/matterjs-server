@@ -10,6 +10,7 @@
  * registering command handlers and sending events/binary frames.
  */
 
+import { InternalError } from "@matter/main";
 import { WebSocket } from "ws";
 import {
     BLE_PROXY_PROTOCOL_VERSION,
@@ -23,6 +24,7 @@ type CommandHandler = (args: Record<string, unknown>) => Promise<Record<string, 
 export class BleProxyTestClient {
     #ws?: WebSocket;
     #commandHandlers = new Map<BleProxyCommandName, CommandHandler>();
+    #commandErrors = new Map<BleProxyCommandName, { error: string; message: string }>();
     #receivedCommands: CommandMessage[] = [];
     #commandWaiters: Array<{ command: string; resolve: (msg: CommandMessage) => void }> = [];
 
@@ -74,6 +76,11 @@ export class BleProxyTestClient {
         this.#commandHandlers.set(command, handler);
     }
 
+    /** Answer `command` the way a real client does: bare message, code in its own field. */
+    onCommandError(command: BleProxyCommandName, error: string, message: string): void {
+        this.#commandErrors.set(command, { error, message });
+    }
+
     sendEvent(event: string, data: Record<string, unknown>): void {
         this.#ws?.send(JSON.stringify({ event, data }));
     }
@@ -114,7 +121,40 @@ export class BleProxyTestClient {
         this.#ws?.close();
     }
 
+    /** Resolves once the server's ping has been received and answered by the `ws` auto-pong. */
+    async waitForPing(timeoutMs = 1000): Promise<void> {
+        const ws = this.#ws;
+        if (ws === undefined) {
+            throw new InternalError("Not connected");
+        }
+        await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+                ws.off("ping", onPing);
+                reject(new InternalError("Timeout waiting for ping"));
+            }, timeoutMs);
+            const onPing = () => {
+                clearTimeout(timer);
+                resolve();
+            };
+            ws.once("ping", onPing);
+        });
+    }
+
+    /**
+     * Simulate an abruptly powered-off proxy: the socket stays open from the server's point of
+     * view but the client processes nothing, so no automatic pong answers the server's pings.
+     */
+    simulateHalfOpen(): void {
+        this.#ws?.pause();
+    }
+
     async #dispatchCommand(msg: CommandMessage): Promise<void> {
+        const failure = this.#commandErrors.get(msg.command);
+        if (failure) {
+            this.#ws?.send(JSON.stringify({ id: msg.id, success: false, ...failure }));
+            return;
+        }
+
         const handler = this.#commandHandlers.get(msg.command);
         if (!handler) {
             // Auto-respond with success for unhandled commands

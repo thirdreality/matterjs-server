@@ -4,10 +4,22 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { matterNameToWireField } from "@matter-server/ws-client";
-import { AttributeId, Bytes, camelize, ClusterId, isObject, Logger } from "@matter/main";
+import { matterNameToWireField, type MatterNodeEvent, type PathStatus } from "@matter-server/ws-client";
+import { AttributeId, Bytes, camelize, ClusterId, isObject, Logger, NodeId } from "@matter/main";
 import { ClusterModel, FieldModel, FieldValue, ValueModel } from "@matter/main/model";
-import { EndpointNumber, MATTER_EPOCH_OFFSET_S, MATTER_EPOCH_OFFSET_US } from "@matter/main/types";
+import {
+    EndpointNumber,
+    EventId,
+    MATTER_EPOCH_OFFSET_S,
+    MATTER_EPOCH_OFFSET_US,
+    Status,
+    ValidationError,
+} from "@matter/main/types";
+import type { EventChange, EventOccurrence } from "../controller/PeerChangeBus.js";
+import { ClusterMap } from "../model/ModelMapper.js";
+import { ServerError } from "../types/WebSocketMessageTypes.js";
+
+export { parseBigIntAwareJson, toBigIntAwareJson } from "@matter-server/ws-client";
 
 const logger = new Logger("ChipToolWebSocketHandler");
 
@@ -20,7 +32,58 @@ export function parseNumber(number: string): number | bigint {
     return parsed;
 }
 
-function convertWebSocketGenericToMatter(value: unknown, model: ValueModel, clusterModel: ClusterModel) {
+/** The position a bitmap member occupies: a single flag bit or an inclusive range of value bits. */
+type BitField = { readonly bit: number } | { readonly min: number; readonly max: number };
+
+function bitPosition(value: FieldValue.Open | undefined): number | undefined {
+    const numeric = FieldValue.numericValue(value);
+    return numeric === undefined ? undefined : Number(numeric);
+}
+
+/** JavaScript bitwise operators mask the shift count modulo 32, so a higher position cannot be applied. */
+const MAX_BIT_POSITION = 31;
+
+/**
+ * A member with no numeric position, or one beyond {@link MAX_BIT_POSITION}, is skipped rather than
+ * silently decoded as some other bit.
+ */
+function bitFieldOf(member: ValueModel): BitField | undefined {
+    const bit = bitPosition(member.constraint.value);
+    if (bit !== undefined) {
+        return bit > MAX_BIT_POSITION ? undefined : { bit };
+    }
+    const min = bitPosition(member.constraint.min);
+    const max = bitPosition(member.constraint.max);
+    if (min === undefined || max === undefined || max > MAX_BIT_POSITION) {
+        return undefined;
+    }
+    return { min, max };
+}
+
+function unpackBitField(value: number, field: BitField): boolean | number {
+    if ("bit" in field) {
+        return (value & (1 << field.bit)) !== 0;
+    }
+    const width = field.max - field.min + 1;
+    const shifted = value >>> field.min;
+    return width >= 32 ? shifted : shifted & ((1 << width) - 1);
+}
+
+function packBitField(memberValue: boolean | number, field: BitField): number {
+    if ("bit" in field) {
+        return memberValue ? 1 << field.bit : 0;
+    }
+    const width = field.max - field.min + 1;
+    const numeric = typeof memberValue === "boolean" ? 1 : memberValue;
+    return (width >= 32 ? numeric : numeric & ((1 << width) - 1)) << field.min;
+}
+
+/** Decorator-defined (custom cluster) lists carry no `type`; the metabase identifies them. */
+function isList(model: ValueModel): boolean {
+    return model.type === "list" || model.metabase?.name === "list";
+}
+
+function convertWebSocketGenericToMatter(value: unknown, model: ValueModel, clusterModel: ClusterModel): unknown {
     // Handle bitmaps - convert number to object with boolean flags
     if (typeof value === "number" && model.metabase?.metatype === "bitmap") {
         const bitmapValue: { [key: string]: boolean | number } = {};
@@ -37,22 +100,11 @@ function convertWebSocketGenericToMatter(value: unknown, model: ValueModel, clus
                 continue;
             }
 
-            const constraintValue = FieldValue.numericValue(member.constraint.value);
-            if (constraintValue !== undefined) {
-                // Single bit - extract as boolean
-                bitmapValue[memberName] = (value & (1 << constraintValue)) !== 0;
-            } else {
-                const minBit = FieldValue.numericValue(member.constraint.min) ?? 0;
-                const maxBit = FieldValue.numericValue(member.constraint.max);
-                if (maxBit !== undefined) {
-                    // Multi-bit field - extract value
-                    const mask = ((1 << (maxBit - minBit + 1)) - 1) << minBit;
-                    bitmapValue[memberName] = (value & mask) >> minBit;
-                } else {
-                    // Single bit at minBit position
-                    bitmapValue[memberName] = (value & (1 << minBit)) !== 0;
-                }
+            const field = bitFieldOf(member);
+            if (field === undefined) {
+                continue;
             }
+            bitmapValue[memberName] = unpackBitField(value, field);
         }
 
         return bitmapValue;
@@ -90,8 +142,8 @@ export function convertWebSocketTagBasedToMatter(
     }
 
     // Handle lists
-    if (Array.isArray(value) && model.type === "list") {
-        const memberModel = model.members.at(0);
+    if (Array.isArray(value) && isList(model)) {
+        const memberModel = listEntryModelOf(model);
         return value.map(v => convertWebSocketTagBasedToMatter(v, memberModel, clusterModel));
     }
 
@@ -138,8 +190,8 @@ export function convertCommandDataToMatter(
     }
 
     // Handle lists
-    if (Array.isArray(value) && model.type === "list") {
-        const memberModel = model.members.at(0);
+    if (Array.isArray(value) && isList(model)) {
+        const memberModel = listEntryModelOf(model);
         return value.map(v => convertCommandDataToMatter(v, memberModel, clusterModel));
     }
 
@@ -199,6 +251,18 @@ type StructMemberEntry = {
 };
 const structMemberCache = new WeakMap<ValueModel, StructMemberEntry[]>();
 
+/** The element model of a list, cached: `members` is a getter that redoes the cluster's scope analysis on every read. */
+const listEntryCache = new WeakMap<ValueModel, ValueModel | undefined>();
+
+function listEntryModelOf(model: ValueModel): ValueModel | undefined {
+    if (listEntryCache.has(model)) {
+        return listEntryCache.get(model);
+    }
+    const entry = model.members.at(0);
+    listEntryCache.set(model, entry);
+    return entry;
+}
+
 /**
  * Cached bitmap member resolution. Unlike struct members (intrinsic to the model), bitmap bit
  * fields resolve via the cluster scope, so the cache is keyed by clusterModel first, then model.
@@ -209,7 +273,7 @@ function classifyModel(model: ValueModel): ConvKind {
     let kind = modelKindCache.get(model);
     if (kind !== undefined) return kind;
 
-    if (model.type === "list") {
+    if (isList(model)) {
         kind = ConvKind.List;
     } else if (model.metabase?.name === "struct") {
         kind = ConvKind.Struct;
@@ -373,7 +437,6 @@ function convertMatterToWebSocket(
         return null;
     }
     if (model === undefined) {
-        // Unknown attributes: simple type conversions only
         if (Bytes.isBytes(value)) {
             return Bytes.toBase64(value);
         }
@@ -381,7 +444,16 @@ function convertMatterToWebSocket(
             // Best-effort: recursively convert elements without schema
             return value.map(v => convertMatterToWebSocket(v, undefined, clusterModel, tagBased));
         }
-        if (isObject(value) || !PRIMITIVE_TYPEOF.has(typeof value)) {
+        // matter.js decodes an unmodeled TLV structure to an object keyed by tag number
+        if (isObject(value)) {
+            return Object.fromEntries(
+                Object.entries(value).map(([tag, member]) => [
+                    tag,
+                    convertMatterToWebSocket(member, undefined, clusterModel, tagBased),
+                ]),
+            );
+        }
+        if (!PRIMITIVE_TYPEOF.has(typeof value)) {
             return null;
         }
         return value;
@@ -404,15 +476,13 @@ function convertMatterToWebSocket(
 
         case ConvKind.List: {
             if (!Array.isArray(value)) return value;
-            // Hoist the element model: `model.members` is a getter that rebuilds its array on every
-            // access, so reading it inside the map would rebuild it once per element.
-            const memberModel = model.members.at(0);
+            const memberModel = listEntryModelOf(model);
             return value.map(v => convertMatterToWebSocket(v, memberModel, clusterModel, tagBased));
         }
 
         case ConvKind.Struct: {
             if (!isObject(value)) return value;
-            const result: { [key: string]: any } = {};
+            const result: { [key: string]: unknown } = {};
             for (const { name, rawName, id, model: memberModel } of getStructMembers(model)) {
                 if (Object.hasOwn(value, name)) {
                     const converted = convertMatterToWebSocket(value[name], memberModel, clusterModel, tagBased);
@@ -446,171 +516,22 @@ function convertMatterToWebSocket(
                     continue;
                 }
                 if (typeof memberValue !== "boolean" && typeof memberValue !== "number") {
-                    throw new Error("Invalid bitmap value", memberValue);
+                    throw new Error(`Invalid bitmap value for ${member.propertyName}: ${String(memberValue)}`);
                 }
 
-                const constraintValue = FieldValue.numericValue(member.constraint.value);
-                if (constraintValue !== undefined) {
-                    numberValue |= 1 << constraintValue;
-                } else {
-                    const minBit = FieldValue.numericValue(member.constraint.min) ?? 0;
-                    numberValue |= typeof memberValue === "boolean" ? 1 : memberValue << minBit;
+                const field = bitFieldOf(member);
+                if (field !== undefined) {
+                    numberValue |= packBitField(memberValue, field);
                 }
             }
-            return numberValue;
+            // Bitmaps are unsigned on the wire, but |= yields a signed 32-bit result
+            return numberValue >>> 0;
         }
     }
-}
-
-/**
- * Serialize to JSON with BigInt support.
- * - BigInt values within safe integer range are converted to numbers
- * - Large BigInt values are output as raw decimal numbers (not quoted strings)
- */
-export function toBigIntAwareJson(object: object, spaces?: number): string {
-    const replacements = new Array<{ from: string; to: string }>();
-    let result = JSON.stringify(
-        object,
-        (_key, value) => {
-            if (typeof value === "bigint") {
-                if (value > Number.MAX_SAFE_INTEGER) {
-                    // Store replacement: quoted hex string -> raw decimal number
-                    replacements.push({ from: `"0x${value.toString(16)}"`, to: value.toString() });
-                    return `0x${value.toString(16)}`;
-                } else {
-                    return Number(value);
-                }
-            }
-            return value;
-        },
-        spaces,
-    );
-    // Large numbers need to be raw (not quoted) in the output, so replace hex placeholders with decimal
-    // This handles both object values and array elements
-    if (replacements.length > 0) {
-        replacements.forEach(({ from, to }) => {
-            result = result.replaceAll(from, to);
-        });
-    }
-
-    return result;
-}
-
-/** Marker prefix for large numbers that need BigInt conversion */
-const BIGINT_MARKER = "__BIGINT__";
-
-/**
- * Parse JSON with BigInt support for large numbers that exceed JavaScript precision.
- * Numbers with 15+ digits that exceed MAX_SAFE_INTEGER are converted to BigInt.
- *
- * This function carefully avoids modifying numbers that appear inside string values.
- */
-export function parseBigIntAwareJson(json: string): unknown {
-    // Pre-process: Replace large numbers (15+ digits) with marked string placeholders
-    // This must happen before JSON.parse to preserve precision
-    // We need to track whether we're inside a string to avoid modifying string contents
-    const result: string[] = [];
-    let i = 0;
-    let inString = false;
-
-    while (i < json.length) {
-        const char = json[i];
-
-        if (inString) {
-            // Inside a string - copy characters as-is until we find the closing quote
-            if (char === "\\") {
-                // Escape sequence - copy both the backslash and the next character
-                result.push(char);
-                i++;
-                if (i < json.length) {
-                    result.push(json[i]);
-                    i++;
-                }
-            } else if (char === '"') {
-                // End of string
-                result.push(char);
-                inString = false;
-                i++;
-            } else {
-                result.push(char);
-                i++;
-            }
-        } else {
-            // Outside a string
-            if (char === '"') {
-                // Start of a string
-                result.push(char);
-                inString = true;
-                i++;
-            } else if (char >= "0" && char <= "9") {
-                // Potential number - extract and check
-                // Check if previous character was a minus sign (for negative numbers)
-                const hasMinus = result.length > 0 && result[result.length - 1] === "-";
-                if (hasMinus) {
-                    result.pop(); // Remove the minus sign, we'll include it in the number
-                }
-
-                // Extract the integer part
-                const start = i;
-                while (i < json.length && json[i] >= "0" && json[i] <= "9") {
-                    i++;
-                }
-
-                // Check for decimal point (fractional number) or exponent
-                let isFloat = false;
-                if (i < json.length && json[i] === ".") {
-                    isFloat = true;
-                    i++; // consume the decimal point
-                    while (i < json.length && json[i] >= "0" && json[i] <= "9") {
-                        i++;
-                    }
-                }
-
-                // Check for exponent (e.g., 1e10, 1E-5)
-                if (i < json.length && (json[i] === "e" || json[i] === "E")) {
-                    isFloat = true;
-                    i++; // consume 'e' or 'E'
-                    if (i < json.length && (json[i] === "+" || json[i] === "-")) {
-                        i++; // consume sign
-                    }
-                    while (i < json.length && json[i] >= "0" && json[i] <= "9") {
-                        i++;
-                    }
-                }
-
-                const numberStr = (hasMinus ? "-" : "") + json.slice(start, i);
-
-                // Only convert integers (not floats) with 15+ digits that exceed safe integer range
-                if (!isFloat && numberStr.length - (hasMinus ? 1 : 0) >= 15) {
-                    const num = BigInt(numberStr);
-                    if (num > Number.MAX_SAFE_INTEGER || num < Number.MIN_SAFE_INTEGER) {
-                        result.push(`"${BIGINT_MARKER}${numberStr}"`);
-                    } else {
-                        result.push(numberStr);
-                    }
-                } else {
-                    result.push(numberStr);
-                }
-            } else {
-                result.push(char);
-                i++;
-            }
-        }
-    }
-
-    const processed = result.join("");
-
-    // Parse with reviver to convert marked strings back to BigInt
-    return JSON.parse(processed, (_key, value) => {
-        if (typeof value === "string" && value.startsWith(BIGINT_MARKER)) {
-            return BigInt(value.slice(BIGINT_MARKER.length));
-        }
-        return value;
-    });
 }
 
 /** Chip JSON-like data strings can contain long numbers that are not supported by JSON.parse */
-function parseChipJSON(json: string) {
+function parseChipJSON(json: string): unknown {
     json = json.replace(/: (\d{15,})[,}]/g, (match, number) => {
         const num = BigInt(number);
         if (num > Number.MAX_SAFE_INTEGER) {
@@ -623,7 +544,7 @@ function parseChipJSON(json: string) {
 }
 
 /** Use the matter.js model to convert the incoming data for write and invoke commands into the expected format. */
-export function convertWebsocketDataToMatter(value: any, model: ValueModel): any {
+export function convertWebsocketDataToMatter(value: unknown, model: ValueModel): unknown {
     if (value === undefined) {
         return undefined;
     }
@@ -631,98 +552,106 @@ export function convertWebsocketDataToMatter(value: any, model: ValueModel): any
         return null;
     }
 
-    if (model.type === "list") {
-        if (typeof value === "string") {
-            value = parseChipJSON(value);
+    let data: unknown = value;
+
+    if (isList(model)) {
+        if (typeof data === "string") {
+            data = parseChipJSON(data);
         }
-        if (Array.isArray(value)) {
-            const memberModel = model.members.at(0)!;
-            return value.map(v => convertWebsocketDataToMatter(v, memberModel));
+        if (Array.isArray(data)) {
+            const memberModel = listEntryModelOf(model)!;
+            return data.map(v => convertWebsocketDataToMatter(v, memberModel));
         }
     }
 
     if (model.metabase?.name === "struct") {
-        if (typeof value === "string") {
-            value = parseChipJSON(value);
+        if (typeof data === "string") {
+            data = parseChipJSON(data);
         }
-        if (typeof value === "object") {
+        if (isObject(data)) {
             const members = getStructMembersByLowerName(model);
-            const valueKeys = Object.keys(value);
             const result: { [key: string]: unknown } = {};
-            valueKeys.forEach(key => {
+            for (const key of Object.keys(data)) {
                 const member = members.get(camelize(key).toLowerCase());
                 if (member !== undefined) {
-                    result[member.propertyName] = convertWebsocketDataToMatter(value[key], member);
+                    result[member.propertyName] = convertWebsocketDataToMatter(data[key], member);
                 }
-            });
+            }
             return result;
         }
     }
 
     if (
-        (typeof value === "number" || typeof value === "bigint") &&
+        (typeof data === "number" || typeof data === "bigint") &&
         (model.metabase?.metatype === "integer" || model.metabase?.metatype === "enum")
     ) {
         // Convert Epoch timestamps to Unix timestamps we use internally
-        if (model.type === "epoch-s" && typeof value === "number") {
-            value += MATTER_EPOCH_OFFSET_S;
-        } else if (model.type === "epoch-us") {
-            value = BigInt(value) + MATTER_EPOCH_OFFSET_US;
+        if (model.type === "epoch-s" && typeof data === "number") {
+            return data + MATTER_EPOCH_OFFSET_S;
         }
-        return value;
+        if (model.type === "epoch-us") {
+            return BigInt(data) + MATTER_EPOCH_OFFSET_US;
+        }
+        return data;
     }
 
-    if (typeof value === "string") {
-        if (model.metabase?.metatype === "bytes" && value.startsWith("hex:")) {
-            return Bytes.fromHex(value.slice(4));
+    if (typeof data === "string") {
+        if (model.metabase?.metatype === "bytes" && data.startsWith("hex:")) {
+            return Bytes.fromHex(data.slice(4));
         }
 
         if (model.metabase?.metatype === "bitmap") {
-            const numberValue = parseInt(value);
+            const numberValue = parseInt(data);
             if (isNaN(numberValue)) {
                 throw new Error("Invalid bitmap value");
             }
-            const bitmapValue: { [key: string]: boolean } = {};
-            model.members.forEach(member => {
-                if (
-                    member.constraint !== undefined &&
-                    member.name !== undefined &&
-                    numberValue & (1 << parseInt(member.constraint as unknown as string))
-                ) {
-                    bitmapValue[member.propertyName] = true;
+            const bitmapValue: { [key: string]: boolean | number } = {};
+            for (const member of model.members) {
+                if (member.name === undefined) {
+                    continue;
                 }
-            });
+                const field = bitFieldOf(member);
+                if (field === undefined) {
+                    continue;
+                }
+                const decoded = unpackBitField(numberValue, field);
+                if (decoded !== false && decoded !== 0) {
+                    bitmapValue[member.propertyName] = decoded;
+                }
+            }
             return bitmapValue;
         }
 
         if (
             ((model.metabase?.metatype === "integer" || model.metabase?.metatype === "enum") &&
-                value.startsWith("0x") &&
-                value.match(/^0x[\da-fA-F]+$/)) ||
-            value.match(/^-?[1-9]\d*$/) ||
-            value === "0"
+                data.startsWith("0x") &&
+                data.match(/^0x[\da-fA-F]+$/)) ||
+            data.match(/^-?[1-9]\d*$/) ||
+            data === "0"
         ) {
-            let numberValue = parseNumber(value);
+            const numberValue = parseNumber(data);
             if (model.type === "epoch-s" && typeof numberValue === "number") {
-                numberValue += MATTER_EPOCH_OFFSET_S;
-            } else if (model.type === "epoch-us") {
-                numberValue = BigInt(value) + MATTER_EPOCH_OFFSET_US;
+                return numberValue + MATTER_EPOCH_OFFSET_S;
+            }
+            if (model.type === "epoch-us") {
+                // epoch-us values can exceed 2^53, so only the unparsed string carries full precision
+                return BigInt(data) + MATTER_EPOCH_OFFSET_US;
             }
             return numberValue;
         }
 
         if (model.metabase?.metatype === "boolean") {
-            return value === "true" || value === "1" || value === "True";
+            return data === "true" || data === "1" || data === "True";
         }
 
         if (model.metabase?.metatype === "string") {
-            return value;
+            return data;
         }
     }
 
-    logger.warn("UNHANDLED value ...", value, model.type, model.metatype, model.metabase?.metatype);
+    logger.warn("UNHANDLED value ...", data, model.type, model.metatype, model.metabase?.metatype);
 
-    return value;
+    return data;
 }
 
 export function getDateAsString(date: Date) {
@@ -742,6 +671,20 @@ export function buildAttributePath(endpointId: number, clusterId: number, attrib
     return `${endpointId}/${clusterId}/${attributeId}`;
 }
 
+/** The numbers of a path; non-numeric parts and the wildcard values 0xffff / 0xffffffff are undefined. */
+function pathNumbersOf(path: string) {
+    const [endpointStr, clusterStr, thirdStr] = path.split("/");
+    const numberOf = (part: string | undefined, wildcard: number) => {
+        const value = part !== undefined && /^\d+$/.test(part) ? parseInt(part, 10) : undefined;
+        return value === wildcard ? undefined : value;
+    };
+    return {
+        endpoint: numberOf(endpointStr, 0xffff),
+        cluster: numberOf(clusterStr, 0xffffffff),
+        third: numberOf(thirdStr, 0xffffffff),
+    };
+}
+
 /**
  * Parse an attribute path string into its components.
  * Supports wildcards (*) for endpoint, cluster, and attribute IDs.
@@ -749,32 +692,105 @@ export function buildAttributePath(endpointId: number, clusterId: number, attrib
  *
  * @param path - Attribute path string in format "endpoint/cluster/attribute"
  * @returns Object with endpointId, clusterId, attributeId - each undefined if wildcard
+ * @throws ServerError with InvalidArguments when a number is not a valid id of its kind
  */
 export function splitAttributePath(path: string): {
     endpointId: EndpointNumber | undefined;
     clusterId: ClusterId | undefined;
     attributeId: AttributeId | undefined;
 } {
-    const [endpointStr, clusterStr, attributeStr] = path.split("/");
+    const { endpoint, cluster, third } = pathNumbersOf(path);
+    return idsOf(path, () => ({
+        endpointId: endpoint !== undefined ? EndpointNumber(endpoint) : undefined,
+        clusterId: cluster !== undefined ? ClusterId(cluster) : undefined,
+        attributeId: third !== undefined ? AttributeId(third) : undefined,
+    }));
+}
 
-    // Non-numeric values (like "*") are treated as wildcards (undefined)
-    let endpointNum = /^\d+$/.test(endpointStr) ? parseInt(endpointStr, 10) : undefined;
-    let clusterNum = /^\d+$/.test(clusterStr) ? parseInt(clusterStr, 10) : undefined;
-    let attributeNum = /^\d+$/.test(attributeStr) ? parseInt(attributeStr, 10) : undefined;
+/** The matter.js id types reject an id out of range for its kind. */
+function idsOf<T>(path: string, ids: () => T): T {
+    try {
+        return ids();
+    } catch (error) {
+        if (error instanceof ValidationError) {
+            throw ServerError.invalidArguments(`Invalid id in path "${path}": ${error.message}`);
+        }
+        throw error;
+    }
+}
 
-    if (endpointNum !== undefined && endpointNum === 0xffff) {
-        endpointNum = undefined;
-    }
-    if (clusterNum !== undefined && clusterNum === 0xffffffff) {
-        clusterNum = undefined;
-    }
-    if (attributeNum !== undefined && attributeNum === 0xffffffff) {
-        attributeNum = undefined;
+/**
+ * True when `path` has exactly `segments` parts, each a decimal number or `*`. {@link splitAttributePath} reads any
+ * other part as a wildcard, so a typo would widen the request.
+ */
+export function isWellFormedPath(path: string, segments: number) {
+    const parts = path.split("/");
+    return parts.length === segments && parts.every(part => /^(\d+|\*)$/.test(part));
+}
+
+/** A status path in the request format; a wildcard the device left in the path stays "*". */
+export function statusPathOf(...ids: (number | undefined)[]) {
+    return ids.map(id => id ?? "*").join("/");
+}
+
+/** The wire `PathStatus` of a Matter status; `cluster_status` only when the device sent one. */
+export function pathStatusOf({ status, clusterStatus }: { status: Status; clusterStatus?: number }): PathStatus {
+    return clusterStatus === undefined ? { status } : { status, cluster_status: clusterStatus };
+}
+
+/**
+ * Parse an event path string ("endpoint/cluster/event") into its components, with the same wildcard rules as
+ * {@link splitAttributePath}.
+ *
+ * @throws ServerError with InvalidArguments when a number is not a valid id of its kind
+ */
+export function splitEventPath(path: string): {
+    endpointId: EndpointNumber | undefined;
+    clusterId: ClusterId | undefined;
+    eventId: EventId | undefined;
+} {
+    const { endpoint, cluster, third } = pathNumbersOf(path);
+    return idsOf(path, () => ({
+        endpointId: endpoint !== undefined ? EndpointNumber(endpoint) : undefined,
+        clusterId: cluster !== undefined ? ClusterId(cluster) : undefined,
+        eventId: third !== undefined ? EventId(third) : undefined,
+    }));
+}
+
+/** Convert one event occurrence into the `node_event` wire shape. */
+export function convertEventToWebSocket(
+    nodeId: NodeId,
+    path: EventChange["path"],
+    event: EventOccurrence,
+): MatterNodeEvent {
+    const { endpointId, clusterId, eventId } = path;
+
+    let timestamp: number | bigint;
+    let timestampType: number;
+    if (event.epochTimestamp !== undefined) {
+        timestamp = event.epochTimestamp;
+        timestampType = 1; // Epoch
+    } else if (event.systemTimestamp !== undefined) {
+        timestamp = event.systemTimestamp;
+        timestampType = 0; // System
+    } else {
+        timestamp = Date.now();
+        timestampType = 2; // POSIX (fallback)
     }
 
+    const clusterData = ClusterMap[clusterId];
     return {
-        endpointId: endpointNum !== undefined ? EndpointNumber(endpointNum) : undefined,
-        clusterId: clusterNum !== undefined ? ClusterId(clusterNum) : undefined,
-        attributeId: attributeNum !== undefined ? AttributeId(attributeNum) : undefined,
+        node_id: nodeId,
+        endpoint_id: endpointId,
+        cluster_id: clusterId,
+        event_id: eventId,
+        event_number: event.eventNumber,
+        priority: event.priority,
+        timestamp,
+        timestamp_type: timestampType,
+        data:
+            event.data !== undefined
+                ? convertMatterToWebSocketNameBased(event.data, clusterData?.events[eventId], clusterData?.model)
+                : null,
     };
 }

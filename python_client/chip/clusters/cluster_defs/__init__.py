@@ -10,6 +10,10 @@ from .AirQuality import AirQuality
 from .AmbientContextSensing import AmbientContextSensing
 from .ApplicationBasic import ApplicationBasic
 from .ApplicationLauncher import ApplicationLauncher
+from .AqaraAmbientSensingConfigurationCluster import AqaraAmbientSensingConfigurationCluster
+from .AqaraLedStripCluster import AqaraLedStripCluster
+from .AqaraOccupantLocationCluster import AqaraOccupantLocationCluster
+from .AqaraRadarSensingUnionCluster import AqaraRadarSensingUnionCluster
 from .AudioOutput import AudioOutput
 from .BasicInformation import BasicInformation
 from .Binding import Binding
@@ -62,6 +66,7 @@ from .HeimanCluster import HeimanCluster
 from .HepaFilterMonitoring import HepaFilterMonitoring
 from .IcdManagement import IcdManagement
 from .Identify import Identify
+from .IkeaValveCalibrationCluster import IkeaValveCalibrationCluster
 from .IlluminanceMeasurement import IlluminanceMeasurement
 from .InovelliCluster import InovelliCluster
 from .JointFabricAdministrator import JointFabricAdministrator
@@ -131,6 +136,7 @@ from .TlsCertificateManagement import TlsCertificateManagement
 from .TlsClientManagement import TlsClientManagement
 from .TotalVolatileOrganicCompoundsConcentrationMeasurement import TotalVolatileOrganicCompoundsConcentrationMeasurement
 from .UnitLocalization import UnitLocalization
+from .UnitTestingCluster import UnitTestingCluster
 from .UserLabel import UserLabel
 from .ValveConfigurationAndControl import ValveConfigurationAndControl
 from .WagoCluster import WagoCluster
@@ -144,6 +150,11 @@ from .WebRtcTransportRequestor import WebRtcTransportRequestor
 from .WiFiNetworkDiagnostics import WiFiNetworkDiagnostics
 from .WiFiNetworkManagement import WiFiNetworkManagement
 from .WindowCovering import WindowCovering
+from .YeelightBasicCluster import YeelightBasicCluster
+from .YeelightBasicConfigCluster import YeelightBasicConfigCluster
+from .YeelightCubeControlCluster import YeelightCubeControlCluster
+from .YeelightEnhancedColorEffectConfigV2Cluster import YeelightEnhancedColorEffectConfigV2Cluster
+from .YeelightOverTheAirCluster import YeelightOverTheAirCluster
 from .ZoneManagement import ZoneManagement
 
 __all__ = [
@@ -157,6 +168,10 @@ __all__ = [
     "AmbientContextSensing",
     "ApplicationBasic",
     "ApplicationLauncher",
+    "AqaraAmbientSensingConfigurationCluster",
+    "AqaraLedStripCluster",
+    "AqaraOccupantLocationCluster",
+    "AqaraRadarSensingUnionCluster",
     "AudioOutput",
     "BasicInformation",
     "Binding",
@@ -209,6 +224,7 @@ __all__ = [
     "HepaFilterMonitoring",
     "IcdManagement",
     "Identify",
+    "IkeaValveCalibrationCluster",
     "IlluminanceMeasurement",
     "InovelliCluster",
     "JointFabricAdministrator",
@@ -278,6 +294,7 @@ __all__ = [
     "TlsClientManagement",
     "TotalVolatileOrganicCompoundsConcentrationMeasurement",
     "UnitLocalization",
+    "UnitTestingCluster",
     "UserLabel",
     "ValveConfigurationAndControl",
     "WagoCluster",
@@ -291,6 +308,11 @@ __all__ = [
     "WiFiNetworkDiagnostics",
     "WiFiNetworkManagement",
     "WindowCovering",
+    "YeelightBasicCluster",
+    "YeelightBasicConfigCluster",
+    "YeelightCubeControlCluster",
+    "YeelightEnhancedColorEffectConfigV2Cluster",
+    "YeelightOverTheAirCluster",
     "ZoneManagement",
 ]
 

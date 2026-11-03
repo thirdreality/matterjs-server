@@ -31,6 +31,10 @@ const DEFAULT_STORAGE_PATH = join(homedir(), ".matter_server");
 const DEFAULT_OTA_UPLOAD_MAX_IN_FLIGHT = 5;
 /** Placeholder: shipping Matter images run ~1-8 MB, tens of MB for camera-class devices. */
 const DEFAULT_OTA_UPLOAD_MAX_SIZE_MB = 64;
+// Duplicated from the ws-controller poller default: cli.ts must stay free of matter.js imports (see pre-init.ts).
+const DEFAULT_CUSTOM_CLUSTER_POLL_INTERVAL = 60;
+const MIN_CUSTOM_CLUSTER_POLL_INTERVAL = 60;
+const MAX_CUSTOM_CLUSTER_POLL_INTERVAL = 86_400;
 
 // Log level enums
 const LOG_LEVELS = ["fatal", "critical", "error", "warning", "warn", "notice", "info", "debug", "verbose"] as const;
@@ -61,6 +65,9 @@ export interface CliOptions {
     // Certificate configuration
     enableTestNetDcl: boolean;
     disableDclSeed: boolean;
+    dclOffline: boolean;
+    revocationSetsDir: string | null;
+    certificatesDir: string | null;
 
     // Bluetooth configuration
     bluetoothAdapter: number | null;
@@ -81,6 +88,13 @@ export interface CliOptions {
 
     // Thread Border Router configuration
     disableThreadDiagnostics: boolean;
+    threadRestProbePort: number | null;
+
+    // Custom cluster polling configuration
+    customClusterPollInterval: number;
+
+    // Subscription configuration
+    disableAutoSubscription: boolean;
 
     // MQTT bridge configuration
     mqttUrl: string | null;
@@ -102,6 +116,75 @@ function parsePositiveIntOption(value: string): number {
         throw new InvalidArgumentError(`Value must be at least 1, got: ${value}`);
     }
     return parsed;
+}
+
+export function parseCustomClusterPollIntervalOption(value: string): number {
+    const parsed = parseInt(value, 10);
+    if (isNaN(parsed) || parsed < MIN_CUSTOM_CLUSTER_POLL_INTERVAL || parsed > MAX_CUSTOM_CLUSTER_POLL_INTERVAL) {
+        throw new InvalidArgumentError(
+            `Value must be between ${MIN_CUSTOM_CLUSTER_POLL_INTERVAL} and ${MAX_CUSTOM_CLUSTER_POLL_INTERVAL} seconds, got: ${value}`,
+        );
+    }
+    return parsed;
+}
+
+export function parseTcpPortOption(value: string): number {
+    const parsed = /^\d+$/.test(value.trim()) ? Number(value.trim()) : NaN;
+    if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
+        throw new InvalidArgumentError(`Value must be a TCP port between 1 and 65535, got: ${value}`);
+    }
+    return parsed;
+}
+
+/** Splits a comma-separated LISTEN_ADDRESS value; docker/matterjs-server/healthcheck.sh probes the first entry the same way. */
+export function parseListenAddressList(value: string): string[] {
+    return value
+        .split(",")
+        .map(address => address.trim())
+        .filter(address => address !== "");
+}
+
+/** Platforms whose noble bindings (WinRT, CoreBluetooth) use the system adapter and ignore the HCI ID. */
+const PLATFORMS_WITHOUT_HCI_ID: ReadonlySet<NodeJS.Platform> = new Set(["win32", "darwin"]);
+
+/**
+ * Parses a `--bluetooth-adapter` / `BLUETOOTH_ADAPTER` value: an HCI ID, or a boolean so the environment can enable BLE
+ * without an ID (`true`) or leave it off (`false` or empty). A number is always an HCI ID, so `1` means hci1.
+ */
+export function parseBluetoothAdapterOption(value: string): number | boolean {
+    const normalized = value.trim().toLowerCase();
+    if (/^\d+$/.test(normalized)) {
+        return Number(normalized);
+    }
+    if (["true", "yes", "on"].includes(normalized)) {
+        return true;
+    }
+    if (["", "false", "no", "off"].includes(normalized)) {
+        return false;
+    }
+    throw new InvalidArgumentError(`Expected an HCI ID or true/false, got: "${value}"`);
+}
+
+/**
+ * Resolves `--bluetooth-adapter` to an HCI ID, or `null` when BLE stays off. `true` means BLE without an ID: given as
+ * the bare flag or as `BLUETOOTH_ADAPTER=true`. Only Windows and macOS accept that and use 0, which their noble
+ * bindings ignore.
+ *
+ * @throws InvalidArgumentError when the ID is missing on any other platform
+ */
+export function bluetoothAdapterFrom(value: number | boolean | undefined, platform: NodeJS.Platform): number | null {
+    if (value === undefined || value === false) {
+        return null;
+    }
+    if (value !== true) {
+        return value;
+    }
+    if (!PLATFORMS_WITHOUT_HCI_ID.has(platform)) {
+        throw new InvalidArgumentError(
+            "--bluetooth-adapter needs the HCI ID of the adapter (e.g. 0 for hci0). Only Windows and macOS accept it without an ID",
+        );
+    }
+    return 0;
 }
 
 function collectAddresses(value: string, previous: string[]): string[] {
@@ -150,14 +233,14 @@ export function parseCliArgs(argv?: string[]): CliOptions {
                 .env("STORAGE_PATH"),
         )
         .addOption(
-            new Option("--port <port>", "TCP Port for WebSocket server")
+            new Option("--port <port>", "TCP Port for WebSocket server (0 binds a free port)")
                 .argParser(parseIntOption)
                 .default(DEFAULT_PORT)
                 .env("PORT"),
         )
         .option(
             "--listen-address <address>",
-            "IP address to bind WebSocket server (repeatable via CLI, single value via env: LISTEN_ADDRESS)",
+            "IP address, interface name or absolute unix socket path to bind WebSocket server (repeatable via CLI, comma-separated via env: LISTEN_ADDRESS)",
             collectAddresses,
             [],
         )
@@ -200,8 +283,33 @@ export function parseCliArgs(argv?: string[]): CliOptions {
                 .env("DISABLE_DCL_SEED"),
         )
         .addOption(
-            new Option("--bluetooth-adapter <id>", "Bluetooth adapter HCI ID (e.g., 0 for hci0)")
-                .argParser(parseIntOption)
+            new Option(
+                "--dcl-offline [value]",
+                "Never contact the DCL for attestation certificates; use only the bundled seed and certificates already stored",
+            )
+                .argParser(parseBooleanEnv)
+                .preset(true)
+                .default(false)
+                .env("DCL_OFFLINE"),
+        )
+        .addOption(
+            new Option(
+                "--revocation-sets-dir <path>",
+                "Directory with device attestation revocation sets (*.json) to install at start",
+            ).env("REVOCATION_SETS_DIR"),
+        )
+        .addOption(
+            new Option(
+                "--certificates-dir <path>",
+                "Directory with PAA certificates (*.paa.der, *.paa.pem) to import into the trust store at start",
+            ).env("CERTIFICATES_DIR"),
+        )
+        .addOption(
+            new Option(
+                "--bluetooth-adapter [id]",
+                "Enable local BLE with this Bluetooth adapter HCI ID (e.g., 0 for hci0); the ID is optional on Windows and macOS",
+            )
+                .argParser(parseBluetoothAdapterOption)
                 .env("BLUETOOTH_ADAPTER"),
         )
         .addOption(
@@ -263,6 +371,33 @@ export function parseCliArgs(argv?: string[]): CliOptions {
         )
         .addOption(
             new Option(
+                "--thread-rest-probe-port <port>",
+                "TCP port of the OTBR REST API probed on discovered Thread Border Routers (default: 8081). Set it when the Border Router exposes its REST API elsewhere, e.g. 8080.",
+            )
+                .argParser(parseTcpPortOption)
+                .env("THREAD_REST_PROBE_PORT"),
+        )
+        .addOption(
+            new Option(
+                "--custom-cluster-poll-interval <seconds>",
+                "Interval in seconds for polling custom cluster attributes that do not support subscriptions (legacy Eve Energy devices). Raise it to reduce periodic Thread traffic at the cost of less current energy readings.",
+            )
+                .argParser(parseCustomClusterPollIntervalOption)
+                .default(DEFAULT_CUSTOM_CLUSTER_POLL_INTERVAL)
+                .env("CUSTOM_CLUSTER_POLL_INTERVAL"),
+        )
+        .addOption(
+            new Option(
+                "--disable-auto-subscription [value]",
+                "Do not subscribe to nodes automatically, neither after commissioning nor on start, and run no polling, time sync, fabric label push or OTA update check, and no Border Router discovery until a client asks for Thread data. You are responsible for subscribing as needed. Only recommended for very special use cases.",
+            )
+                .argParser(parseBooleanEnv)
+                .preset(true)
+                .default(false)
+                .env("DISABLE_AUTO_SUBSCRIPTION"),
+        )
+        .addOption(
+            new Option(
                 "--production-mode [value]",
                 "Force dashboard production mode (auto-connect to server). Use when running behind a reverse proxy.",
             )
@@ -300,6 +435,18 @@ export function parseCliArgs(argv?: string[]): CliOptions {
     program.parse(argv);
     const opts = program.opts();
 
+    if (opts.dclOffline && opts.disableDclSeed) {
+        program.error("error: --dcl-offline needs the DCL seed, so it cannot be combined with --disable-dcl-seed");
+    }
+
+    let bluetoothAdapter: number | null = null;
+    try {
+        bluetoothAdapter = bluetoothAdapterFrom(opts.bluetoothAdapter, process.platform);
+    } catch (error) {
+        if (!(error instanceof InvalidArgumentError)) throw error;
+        program.error(`error: ${error.message}`);
+    }
+
     // Warn about deprecated options if used
     for (const [key, flag] of Object.entries(DEPRECATED_OPTIONS)) {
         if (opts[key] !== undefined && opts[key] !== false) {
@@ -307,12 +454,12 @@ export function parseCliArgs(argv?: string[]): CliOptions {
         }
     }
 
-    // Handle listenAddress: CLI provides an array, env var (LISTEN_ADDRESS) provides a single string
     let listenAddress: string[] | null = null;
     if (Array.isArray(opts.listenAddress) && opts.listenAddress.length > 0) {
         listenAddress = opts.listenAddress;
     } else if (process.env.LISTEN_ADDRESS) {
-        listenAddress = [process.env.LISTEN_ADDRESS];
+        const addresses = parseListenAddressList(process.env.LISTEN_ADDRESS);
+        listenAddress = addresses.length > 0 ? addresses : null;
     }
 
     // Substitute {{interface}} patterns with all its IP addresses
@@ -337,6 +484,8 @@ export function parseCliArgs(argv?: string[]): CliOptions {
             }
             return [address];
         });
+        // An interface and one of its own IPs would otherwise bind the same address twice (EADDRINUSE).
+        listenAddress = [...new Set(listenAddress)];
     }
     return {
         vendorId: opts.vendorid,
@@ -350,7 +499,10 @@ export function parseCliArgs(argv?: string[]): CliOptions {
         defaultFabricLabel: opts.defaultFabricLabel ?? null,
         enableTestNetDcl: opts.enableTestNetDcl,
         disableDclSeed: opts.disableDclSeed,
-        bluetoothAdapter: opts.bluetoothAdapter ?? null,
+        dclOffline: opts.dclOffline,
+        revocationSetsDir: opts.revocationSetsDir ?? null,
+        certificatesDir: opts.certificatesDir ?? null,
+        bluetoothAdapter,
         bleProxy: opts.bleProxy,
         disableOta: opts.disableOta,
         otaProviderDir: opts.otaProviderDir ?? null,
@@ -360,6 +512,9 @@ export function parseCliArgs(argv?: string[]): CliOptions {
         disableDashboard: opts.disableDashboard,
         productionMode: opts.productionMode,
         disableThreadDiagnostics: opts.disableThreadDiagnostics,
+        threadRestProbePort: opts.threadRestProbePort ?? null,
+        customClusterPollInterval: opts.customClusterPollInterval,
+        disableAutoSubscription: opts.disableAutoSubscription,
         mqttUrl: opts.mqttUrl ?? null,
         mqttPrefix: opts.mqttPrefix,
         mqttClientId: opts.mqttClientId,

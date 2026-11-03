@@ -4,11 +4,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+export * from "./aqara.js";
 export * from "./draft-electrical-measurement.js";
 export * from "./eve.js";
 export * from "./heiman.js";
+export * from "./ikea.js";
 export * from "./inovelli.js";
 export * from "./neo.js";
 export * from "./tcl.js";
 export * from "./thirdreality.js";
+export * from "./unit-testing.js";
 export * from "./wago.js";
+export * from "./yeelight.js";

@@ -4,7 +4,7 @@ How to choose a log level in matter-server. The goal is consistency: the same ki
 always lands on the same level, and each level means one thing.
 
 matter-server is an **end-user-driven** application — a Matter controller with a Home
-Assistant-compatible WebSocket API and a dashboard. It wraps `@project-chip/matter.js`, whose
+Assistant-compatible WebSocket API and a dashboard. It builds on matter.js, whose
 logs flow through this server's logger **at the levels matter.js already chose**. This scheme
 is therefore **identical to matter.js's** (see its `docs/LOGGING.md`): adopting the same
 levels means library logs stay coherent with ours — no remapping.
@@ -133,7 +133,7 @@ transport open/close and chunk transfer. The default home for high-volume expect
 | ---------------------------------------------------------- | -------- |
 | Server listening / ready; shutdown complete                | `notice` |
 | Node commissioned / decommissioned                         | `notice` |
-| Node added / removed / became available again              | `notice` |
+| Node added / removed / became available                    | `notice` |
 | OTA update available / applied for a node                  | `notice` |
 | Attribute/event subscription created / cancelled           | `notice` |
 | Commissioning rejected by device (wrong passcode etc.)     | `notice` |
@@ -151,6 +151,8 @@ transport open/close and chunk transfer. The default home for high-volume expect
 
 ## ws-client note
 
-`packages/ws-client` is intentionally zero-dependency and uses native `console.*`, which has
-no `notice`/`fatal`. Map: `console.debug` → debug, `console.log` → info, `console.warn` →
-warn, `console.error` → error. Do not introduce a Logger dependency there.
+`packages/ws-client` is intentionally zero-dependency. It logs through its own `ClientLogger`
+interface (`debug`, `info`, `warn`, `error`; no `notice`/`fatal`), which defaults to native
+`console.*`. Do not introduce a Logger dependency there. Pass the logged value as a `detail`
+function, so a logger that checks the level never builds it for a dropped line (`consoleLogger`
+always builds it).

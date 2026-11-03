@@ -64,6 +64,10 @@ async with aiohttp.ClientSession() as session:
     nodes = client.get_nodes()
 ```
 
+To reach a server that listens on a unix socket (`--listen-address /path/to/socket`), pass
+`unix:///path/to/socket` as the server URL. The client then opens its own session on that socket
+for the WebSocket and the OTA upload, and the session passed in stays unused.
+
 ### OHF-only extensions
 
 Beyond the `python-matter-server` API, the client exposes commands the Matter.js server adds:
@@ -74,6 +78,68 @@ Beyond the `python-matter-server` API, the client exposes commands the Matter.js
   then streams the bytes to `POST /ota-upload/<upload_id>`. Raises `OtaUploadError` (code 101) for a
   corrupt image, an expired/spent id, or disabled OTA support.
 - `get_icd_state`, `register_icd`, `unregister_icd`, `resync_icd` — ICD Check-In registration
+- `read`, `subscribe`, `unsubscribe`, `enable_auto_subscription`, `disable_auto_subscription` — Matter
+  read and subscribe requests with explicit paths (schema 14+). `read` returns an `InteractionReport`,
+  `subscribe` a `SubscribeResult` (the priming report plus `subscription_id`). A subscription is named by
+  `node_id` and `subscription_id` together. Later reports arrive as `subscription_report` events
+  (`SubscriptionReportData`), an end the caller did not ask for as `subscription_ended`
+  (`SubscriptionEndedData`); both go only to the connection that subscribed and reach `node_filter`
+  subscribers. Pass `listener` to `subscribe` to get every event of that one subscription, including those
+  the server sends right behind the response. The listener gets no further calls once `unsubscribe` is
+  called. When the connection is lost or `disconnect` is called, the listener receives a
+  `subscription_ended` that the client builds itself, because the server ends the subscription without
+  sending one; `node_filter` subscribers do not get it. If a `subscribe` call is cancelled or times out
+  (for example in `asyncio.wait_for`) before it returns, the client ends that subscription with
+  `unsubscribe` and logs a failure of that call. `subscribe`, `unsubscribe` and the two auto
+  subscription methods need a server running with auto subscription disabled.
+- `commission_with_code` and `commission_on_network` take `discovery_timeout_s` (schema 14+)
+- `send_batched_device_commands` — sends `(endpoint_id, command)` pairs to one node in a single InvokeRequest and returns
+  one `BatchedCommandResult` per command (schema 14+)
+- `write_attribute` takes `*` as the endpoint to write all endpoints of the node that have the attribute, and
+  `timed_request_timeout_ms` for a timed write (schema 14+)
+- `parse_onboarding_payload` — decodes a QR code or manual pairing code without contacting a device and returns
+  `QrOnboardingPayloadResult` or `ManualOnboardingPayloadResult` (schema 14+)
+- `camera_get_capabilities`, `camera_start_stream`, `camera_provide_answer`,
+  `camera_provide_ice_candidates`, `camera_stop_stream`, `camera_snapshot`, `camera_release_stream`
+  — the camera API (schema 14+). `camera_get_capabilities`, `camera_start_stream`, `camera_stop_stream`
+  and `camera_snapshot` return dataclasses from `matter_server.common.models`; the other three return
+  `None`.
+  `camera_start_stream`'s `video` / `audio` take `None` (the server decides), a `CameraVideoHints` /
+  `CameraAudioHints` dict, or `False` (no such track). `talkback=True` lets the offer ask the camera to
+  play your audio; without it the server makes the offer's audio sections not send, so a browser-style
+  `sendrecv` audio offer goes to the camera as `recvonly`. `camera_session_ended` and
+  `camera_stream_evicted` events arrive as `CameraSessionEndedData` / `CameraStreamEvictedData`;
+  `webrtc_callback` stays a dict. `camera_session_ended` covers every end of a session opened with
+  `camera_start_stream` that the client did not ask for, the camera's own `End` included; its `cause` says why. Errors 102 to 106 (`CameraStreamIncompatible`, ...) expose their
+  details as attributes, e.g. `err.reason` and `err.bound` on `CameraStreamIncompatible`
+
+  `camera_start_stream(..., client_session_key="...")` names the session with your own key (1 to 128
+  characters, unique among the connection's starting and open sessions). Every `webrtc_callback` and
+  `camera_session_ended` event of the session carries it as `client_session_key`, so a handler can
+  match events even when it runs before the awaited call returns. `camera_provide_ice_candidates(node_id,
+  endpoint_id, None, candidates, client_session_key=...)` and `camera_stop_stream(node_id, endpoint_id,
+  client_session_key=...)` take it in place of the session id, also while `camera_start_stream` is still
+  running: candidates are queued on the server and sent after the start's response, and the stop cancels
+  the start.
+
+  The minimal `camera_start_stream` call is `node_id`, `endpoint_id`, `stream_usage` and your SDP
+  offer: the server reuses or allocates the best stream the camera can serve that still fits what
+  the offer can decode, and adds audio when it can. Pass `video` / `audio` hints only to set hard bounds. A
+  session opened this way is driven with `camera_provide_answer`, `camera_provide_ice_candidates`
+  and `camera_stop_stream` only, not with `send_webrtc_provider_command` or a `send_device_command`
+  `EndSession`: the server tracks the session and its streams, and only the `camera_*` methods keep
+  that record correct. The exception is a re-offer (ICE restart), which goes through
+  `send_webrtc_provider_command`. See `docs/websockets_api.md` for the flow and every option.
+
+```python
+    try:
+        result = await client.camera_start_stream(node_id, 1, "LiveView", sdp=offer)
+    except CameraStreamIncompatible as err:
+        print(err.reason, err.bound)
+    else:
+        # The camera's answer arrives as a webrtc_callback "answer" event for this session.
+        print(result.webrtc_session_id, result.video.codec if result.video else None)
+```
 
 ```python
     version = await client.upload_ota_file("/path/to/firmware.ota")

@@ -1,8 +1,5 @@
 # Setting up your development environment
 
-> [!IMPORTANT]
-> This document is not yet fully updated to the matter.js version of the server and so relevant for the Python one.
-
 **For enabling Matter support within Home Assistant, please refer to the Home Assistant documentation. These instructions are for development only!**
 
 See the [contributing guide](CONTRIBUTING.md) before opening a pull request. Contributions made with AI assistance must follow the [Open Home Foundation AI Policy](AI_POLICY.md).
@@ -94,6 +91,10 @@ npm run send-command -- ws://localhost:5580/ws device_command '{"node_id": 1, "e
 ```
 
 The script connects to the server, sends the command, and keeps the connection open to log all incoming messages (results and events). Press `Ctrl+C` to disconnect.
+
+## Certification tests
+
+See [cert/README.md](cert/README.md).
 
 ## Websocket commands
 

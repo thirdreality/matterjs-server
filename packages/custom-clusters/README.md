@@ -11,13 +11,25 @@ Custom clusters are used by device manufacturers to expose proprietary functiona
 
 | Cluster                             | ID         | Vendor                     | Description                                |
 |-------------------------------------|------------|----------------------------|--------------------------------------------|
+| `AqaraAmbientSensingConfigurationCluster` | 0x115ffc0a | Aqara (0x115f/4447)  | FP400 install settings, detection zones    |
+| `AqaraRadarSensingUnionCluster`     | 0x115ffc0b | Aqara (0x115f/4447)        | FP400 zone endpoints, human count, motion events |
+| `AqaraOccupantLocationCluster`      | 0x115ffc0c | Aqara (0x115f/4447)        | FP400 activity state, target positions     |
 | `EveCluster`                        | 0x130afc01 | Eve (0x130a/4874)          | Energy monitoring, weather, motion sensors |
 | `InovelliCluster`                   | 0x122ffc31 | Inovelli (0x122f/4961)     | LED indicator controls                     |
 | `NeoCluster`                        | 0x125dfc11 | Neo (0x125d/4991)          | Power metering                             |
 | `HeimanCluster`                     | 0x120bfc01 | Heiman (0x120b/4619)       | Sensor states, alarms                      |
+| `IkeaValveCalibrationCluster`       | 0x117cfc01 | IKEA (0x117c/4476)         | Thermostat valve calibration               |
 | `ThirdRealityMeteringCluster`       | 0x130dfc02 | ThirdReality (0x130d/4877) | Power metering                             |
 | `WagoCluster`                       | 0x1534fc00 | WAGO (0x1534/5428)         | Relay switch input configuration           |
+| `YeelightBasicCluster`              | 0x1312fc00 | Yeelight (0x1312/4882)     | Cube Lite product and software version     |
+| `YeelightBasicConfigCluster`        | 0x1312fc01 | Yeelight (0x1312/4882)     | Cube Lite LAN control, microphone music modes |
+| `YeelightCubeControlCluster`        | 0x1312fc02 | Yeelight (0x1312/4882)     | Cube Lite display direction                |
+| `YeelightEnhancedColorEffectConfigV2Cluster` | 0x1312fc05 | Yeelight (0x1312/4882) | Cube Lite effects, drawings, playlist, GIF upload |
+| `YeelightOverTheAirCluster`         | 0x1312fc11 | Yeelight (0x1312/4882)     | Cube Lite firmware update state            |
 | `DraftElectricalMeasurementCluster` | 0x00000b04 | Various                    | Draft Matter 1.0 electrical measurement    |
+
+The FP400 answers reads, writes and commands on its clusters with `UnsupportedAttribute` unless the controller's fabric
+uses a vendor id the device trusts (the test vendor id 0xfff1 works, 0x134b does not).
 
 ## Adding a New Custom Cluster
 

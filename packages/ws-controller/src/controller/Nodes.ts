@@ -4,9 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { NodeId } from "@matter/main";
+import { ClientNode, NodeConnectionState, NodeId } from "@matter/main";
 import { EndpointNumber } from "@matter/main/types";
-import { NodeStates, PairedNode } from "@project-chip/matter.js/device";
 import { ServerError } from "../types/WebSocketMessageTypes.js";
 import { AttributeDataCache } from "./AttributeDataCache.js";
 
@@ -14,13 +13,13 @@ import { AttributeDataCache } from "./AttributeDataCache.js";
  * Manages node storage and tracks per-node availability.
  *
  * This class handles:
- * - Storage of PairedNode instances
+ * - Storage of ClientNode instances
  * - Node retrieval and existence checking
  * - Attribute data caching
- * - Connection state tracking for availability debouncing
+ * - Connection state tracking for availability
  */
 export class Nodes {
-    #nodes = new Map<NodeId, PairedNode>();
+    #nodes = new Map<NodeId, ClientNode>();
     #attributeCache = new AttributeDataCache();
     /** Cached so serialization and event paths always agree on availability. */
     #lastAvailability = new Map<NodeId, boolean>();
@@ -30,6 +29,8 @@ export class Nodes {
      * so HA can resolve node.endpoints[endpoint_id] in its callback.
      */
     #pendingEndpointAdds = new Map<NodeId, EndpointNumber[]>();
+    /** Restored nodes that had no report yet when registered. */
+    #awaitingFirstReport = new Set<NodeId>();
 
     get attributeCache(): AttributeDataCache {
         return this.#attributeCache;
@@ -40,7 +41,7 @@ export class Nodes {
     }
 
     /** @throws ServerError if node not found */
-    get(nodeId: NodeId): PairedNode {
+    get(nodeId: NodeId): ClientNode {
         const node = this.#nodes.get(nodeId);
         if (node === undefined) {
             throw ServerError.nodeNotExists(nodeId);
@@ -52,7 +53,7 @@ export class Nodes {
         return this.#nodes.has(nodeId);
     }
 
-    set(nodeId: NodeId, node: PairedNode): void {
+    set(nodeId: NodeId, node: ClientNode): void {
         this.#nodes.set(nodeId, node);
     }
 
@@ -61,6 +62,20 @@ export class Nodes {
         this.#attributeCache.delete(nodeId);
         this.#lastAvailability.delete(nodeId);
         this.#pendingEndpointAdds.delete(nodeId);
+        this.#awaitingFirstReport.delete(nodeId);
+    }
+
+    awaitFirstReport(nodeId: NodeId): void {
+        this.#awaitingFirstReport.add(nodeId);
+    }
+
+    isAwaitingFirstReport(nodeId: NodeId): boolean {
+        return this.#awaitingFirstReport.has(nodeId);
+    }
+
+    /** Ends the wait, returning whether the node was waiting. */
+    firstReportApplied(nodeId: NodeId): boolean {
+        return this.#awaitingFirstReport.delete(nodeId);
     }
 
     queueEndpointAdded(nodeId: NodeId, endpointId: EndpointNumber): void {
@@ -72,30 +87,31 @@ export class Nodes {
         queue.push(endpointId);
     }
 
-    /** Returns insertion-ordered queue; empty if nothing pending. */
+    /**
+     * Returns the queued additions in insertion order, keeping only endpoints the cached snapshot
+     * carries: an endpoint removed again before the rebuild is not in it, so announcing it would point
+     * a client at an endpoint its node model does not have.
+     */
     drainPendingEndpointAdds(nodeId: NodeId): EndpointNumber[] {
         const queue = this.#pendingEndpointAdds.get(nodeId);
         if (queue === undefined || queue.length === 0) {
             return [];
         }
         this.#pendingEndpointAdds.delete(nodeId);
-        return queue;
+        return queue.filter(endpointId => this.#attributeCache.hasEndpoint(nodeId, endpointId));
     }
 
-    seedState(nodeId: NodeId, initialState: NodeStates): void {
-        this.#lastAvailability.set(nodeId, initialState === NodeStates.Connected);
+    seedState(nodeId: NodeId, initialState: NodeConnectionState): void {
+        this.#lastAvailability.set(nodeId, this.isNodeAvailable(initialState));
     }
 
-    /** `debouncePending` = reconnect timer armed by caller; keeps non-Connected states available. */
     processStateChange(
         nodeId: NodeId,
-        newState: NodeStates,
-        debouncePending: boolean,
+        newState: NodeConnectionState,
     ): { availabilityChanged: true; available: boolean } | { availabilityChanged: false } {
-        const wasAvailable = this.#lastAvailability.get(nodeId) ?? false;
-        const available = this.isNodeAvailable(newState, debouncePending);
-
-        this.#lastAvailability.set(nodeId, available);
+        const wasAvailable = this.isAvailable(nodeId);
+        this.#lastAvailability.set(nodeId, this.isNodeAvailable(newState));
+        const available = this.isAvailable(nodeId);
 
         if (wasAvailable !== available) {
             return { availabilityChanged: true, available };
@@ -103,22 +119,20 @@ export class Nodes {
         return { availabilityChanged: false };
     }
 
-    /** Returns true if the node was previously considered available. */
-    forceUnavailable(nodeId: NodeId): boolean {
-        const wasAvailable = this.#lastAvailability.get(nodeId) ?? false;
-        this.#lastAvailability.set(nodeId, false);
-        return wasAvailable;
+    /**
+     * Reconnecting counts as available: the new connection-state engine only reports
+     * WaitingForDeviceDiscovery once a peer is known unreachable — the MRP budget was exhausted with no
+     * reply, or a registered ICD missed its check-in.
+     */
+    isNodeAvailable(currentState: NodeConnectionState): boolean {
+        return currentState === NodeConnectionState.Connected || currentState === NodeConnectionState.Reconnecting;
     }
 
-    isNodeAvailable(currentState: NodeStates, debouncePending = false): boolean {
-        if (currentState === NodeStates.Connected) {
-            return true;
-        }
-        return debouncePending;
-    }
-
-    /** Returns the cached value, not a recomputation — avoids disagreement with the event path. */
+    /**
+     * The cached connection-state availability, not a recomputation, so serialization and the event path
+     * agree. False while the node waits for its first report.
+     */
     isAvailable(nodeId: NodeId): boolean {
-        return this.#lastAvailability.get(nodeId) ?? false;
+        return (this.#lastAvailability.get(nodeId) ?? false) && !this.#awaitingFirstReport.has(nodeId);
     }
 }
