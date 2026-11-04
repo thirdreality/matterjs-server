@@ -46,7 +46,31 @@ topic 清空（`StaleTopics.ts`）。C++ 版需要同样的机制，否则每次
 同一个属性只出现在一个 endpoint 上时保持原名；多个 endpoint 都提供时，按 zigbee2mqtt 的 multiEndpoint 规则加
 `_<endpoint>` 后缀（`state_1`、`water_leak_2`），HA 实体 id 与模板同步加后缀。
 
-### 5. hub 资源极其有限（2 GB 内存，4 核 ARM）
+### 5. 多个属性读同一个 attribute 时，只有"在场"的那个能发布
+
+BooleanState 的四个属性（`contact` / `water_leak` / `rain` / `water_freeze`）读的是同一个 `69/0`。如果发布时
+只看"有没有值"，一个漏水传感器会同时发出四个属性。判断顺序必须是：先判断这个 endpoint 是否提供该属性（设备
+类型、feature、属性是否在缓存里），再读值。B1 把传感器改成表驱动时正好踩到，被已有测试拦下。
+
+### 6. 单位只在同一量纲内换算，HA 的 device_class 必须与单位匹配
+
+Matter 的浓度类 cluster 由设备在 MeasurementUnit 里自报单位（ppm、ppb、mg/m³、µg/m³、个/m³、Bq/m³）。
+- ppm↔ppb、mg/m³↔µg/m³ 可以直接换算；ppm↔µg/m³ 需要气体摩尔质量，**不要换算**，按设备单位原样发布。
+- HA 对每个 device_class 只接受特定单位（如 `carbon_dioxide` 只认 ppm）。单位对不上时**去掉 device_class**，
+  否则 HA 直接拒绝这个实体，用户什么都看不到。
+
+### 7. zigbee2mqtt 的同名属性：endpoint 优先
+
+z2m 里同一个属性名在不同设备上单位不同：电池电压 `voltage` 是 mV，电量计的 `voltage` 是 V；烟雾报警器自带
+`battery_low`，PowerSource 也有。一个设备两者都有时，endpoint 上的属性优先，设备级（PowerSource）的不再发布，
+避免同一个键被覆盖、单位来回跳。
+
+### 8. Matter 的 `null` 是"未知"，int64 可能是 bigint
+
+很多测量属性可为 null（传感器还没测到）。null 时不发布该属性，但实体照常注册。int64（电能、频率等）在缓存里
+可能是 number 也可能是 bigint，都要接受；结构体字段按 TLV tag（`"0"`）或字段名两种键读取。
+
+### 9. hub 资源极其有限（2 GB 内存，4 核 ARM）
 
 - VS Code server 及扩展常驻约 1.2 GB；TypeScript 语言服务（tsserver）单独可涨到 ~580 MB。
 - `npm run lint` 的 type-aware 检查（tsgolint）峰值约 570 MB，**曾把整机拖到 OOM 崩溃重启**。
@@ -61,7 +85,7 @@ topic 清空（`StaleTopics.ts`）。C++ 版需要同样的机制，否则每次
   - 一次只跑一条重任务，不并发。
 - 原始日志一律写到磁盘，**不要写到 `/tmp`**（tmpfs，重启即丢）。
 
-### 6. 在 hub 上跑测试的已知坑
+### 10. 在 hub 上跑测试的已知坑
 
 - 起一个 matter-server 进程约需 32 s，其中仅 import ws-controller 就约 26 s（matter.js 0.18，模块初始化开销，
   与 source map 或编译缓存无关）。超时时间按 30 s 写死的测试在 hub 上会超时。
@@ -76,6 +100,7 @@ topic 清空（`StaleTopics.ts`）。C++ 版需要同样的机制，否则每次
 | `11735ed` | Merge upstream v1.5.5（matter.js 0.18.0） |
 | `58d4cdf` | 1.5 新增配网能力接入 MQTT：`discovery_timeout_s`、错误 `reason`、`parse_onboarding_payload`、`device/share` 补全字段 |
 | `994b8cc` | 修复 P1：BooleanState 按设备类型发布为 `contact` / `water_leak` / `rain` / `water_freeze` |
+| `756c77e` | 只读传感器：气压、流量、土壤湿度、空气质量与 10 种浓度、烟雾 / CO 报警、电量计、电池详情；传感器改为表驱动（`Sensors.ts`） |
 
 ## 问题
 
@@ -102,7 +127,7 @@ z2m 在 `bridge/devices` 中为每个设备给出 `definition`（型号、厂商
 | 失败 | 判断 |
 |------|------|
 | ws-controller `WsBackpressureReproTest` 3 条超时（60 s） | 上游 1.5.3 新增的压力测试，单核跑不完 500 轮；干净的 v1.5.5 worktree 在同机复现，耗时与失败一致 |
-| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 6 条） |
+| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 10 条） |
 | matter-server `OtaUploadHandlerTest` 2 条 | root 运行 + 时序竞态 |
 | matter-server `IntegrationTest` | 未运行 |
 
@@ -132,12 +157,13 @@ bridge 自身只增加不到 1 s。
 ### 目标 2 · zigbee2mqtt 对齐（建议顺序）
 
 - [x] **B0 修复 P1**：BooleanState 按设备类型区分
-- [ ] **B1 只读传感器**
-  - [ ] 气压 `pressure`、流量 `flow`、土壤湿度 `soil_moisture`
-  - [ ] 空气质量 `air_quality`，以及 `co2`、`co`、`pm1`、`pm25`、`pm10`、`voc`、`no2`、`o3`、`formaldehyd`、`radon`
-  - [ ] 烟雾 / CO 报警 `smoke`、`carbon_monoxide`、测试 / 静音状态
-  - [ ] 电量计 `power`、`voltage`、`current`、`energy`
-  - [ ] 电源详情：`battery_low`、电池电压、市电 / 电池供电
+- [x] **B1 只读传感器**
+  - [x] 气压 `pressure`、流量 `flow`、土壤湿度 `soil_moisture`
+  - [x] 空气质量 `air_quality`，以及 `co2`、`co`、`pm1`、`pm25`、`pm10`、`voc`、`no2`、`o3`、`formaldehyd`、`radon`（及 `_level`）
+  - [x] 烟雾 / CO 报警 `smoke`、`carbon_monoxide`、`alarm_state`、测试 / 静音 / 故障 / 到期状态
+  - [x] 电量计 `power`、`voltage`、`current`、`ac_frequency`、`energy`、`produced_energy`
+  - [x] 电源详情：`battery_low`、电池电压
+  - [ ] 市电 / 电池供电类型（`power_source`）：放进 C-exposes 的 `bridge/devices`
 - [ ] **C-exposes（P3）**：`bridge/devices` 增加 `definition` 与 `exposes`，补齐已支持设备的 exposes
 - [ ] **B2 常用控制**
   - [ ] 窗帘 WindowCovering → `cover`（`state`、`position`、`tilt`）
@@ -147,6 +173,7 @@ bridge 自身只增加不到 1 s。
   - [ ] 水阀 ValveConfigurationAndControl → `valve`
   - [ ] 水泵 PumpConfigurationAndControl
   - [ ] ModeSelect → `select`
+  - [ ] 烟雾 / CO 报警的控制：自检（SelfTestRequest）、灵敏度（SmokeSensitivityLevel，可写）
 - [ ] **B3 按键与事件**：GenericSwitch、Doorbell → `action`（`single` / `double` / `hold` / `release` 等），HA event / device_trigger
 - [ ] **B4 灯与插座通用参数**：`power_on_behavior`、`effect`（identify）、`color_temp_startup`、上电亮度、`on_time` / `off_wait_time`
 - [ ] **B7 Matter 网桥（P2）**：子设备拆成独立 z2m 设备
@@ -180,7 +207,7 @@ bridge 自身只增加不到 1 s。
 | 插座 / 墙装 | OnOffPlugInUnit、DimmablePlugInUnit、MountedOnOffControl、MountedDimmableLoadControl | 已支持（缺 B4 参数） |
 | 传感器 | OccupancySensor、LightSensor、TemperatureSensor、HumiditySensor、ContactSensor | 已支持 |
 | 传感器 | WaterLeakDetector、RainSensor、WaterFreezeDetector | 已支持（B0 修复） |
-| 传感器 | PressureSensor、FlowSensor、SoilSensor、AirQualitySensor、SmokeCoAlarm、ElectricalMeter | B1 |
+| 传感器 | PressureSensor、FlowSensor、SoilSensor、AirQualitySensor、SmokeCoAlarm、ElectricalMeter | 已支持（B1） |
 | 控制 | WindowCovering、DoorLock、Thermostat、RoomAirConditioner、Fan、AirPurifier、ExtractorHood、WaterValve、Pump、ModeSelect | B2 |
 | 按键 / 事件 | GenericSwitch、Doorbell、Chime | B3 |
 | 网桥 | Aggregator（及 BridgedNode） | B7 |
