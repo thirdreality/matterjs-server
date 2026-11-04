@@ -173,7 +173,13 @@ node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_
 | `illuminance` | IlluminanceMeasurement `1024/0` | lux，`10^((raw-1)/10000)` 取整；raw ≤ 0 时省略 |
 | `temperature` | TemperatureMeasurement `1026/0` | °C，`raw/100` 保留 2 位小数 |
 | `humidity` | RelativeHumidityMeasurement `1029/0` | %，`raw/100` 保留 2 位小数 |
-| `contact` | BooleanState `69/0` | `true` = 闭合，`false` = 打开（zigbee2mqtt 语义） |
+| `contact` | ContactSensor（`0x0015`）上的 BooleanState `69/0` | `true` = 闭合，`false` = 打开（zigbee2mqtt 语义） |
+| `water_leak` | WaterLeakDetector（`0x0043`）上的 BooleanState `69/0` | `true` = 检测到漏水 |
+| `rain` | RainSensor（`0x0044`）上的 BooleanState `69/0` | `true` = 检测到下雨 |
+| `water_freeze` | WaterFreezeDetector（`0x0041`）上的 BooleanState `69/0` | `true` = 检测到冰冻 |
+
+BooleanState 本身不带语义：发布成哪个属性，由该 endpoint 的 Descriptor DeviceTypeList（`29/0`）里的设备类型决定。
+有 BooleanState 但不属于上述任何设备类型的 endpoint，回落为 `contact`。
 | `battery` | PowerSource `47/12` | %，`raw/2`（BatPercentRemaining 以 0.5% 为单位）。设备级：取第一个 PowerSource |
 | `update` | OtaSoftwareUpdateRequestor `42/{2,3}` + BasicInformation `40/{9,10}` | 固件更新状态对象，设备级 —— 见[固件更新](#固件更新) |
 
@@ -571,7 +577,9 @@ broker 随即回放的 retained topic 会与刚刚发布的内容比对，多出
 | OnOff + LevelControl | `light`，JSON schema，`brightness_scale: 254`，`supported_color_modes` 由 ColorControl feature map 推导（`hs`、`xy`、`color_temp`），`min_mireds`/`max_mireds` 取设备上报值 |
 | 仅 OnOff | `switch`（载荷 `{"state":"ON"}` / `{"state":"OFF"}`） |
 | OccupancySensing | `binary_sensor`，device class `motion` |
-| BooleanState | `binary_sensor`，device class `door`，取反（`contact: false` = 打开 = `on`） |
+| BooleanState（ContactSensor） | `binary_sensor`，device class `door`，取反（`contact: false` = 打开 = `on`） |
+| BooleanState（WaterLeakDetector / RainSensor） | `binary_sensor`，device class `moisture`，不取反 |
+| BooleanState（WaterFreezeDetector） | `binary_sensor`，device class `cold`，不取反 |
 | IlluminanceMeasurement | `sensor`，`lx`，measurement |
 | TemperatureMeasurement | `sensor`，`°C`，measurement |
 | RelativeHumidityMeasurement | `sensor`，`%`，measurement |

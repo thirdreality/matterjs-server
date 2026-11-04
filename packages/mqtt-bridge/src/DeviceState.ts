@@ -7,6 +7,7 @@
 import type { AttributesData } from "@matter-server/ws-controller";
 import {
     BooleanState,
+    Descriptor,
     IlluminanceMeasurement,
     OccupancySensing,
     PowerSource,
@@ -23,6 +24,20 @@ const TEMPERATURE_CLUSTER_ID = TemperatureMeasurement.Cluster.id;
 const HUMIDITY_CLUSTER_ID = RelativeHumidityMeasurement.Cluster.id;
 const POWER_SOURCE_CLUSTER_ID = PowerSource.Cluster.id;
 const BOOLEAN_STATE_CLUSTER_ID = BooleanState.Cluster.id;
+const DESCRIPTOR_CLUSTER_ID = Descriptor.Cluster.id;
+
+/**
+ * BooleanState means something different per device type, and contact sensors invert it in Home
+ * Assistant; only the endpoint's Descriptor DeviceTypeList tells them apart.
+ */
+const BOOLEAN_STATE_PROPERTY_BY_DEVICE_TYPE: ReadonlyMap<number, BooleanStateProperty> = new Map([
+    [0x0015, "contact"], // ContactSensor
+    [0x0043, "water_leak"], // WaterLeakDetector
+    [0x0044, "rain"], // RainSensor
+    [0x0041, "water_freeze"], // WaterFreezeDetector
+]);
+
+export type BooleanStateProperty = "contact" | "water_leak" | "rain" | "water_freeze";
 
 /**
  * Device-level state attributes: they contribute a property to the whole device rather than to one
@@ -96,17 +111,42 @@ export interface SensorPresence {
     temperature: boolean;
     humidity: boolean;
     contact: boolean;
+    water_leak: boolean;
+    rain: boolean;
+    water_freeze: boolean;
 }
 
 export function sensorPresenceOf(attributes: AttributesData, endpoint: number): SensorPresence {
     const has = (cluster: number) => attributes[`${endpoint}/${cluster}/0`] !== undefined;
+    const booleanState = has(BOOLEAN_STATE_CLUSTER_ID) ? booleanStatePropertyOf(attributes, endpoint) : undefined;
     return {
         occupancy: has(OCCUPANCY_CLUSTER_ID),
         illuminance: has(ILLUMINANCE_CLUSTER_ID),
         temperature: has(TEMPERATURE_CLUSTER_ID),
         humidity: has(HUMIDITY_CLUSTER_ID),
-        contact: has(BOOLEAN_STATE_CLUSTER_ID),
+        contact: booleanState === "contact",
+        water_leak: booleanState === "water_leak",
+        rain: booleanState === "rain",
+        water_freeze: booleanState === "water_freeze",
     };
+}
+
+/** The property an endpoint's BooleanState is published as; `contact` when no known device type names it. */
+export function booleanStatePropertyOf(attributes: AttributesData, endpoint: number): BooleanStateProperty {
+    const deviceTypes = attributes[`${endpoint}/${DESCRIPTOR_CLUSTER_ID}/0`];
+    if (Array.isArray(deviceTypes)) {
+        for (const entry of deviceTypes) {
+            if (typeof entry !== "object" || entry === null) {
+                continue;
+            }
+            const { "0": tagged, deviceType } = entry as Record<string, unknown>;
+            const property = BOOLEAN_STATE_PROPERTY_BY_DEVICE_TYPE.get(Number(tagged ?? deviceType));
+            if (property !== undefined) {
+                return property;
+            }
+        }
+    }
+    return "contact";
 }
 
 /**
@@ -317,9 +357,9 @@ export function endpointStateOf(
         state.humidity = round(humidity / 100, 2);
     }
 
-    const contact = attributes[`${endpoint}/${BOOLEAN_STATE_CLUSTER_ID}/0`];
-    if (typeof contact === "boolean") {
-        state.contact = contact;
+    const booleanState = attributes[`${endpoint}/${BOOLEAN_STATE_CLUSTER_ID}/0`];
+    if (typeof booleanState === "boolean") {
+        state[booleanStatePropertyOf(attributes, endpoint)] = booleanState;
     }
 
     return state;

@@ -316,6 +316,26 @@ export function discoveryMessagesOf(
                 payload_off: true,
             });
         }
+        const alarms = [
+            { present: sensors.water_leak, base: "water_leak", name: "Water leak", deviceClass: "moisture" },
+            { present: sensors.rain, base: "rain", name: "Rain", deviceClass: "moisture" },
+            { present: sensors.water_freeze, base: "water_freeze", name: "Water freeze", deviceClass: "cold" },
+        ];
+        for (const { present, base, name, deviceClass } of alarms) {
+            if (!present) {
+                continue;
+            }
+            const key = nameOf(endpoint, base);
+            add("binary_sensor", objectId(base), {
+                ...common,
+                name: entityName(name),
+                unique_id: `${uidBase}_${base}_${endpoint}`,
+                device_class: deviceClass,
+                value_template: `{{ value_json.${key} }}`,
+                payload_on: true,
+                payload_off: false,
+            });
+        }
         if (sensors.illuminance) {
             const key = nameOf(endpoint, "illuminance");
             add("sensor", objectId("illuminance"), {

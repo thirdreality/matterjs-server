@@ -182,6 +182,52 @@ describe("Discovery", () => {
         expect(first.command_topic).to.equal("matter2mqtt/5/1/set");
     });
 
+    it("announces a contact sensor as a door, inverted", () => {
+        const attributes = { "1/29/0": [{ "0": 0x0015, "1": 2 }], "1/69/0": true };
+        const messages = messagesFor(attributes, [1], "6");
+        expect(messages.map(m => m.topic)).to.deep.equal(["homeassistant/binary_sensor/matter2mqtt_6/contact/config"]);
+        const config = JSON.parse(messages[0].payload);
+        expect(config.device_class).to.equal("door");
+        expect(config.payload_on).to.equal(false);
+    });
+
+    it("announces a water leak detector as moisture, not as a door", () => {
+        const attributes = { "1/29/0": [{ "0": 0x0043, "1": 1 }], "1/69/0": true };
+        const messages = messagesFor(attributes, [1], "6");
+        expect(messages.map(m => m.topic)).to.deep.equal([
+            "homeassistant/binary_sensor/matter2mqtt_6/water_leak/config",
+        ]);
+        const config = JSON.parse(messages[0].payload);
+        expect(config.device_class).to.equal("moisture");
+        expect(config.value_template).to.equal("{{ value_json.water_leak }}");
+        expect(config.payload_on).to.equal(true);
+        expect(config.payload_off).to.equal(false);
+        expect(config.unique_id).to.equal("matter2mqtt_6_water_leak_1");
+    });
+
+    it("announces rain and water freeze detectors with their own classes", () => {
+        const rain = { "1/29/0": [{ "0": 0x0044, "1": 1 }], "1/69/0": false };
+        const rainConfig = JSON.parse(messagesFor(rain, [1], "6")[0].payload);
+        expect(rainConfig.device_class).to.equal("moisture");
+        expect(rainConfig.value_template).to.equal("{{ value_json.rain }}");
+        const freeze = { "1/29/0": [{ "0": 0x0041, "1": 1 }], "1/69/0": false };
+        const freezeConfig = JSON.parse(messagesFor(freeze, [1], "6")[0].payload);
+        expect(freezeConfig.device_class).to.equal("cold");
+        expect(freezeConfig.value_template).to.equal("{{ value_json.water_freeze }}");
+        expect(freezeConfig.payload_on).to.equal(true);
+    });
+
+    it("suffixes the same alarm on several endpoints", () => {
+        const leak = [{ "0": 0x0043, "1": 1 }];
+        const attributes = { "1/29/0": leak, "1/69/0": false, "2/29/0": leak, "2/69/0": true };
+        const messages = messagesFor(attributes, [1, 2], "6");
+        expect(messages.map(m => m.topic)).to.deep.equal([
+            "homeassistant/binary_sensor/matter2mqtt_6/water_leak_1/config",
+            "homeassistant/binary_sensor/matter2mqtt_6/water_leak_2/config",
+        ]);
+        expect(JSON.parse(messages[1].payload).value_template).to.equal("{{ value_json.water_leak_2 }}");
+    });
+
     it("adds a device-level battery sensor from PowerSource", () => {
         const attributes = { "1/6/0": true, "0/47/12": 187 };
         const messages = messagesFor(attributes, [1], "3");

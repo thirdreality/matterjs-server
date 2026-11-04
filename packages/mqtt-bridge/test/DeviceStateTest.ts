@@ -143,6 +143,42 @@ describe("DeviceState", () => {
                 contact: true,
             });
         });
+
+        it("names BooleanState after the endpoint's device type", () => {
+            const cases: [Record<string, number>, string][] = [
+                [{ "0": 0x0015, "1": 2 }, "contact"],
+                [{ "0": 0x0043, "1": 1 }, "water_leak"],
+                [{ "0": 0x0044, "1": 1 }, "rain"],
+                [{ "0": 0x0041, "1": 1 }, "water_freeze"],
+                [{ deviceType: 0x0043, revision: 1 }, "water_leak"],
+            ];
+            for (const [deviceType, property] of cases) {
+                const attributes = { "1/29/0": [deviceType], "1/69/0": true };
+                expect(endpointStateOf(attributes, 1, lightCapabilitiesOf(attributes, 1))).to.deep.equal({
+                    [property]: true,
+                });
+            }
+        });
+
+        it("finds the BooleanState device type among several on the endpoint", () => {
+            const attributes = {
+                "1/29/0": [
+                    { "0": 0x0302, "1": 2 },
+                    { "0": 0x0043, "1": 1 },
+                ],
+                "1/69/0": false,
+            };
+            expect(endpointStateOf(attributes, 1, lightCapabilitiesOf(attributes, 1))).to.deep.equal({
+                water_leak: false,
+            });
+        });
+
+        it("falls back to contact without a known device type", () => {
+            const attributes = { "1/29/0": [{ "0": 0x0302, "1": 2 }], "1/69/0": true };
+            expect(endpointStateOf(attributes, 1, lightCapabilitiesOf(attributes, 1))).to.deep.equal({
+                contact: true,
+            });
+        });
     });
 
     describe("deviceStateOf", () => {

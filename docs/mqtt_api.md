@@ -181,7 +181,14 @@ built from the controller's attribute cache, so it is available without an extra
 | `illuminance` | IlluminanceMeasurement `1024/0` | Lux, `10^((raw-1)/10000)` rounded; omitted when raw ≤ 0 |
 | `temperature` | TemperatureMeasurement `1026/0` | °C, `raw/100` rounded to 2 decimals |
 | `humidity` | RelativeHumidityMeasurement `1029/0` | %, `raw/100` rounded to 2 decimals |
-| `contact` | BooleanState `69/0` | `true` = closed, `false` = open (zigbee2mqtt semantics) |
+| `contact` | BooleanState `69/0` on a ContactSensor (`0x0015`) | `true` = closed, `false` = open (zigbee2mqtt semantics) |
+| `water_leak` | BooleanState `69/0` on a WaterLeakDetector (`0x0043`) | `true` = leak detected |
+| `rain` | BooleanState `69/0` on a RainSensor (`0x0044`) | `true` = rain detected |
+| `water_freeze` | BooleanState `69/0` on a WaterFreezeDetector (`0x0041`) | `true` = freezing detected |
+
+BooleanState carries no meaning of its own: the device type in the endpoint's Descriptor DeviceTypeList
+(`29/0`) decides which property it is published as. An endpoint with BooleanState but none of these device
+types falls back to `contact`.
 | `battery` | PowerSource `47/12` | %, `raw/2` (BatPercentRemaining is in half percent). Device-level: the first PowerSource occurrence wins |
 | `update` | OtaSoftwareUpdateRequestor `42/{2,3}` + BasicInformation `40/{9,10}` | Firmware update state object, device-level — see [Firmware Updates](#firmware-updates) |
 
@@ -632,7 +639,9 @@ BasicInformation carries no product name.
 | OnOff + LevelControl | `light`, JSON schema, `brightness_scale: 254`, `supported_color_modes` from the ColorControl feature map (`hs`, `xy`, `color_temp`), `min_mireds`/`max_mireds` from the device |
 | OnOff only | `switch` (`{"state":"ON"}` / `{"state":"OFF"}` payloads) |
 | OccupancySensing | `binary_sensor`, device class `motion` |
-| BooleanState | `binary_sensor`, device class `door`, inverted (`contact: false` = open = `on`) |
+| BooleanState (ContactSensor) | `binary_sensor`, device class `door`, inverted (`contact: false` = open = `on`) |
+| BooleanState (WaterLeakDetector / RainSensor) | `binary_sensor`, device class `moisture`, not inverted |
+| BooleanState (WaterFreezeDetector) | `binary_sensor`, device class `cold`, not inverted |
 | IlluminanceMeasurement | `sensor`, `lx`, measurement |
 | TemperatureMeasurement | `sensor`, `°C`, measurement |
 | RelativeHumidityMeasurement | `sensor`, `%`, measurement |
