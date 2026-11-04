@@ -24,6 +24,7 @@ matter-server --mqtt-url mqtt://user:password@localhost:1883 --mqtt-prefix matte
 | `--mqtt-url <url>` | `MQTT_URL` | *(unset — bridge disabled)* | Broker URL. Supported schemes: `mqtt:`, `mqtts:`, `ws:`, `wss:`. Credentials may be embedded in the URL |
 | `--mqtt-prefix <prefix>` | `MQTT_PREFIX` | `matter2mqtt` | Topic prefix for all bridge topics |
 | `--mqtt-client-id <id>` | `MQTT_CLIENT_ID` | `matter2mqtt` | MQTT client id |
+| `--mqtt-last-seen` | `MQTT_LAST_SEEN` | off | Add `last_seen` to every device state, see [last_seen](#last_seen) |
 
 The prefix may contain slashes (`home/matter`) but must not be empty, start or end with `/`, or contain
 `+`, `#` or whitespace. An invalid prefix or an unsupported URL scheme fails bridge construction at startup.
@@ -60,6 +61,7 @@ decimal string — or `<node id>_<endpoint>` for a device behind a Matter bridge
 | `<prefix>/bridge/state` | publish (LWT) | yes | `{"state":"online"}` / `{"state":"offline"}` |
 | `<prefix>/bridge/info` | publish | yes | Server version, BLE flags, prefix |
 | `<prefix>/bridge/devices` | publish | yes | JSON array of known devices |
+| `<prefix>/bridge/event` | publish | no | Device joined / interviewed / left, see [bridge/event](#bridgeevent) |
 | `<prefix>/bridge/commission_status` | publish | yes | Human-readable commissioning progress |
 | `<prefix>/bridge/commission_code` | publish | yes | State of the HA commission-code input (cleared after each request) |
 | `<prefix>/bridge/commission_mode` | publish | yes | Selected commission mode |
@@ -113,6 +115,18 @@ Bridge connectivity, also registered as the MQTT last will (retained, QoS 1):
   "prefix": "matter2mqtt"
 }
 ```
+
+### bridge/event
+
+zigbee2mqtt-style lifecycle events, not retained, as `{"type": …, "data": {…}}`:
+
+| `type` | When | `data` |
+|--------|------|--------|
+| `device_joined` | A node was commissioned, or a Matter bridge added a device | `friendly_name`, `id` (the `<node>` segment) |
+| `device_interview` | Right after `device_joined` (commissioning interviews the device), and around a `device/interview` request | `friendly_name`, `id`, `status` (`started`, `successful`, `failed`); on success also `supported` and `definition` as in `bridge/devices` |
+| `device_leave` | A node was removed, or a Matter bridge dropped a device | `friendly_name`, `id` |
+
+Devices already known when the bridge starts or reconnects are not announced again.
 
 ### bridge/devices
 
@@ -296,6 +310,7 @@ built from the controller's attribute cache, so it is available without an extra
 | `battery_low` | PowerSource `47/14` | `true` while BatChargeLevel is not OK. Device-level |
 | `voltage` | PowerSource `47/11` | mV, battery voltage (zigbee2mqtt's unit). Device-level |
 | `update` | OtaSoftwareUpdateRequestor `42/{2,3}` + BasicInformation `40/{9,10}` | Firmware update state object, device-level — see [Firmware Updates](#firmware-updates) |
+| `last_seen` | — | ISO 8601 time the device last reported an attribute or event; only with `--mqtt-last-seen`, see [last_seen](#last_seen) |
 
 BooleanState carries no meaning of its own: the device type in the endpoint's Descriptor DeviceTypeList
 (`29/0`) decides which property it is published as. An endpoint with BooleanState but none of these device
@@ -403,6 +418,14 @@ availability, `/set`, `/get` and actions, and its own Home Assistant device.
 
 In `bridge/devices` a bridged device has `bridge_id` (the bridge's `<node>`) and `endpoint`, and
 `is_bridge: false`; its Home Assistant device names the bridge as `via_device`.
+
+### last_seen
+
+With `--mqtt-last-seen` every device state carries `last_seen`, the ISO 8601 time the device last reported
+anything — an attribute report or an event, for a bridged device its own endpoints only — and Home Assistant
+gets a `last_seen` timestamp sensor, diagnostic and disabled by default. It is off by default, as in
+zigbee2mqtt. A Matter subscription only reports changes, so a device whose values do not change is not
+stamped by its keep-alives.
 
 ### Firmware updates
 
@@ -734,6 +757,7 @@ numbers). For every other command a payload that is not a JSON object is rejecte
 | `wifi_password` | `{"password": "…"}` | `{"ssid": "…"}` or `{"pending": "ssid"}` |
 | `thread_dataset` | `{"dataset": "<hex TLV>"}` | `{}` |
 | `restart` | `{}` | `{}` |
+| `health_check` | `{}` | `{"healthy": true, "process": {"uptime_sec": …, "memory_usage_mb": …}, "os": {"load_average": […], "memory_percent": …}, "devices": {"count": …}}` |
 | `device/remove` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/interview` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/rename` | `{"id": <node id>, "name": "…"}` | `{"id": <node id>, "name": "…"}` |

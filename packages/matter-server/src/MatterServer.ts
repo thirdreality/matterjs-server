@@ -264,6 +264,7 @@ async function start() {
                 url: cliOptions.mqttUrl,
                 prefix: cliOptions.mqttPrefix,
                 clientId: cliOptions.mqttClientId,
+                lastSeen: cliOptions.mqttLastSeen,
                 serverVersion: MATTER_SERVER_VERSION,
             },
             { config, controller },

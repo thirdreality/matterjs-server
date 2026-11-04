@@ -100,6 +100,7 @@ export interface CliOptions {
     mqttUrl: string | null;
     mqttPrefix: string;
     mqttClientId: string;
+    mqttLastSeen: boolean;
 }
 
 function parseIntOption(value: string): number {
@@ -422,6 +423,16 @@ export function parseCliArgs(argv?: string[]): CliOptions {
                 .default("matter2mqtt")
                 .env("MQTT_CLIENT_ID"),
         )
+        .addOption(
+            new Option(
+                "--mqtt-last-seen [value]",
+                "Add a last_seen timestamp to every MQTT device state (off by default, as in zigbee2mqtt)",
+            )
+                .argParser(parseBooleanEnv)
+                .preset(true)
+                .default(false)
+                .env("MQTT_LAST_SEEN"),
+        )
         // Deprecated options - still accepted for backwards compatibility
         .addOption(
             new Option("--log-level-sdk <level>", "Matter SDK logging level (deprecated, no longer used)")
@@ -518,6 +529,7 @@ export function parseCliArgs(argv?: string[]): CliOptions {
         mqttUrl: opts.mqttUrl ?? null,
         mqttPrefix: opts.mqttPrefix,
         mqttClientId: opts.mqttClientId,
+        mqttLastSeen: opts.mqttLastSeen,
     };
 }
 

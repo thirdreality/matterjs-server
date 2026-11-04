@@ -36,6 +36,7 @@ function mockContext() {
     const ctx = {
         commandHandler: {
             bleEnabled: true,
+            getNodeIds: () => [1n, 2n],
             isNodeIdInUse: () => false,
             commissionNode: record("commissionNode", { nodeId: 12n }),
             removeNode: record("removeNode"),
@@ -338,6 +339,16 @@ describe("BridgeCommands", () => {
         const response = await executeBridgeCommand("parse_onboarding_payload", "12345", ctx);
         expect(response.status).to.equal("error");
         expect(response.reason).to.equal("invalid-payload");
+    });
+
+    it("answers a health check", async () => {
+        const { ctx } = mockContext();
+        const response = await executeBridgeCommand("health_check", "{}", ctx);
+        expect(response.status).to.equal("ok");
+        const data = response.data as { healthy: boolean; process: { uptime_sec: number }; devices: { count: number } };
+        expect(data.healthy).to.equal(true);
+        expect(data.process.uptime_sec).to.be.a("number");
+        expect(data.devices.count).to.equal(2);
     });
 
     it("wraps handler failures as error responses", async () => {

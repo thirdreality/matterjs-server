@@ -73,7 +73,7 @@ interface Published {
     retain: boolean;
 }
 
-function harness(initial: Record<string, unknown>) {
+function harness(initial: Record<string, unknown>, options: { lastSeen?: boolean; withCommands?: boolean } = {}) {
     let attributes = { ...initial };
     const published: Published[] = [];
     const invoked: unknown[] = [];
@@ -113,15 +113,31 @@ function harness(initial: Record<string, unknown>) {
             invoked.push(request);
             return Promise.resolve();
         },
+        interviewNode: () => Promise.resolve(),
     } as unknown as ControllerCommandHandler;
-    const bridge = new MqttBridge(commandHandler, { url: "mqtt://test", connection });
+    const commandContext = options.withCommands
+        ? {
+              config: { getWifiCredentials: () => undefined, getThreadCredentials: () => undefined },
+              controller: {},
+          }
+        : undefined;
+    const bridge = new MqttBridge(
+        commandHandler,
+        { url: "mqtt://test", connection, lastSeen: options.lastSeen },
+        commandContext as never,
+    );
     const last = (topic: string) => published.filter(p => p.topic === topic).at(-1)?.payload;
+    const bridgeEvents = () =>
+        published
+            .filter(p => p.topic === "matter2mqtt/bridge/event")
+            .map(p => JSON.parse(p.payload) as Record<string, unknown>);
     return {
         bridge,
         events,
         published,
         invoked,
         last,
+        bridgeEvents,
         send: (topic: string, payload: string) => onMessage(topic, payload),
         setAttributes: (next: Record<string, unknown>) => {
             attributes = next;
@@ -212,5 +228,88 @@ describe("MqttBridge with a Matter bridge", () => {
         const devices = JSON.parse(h.last("matter2mqtt/bridge/devices") ?? "[]") as { id: string }[];
         expect(devices.map(d => d.id)).to.deep.equal(["12", "12_3", "12_4"]);
         await h.bridge.stop();
+    });
+
+    describe("bridge/event", () => {
+        it("announces nothing for the devices already there at start", async () => {
+            const h = harness(BRIDGE);
+            await h.bridge.start();
+            expect(h.bridgeEvents()).to.deep.equal([]);
+            await h.bridge.stop();
+        });
+
+        it("announces a device the bridge adds, with its definition", async () => {
+            const h = harness(BRIDGE);
+            await h.bridge.start();
+            h.setAttributes({ ...BRIDGE, "8/57/5": "Porch light", "8/57/17": true, "8/6/0": false });
+            h.events.nodeStructureChanged.emit(NodeId(12));
+            const events = h.bridgeEvents();
+            expect(events.map(e => e.type)).to.deep.equal(["device_joined", "device_interview"]);
+            expect(events[0].data).to.deep.equal({ friendly_name: "12_8", id: "12_8" });
+            expect(events[1].data).to.deep.include({ friendly_name: "12_8", status: "successful", supported: true });
+            expect((events[1].data as { definition: { exposes: unknown[] } }).definition.exposes).to.have.length(1);
+            await h.bridge.stop();
+        });
+
+        it("announces devices that leave", async () => {
+            const h = harness(BRIDGE);
+            await h.bridge.start();
+            h.setAttributes(Object.fromEntries(Object.entries(BRIDGE).filter(([path]) => !path.startsWith("7/"))));
+            h.events.nodeStructureChanged.emit(NodeId(12));
+            h.events.nodeDecommissioned.emit(NodeId(12));
+            expect(h.bridgeEvents().map(e => [e.type, (e.data as { id: string }).id])).to.deep.equal([
+                ["device_leave", "12_7"],
+                ["device_leave", "12"],
+                ["device_leave", "12_3"],
+                ["device_leave", "12_4"],
+            ]);
+            await h.bridge.stop();
+        });
+
+        it("reports an interview requested over MQTT", async () => {
+            const h = harness(BRIDGE, { withCommands: true });
+            await h.bridge.start();
+            h.send("matter2mqtt/bridge/request/device/interview", '{"id":12}');
+            await new Promise(resolve => setImmediate(resolve));
+            expect(h.bridgeEvents().map(e => (e.data as { status: string }).status)).to.deep.equal([
+                "started",
+                "successful",
+            ]);
+            await h.bridge.stop();
+        });
+    });
+
+    describe("last_seen", () => {
+        it("is off by default", async () => {
+            const h = harness(BRIDGE);
+            await h.bridge.start();
+            h.events.attributeChanged.emit(NodeId(12), {
+                path: { endpointId: 3, clusterId: 6, attributeId: 0 },
+                value: true,
+            });
+            expect(JSON.parse(h.last("matter2mqtt/12_3") ?? "{}").last_seen).to.equal(undefined);
+            expect(h.last("homeassistant/sensor/matter2mqtt_12_3/last_seen/config")).to.equal(undefined);
+            await h.bridge.stop();
+        });
+
+        it("stamps the device that reported, when enabled", async () => {
+            const h = harness(BRIDGE, { lastSeen: true });
+            await h.bridge.start();
+            const before = Date.now();
+            h.events.attributeChanged.emit(NodeId(12), {
+                path: { endpointId: 3, clusterId: 6, attributeId: 0 },
+                value: true,
+            });
+            const seen = Date.parse(JSON.parse(h.last("matter2mqtt/12_3") ?? "{}").last_seen);
+            expect(seen).to.be.at.least(before - 1000);
+            expect(JSON.parse(h.last("matter2mqtt/12_4") ?? "{}").last_seen).to.equal(undefined);
+            const sensor = JSON.parse(h.last("homeassistant/sensor/matter2mqtt_12_3/last_seen/config") ?? "{}");
+            expect(sensor).to.include({
+                device_class: "timestamp",
+                enabled_by_default: false,
+                entity_category: "diagnostic",
+            });
+            await h.bridge.stop();
+        });
     });
 });

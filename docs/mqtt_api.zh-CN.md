@@ -21,6 +21,7 @@ matter-server --mqtt-url mqtt://user:password@localhost:1883 --mqtt-prefix matte
 | `--mqtt-url <url>` | `MQTT_URL` | *（未设置 —— 桥不启动）* | Broker 地址。支持的协议：`mqtt:`、`mqtts:`、`ws:`、`wss:`。凭据可直接写在 URL 里 |
 | `--mqtt-prefix <prefix>` | `MQTT_PREFIX` | `matter2mqtt` | 所有桥 topic 的前缀 |
 | `--mqtt-client-id <id>` | `MQTT_CLIENT_ID` | `matter2mqtt` | MQTT client id |
+| `--mqtt-last-seen` | `MQTT_LAST_SEEN` | 关闭 | 在每个设备状态里加 `last_seen`，见 [last_seen](#last_seen) |
 
 前缀可以包含斜杠（如 `home/matter`），但不能为空、不能以 `/` 开头或结尾、不能包含 `+`、`#` 或空白字符。前缀非法或
 URL 协议不支持时，桥在启动阶段直接构造失败。
@@ -54,6 +55,7 @@ URL 协议不支持时，桥在启动阶段直接构造失败。
 | `<prefix>/bridge/state` | 发布（LWT） | 是 | `{"state":"online"}` / `{"state":"offline"}` |
 | `<prefix>/bridge/info` | 发布 | 是 | server 版本、BLE 开关、前缀 |
 | `<prefix>/bridge/devices` | 发布 | 是 | 已知设备的 JSON 数组 |
+| `<prefix>/bridge/event` | 发布 | 否 | 设备加入 / interview / 离开，见 [bridge/event](#bridgeevent) |
 | `<prefix>/bridge/commission_status` | 发布 | 是 | 人类可读的配网进度 |
 | `<prefix>/bridge/commission_code` | 发布 | 是 | HA 配网码输入框的状态（每次请求后清空） |
 | `<prefix>/bridge/commission_mode` | 发布 | 是 | 当前选择的配网模式 |
@@ -106,6 +108,18 @@ Home Assistant discovery 发布在独立且固定的 `homeassistant/` 前缀下�
   "prefix": "matter2mqtt"
 }
 ```
+
+### bridge/event
+
+zigbee2mqtt 风格的设备生命周期事件，非 retained，格式为 `{"type": …, "data": {…}}`：
+
+| `type` | 触发时机 | `data` |
+|--------|----------|--------|
+| `device_joined` | 节点配网完成，或 Matter 网桥新增了一个设备 | `friendly_name`、`id`（即 `<node>` 段） |
+| `device_interview` | 紧随 `device_joined`（配网本身就完成了 interview），以及 `device/interview` 请求的前后 | `friendly_name`、`id`、`status`（`started`、`successful`、`failed`）；成功时另带与 `bridge/devices` 相同的 `supported` 与 `definition` |
+| `device_leave` | 节点被删除，或 Matter 网桥移除了一个设备 | `friendly_name`、`id` |
+
+bridge 启动或重连时已知的设备不会再次发事件。
 
 ### bridge/devices
 
@@ -285,6 +299,7 @@ node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_
 | `battery_low` | PowerSource `47/14` | BatChargeLevel 非 OK 时为 `true`。设备级 |
 | `voltage` | PowerSource `47/11` | mV，电池电压（zigbee2mqtt 的单位）。设备级 |
 | `update` | OtaSoftwareUpdateRequestor `42/{2,3}` + BasicInformation `40/{9,10}` | 固件更新状态对象，设备级 —— 见[固件更新](#固件更新) |
+| `last_seen` | — | 设备最后一次上报属性或事件的 ISO 8601 时间；仅在 `--mqtt-last-seen` 时发布，见 [last_seen](#last_seen) |
 
 BooleanState 本身不带语义：发布成哪个属性，由该 endpoint 的 Descriptor DeviceTypeList（`29/0`）里的设备类型决定。
 有 BooleanState 但不属于上述任何设备类型的 endpoint，回落为 `contact`。
@@ -375,6 +390,12 @@ Matter 网桥（Aggregator 设备类型），例如 Zigbee 转 Matter 网桥，�
 
 在 `bridge/devices` 中，网桥子设备带有 `bridge_id`（网桥的 `<node>`）与 `endpoint`，且 `is_bridge: false`；
 它的 Home Assistant 设备以网桥作为 `via_device`。
+### last_seen
+
+开启 `--mqtt-last-seen` 后，每个设备状态带 `last_seen`，即设备最后一次上报任何内容（属性上报或事件；网桥子设备只看它
+自己的 endpoint）的 ISO 8601 时间，Home Assistant 另有一个 `last_seen` 时间戳 sensor（diagnostic 分类，默认禁用）。
+与 zigbee2mqtt 一样默认关闭。Matter 订阅只上报变化，值不变的设备不会因保活报文而刷新时间。
+
 ### 固件更新
 
 暴露 OTA Requestor cluster 的节点（存在 `0/42/2`）会带一个设备级的 `update` 属性，形状对齐 zigbee2mqtt：
@@ -680,6 +701,7 @@ zigbee2mqtt 的 `position`、`tilt` 从关（0）数到开（100）；Matter 从
 | `wifi_password` | `{"password": "…"}` | `{"ssid": "…"}` 或 `{"pending": "ssid"}` |
 | `thread_dataset` | `{"dataset": "<hex TLV>"}` | `{}` |
 | `restart` | `{}` | `{}` |
+| `health_check` | `{}` | `{"healthy": true, "process": {"uptime_sec": …, "memory_usage_mb": …}, "os": {"load_average": […], "memory_percent": …}, "devices": {"count": …}}` |
 | `device/remove` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/interview` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/rename` | `{"id": <node id>, "name": "…"}` | `{"id": <node id>, "name": "…"}` |

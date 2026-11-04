@@ -14,6 +14,7 @@ import {
 } from "@matter-server/ws-controller";
 import { Logger, MatterError, NodeId, Seconds, type Duration } from "@matter/main";
 import { AttributeId, ClusterId, EndpointNumber } from "@matter/main/types";
+import { freemem, loadavg, totalmem } from "node:os";
 import type { OtaTracker } from "./OtaState.js";
 
 const logger = Logger.get("BridgeCommands");
@@ -202,6 +203,26 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
         }
         const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
         throw new Error(`could not find a free node id after ${MAX_COMMISSION_NODE_ID_ATTEMPTS} attempts${reason}`);
+    },
+
+    /**
+     * zigbee2mqtt `health_check`: answering at all means the bridge and its broker connection work; the
+     * data adds what zigbee2mqtt reports about the process and the devices.
+     */
+    health_check: async (_args, { commandHandler }) => {
+        const memory = process.memoryUsage();
+        return {
+            healthy: true,
+            process: {
+                uptime_sec: Math.round(process.uptime()),
+                memory_usage_mb: Math.round((memory.rss / 1024 / 1024) * 100) / 100,
+            },
+            os: {
+                load_average: loadavg(),
+                memory_percent: Math.round((1 - freemem() / totalmem()) * 10000) / 100,
+            },
+            devices: { count: commandHandler.getNodeIds().length },
+        };
     },
 
     /** Restart the server process; systemd's Restart policy brings it back up. */

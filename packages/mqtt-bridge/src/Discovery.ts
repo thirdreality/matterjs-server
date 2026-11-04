@@ -26,6 +26,8 @@ export interface DiscoveryDeviceInfo {
     name?: string;
     /** Home Assistant identifier of the device this one is reached through (its Matter bridge). */
     viaDevice?: string;
+    /** The state carries `last_seen`. */
+    lastSeen?: boolean;
 }
 
 export interface DiscoveryMessage {
@@ -359,6 +361,18 @@ export function discoveryMessagesOf(
                 origin,
             });
         }
+    }
+
+    if (info.lastSeen) {
+        add("sensor", "last_seen", {
+            ...common,
+            name: "Last seen",
+            unique_id: `${uidBase}_last_seen`,
+            device_class: "timestamp",
+            value_template: "{{ value_json.last_seen }}",
+            entity_category: "diagnostic",
+            enabled_by_default: false,
+        });
     }
 
     // Device-level firmware update entity, for nodes exposing the OTA Requestor cluster.

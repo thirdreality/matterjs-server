@@ -53,6 +53,11 @@ export class Topics {
         return `${this.#prefix}/bridge/devices`;
     }
 
+    /** zigbee2mqtt-style device lifecycle events (joined, interview, leave); not retained. */
+    get bridgeEvent(): string {
+        return `${this.#prefix}/bridge/event`;
+    }
+
     deviceState(device: string, endpoint?: number): string {
         return endpoint === undefined ? `${this.#prefix}/${device}` : `${this.#prefix}/${device}/${endpoint}`;
     }
