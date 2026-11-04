@@ -227,6 +227,17 @@ node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_
 | `position` | WindowCovering `258/14` | 0（关）– 100（开），`100 - raw/100` |
 | `tilt` | WindowCovering `258/15` | 0（关）– 100（开），`100 - raw/100` |
 | `moving` | WindowCovering `258/10`（global 位） | `UP`（正在打开）、`DOWN`（正在关闭）、`STOP` |
+| `state`（门锁） | DoorLock `257/0` | 已上锁为 `LOCK`，否则 `UNLOCK` |
+| `lock_state` | DoorLock `257/0` | `not_fully_locked`、`locked`、`unlocked`、`unlatched` |
+| `door_state` | DoorLock `257/3` | `open`、`closed`、`jammed`、`forced_open`、`error`、`ajar` |
+| `local_temperature` | Thermostat `513/0` | °C，`raw/100` |
+| `outdoor_temperature` | Thermostat `513/1` | °C，`raw/100` |
+| `occupied_heating_setpoint`、`occupied_cooling_setpoint` | Thermostat `513/18`、`513/17` | °C，`raw/100`；需要 Heating / Cooling feature |
+| `unoccupied_heating_setpoint`、`unoccupied_cooling_setpoint` | Thermostat `513/20`、`513/19` | °C，`raw/100` |
+| `system_mode` | Thermostat `513/28` | `off`、`auto`、`cool`、`heat`、`emergency_heating`、`precooling`、`fan_only`、`dry`、`sleep` |
+| `running_state` | Thermostat `513/41` | 由各级运行位得出 `heat`、`cool`、`fan_only`，否则 `idle` |
+| `local_temperature_calibration` | Thermostat `513/16` | °C，`raw/10` |
+| `pi_heating_demand`、`pi_cooling_demand` | Thermostat `513/8`、`513/7` | % |
 | `pressure` | PressureMeasurement `1027/0` | hPa（原始单位 0.1 kPa 恰好等于 hPa） |
 | `flow` | FlowMeasurement `1028/0` | m³/h，`raw/10` |
 | `soil_moisture` | SoilMeasurement `1072/1` | % |
@@ -403,7 +414,7 @@ matter2mqtt/5/set/color        →  {"hue":120,"saturation":80}
 2. topic 中的 `<endpoint>` 段（`<prefix>/<node>/2/set`）；
 3. 节点的第一个可控 endpoint。
 
-带 OnOff cluster 或设备控制（目前是窗帘）的 endpoint 是可控的。后缀数字不属于可控 endpoint 时，会被当成属性名的
+带 OnOff cluster 或设备控制（窗帘、门锁、温控）的 endpoint 是可控的。后缀数字不属于可控 endpoint 时，会被当成属性名的
 一部分（与 zigbee2mqtt 一致）。发给其他 endpoint 的命令打日志后丢弃。
 
 在目标 endpoint 上，各设备控制先认领自己的属性（窗帘认领 `state`、`position`、`tilt`），剩下的交给下文的灯处理，
@@ -503,6 +514,26 @@ LevelControl 与 ColorControl 命令均带 `optionsMask: 0, optionsOverride: 0` 
 
 zigbee2mqtt 的 `position`、`tilt` 从关（0）数到开（100）；Matter 从开（0）数到关（10000）。裸载荷 `OPEN`、`CLOSE`、
 `STOP` 等同于 `{"state": …}`。
+
+### 门锁
+
+| 消息 | Matter 命令（DoorLock `257`） |
+|------|--------------------------------|
+| `state: "LOCK"` / `"UNLOCK"`（大小写不限） | `lockDoor` / `unlockDoor` |
+| …带 `pin_code` | 同一命令带 `pinCode`（数字按字节串发送） |
+
+门锁设置了 RequirePINforRemoteOperation 时，不带码的命令会被门锁拒绝；bridge 仍然发送并打 warning，由门锁自己的
+应答决定结果。注意 zigbee2mqtt 的 `pin_code` 用于用户管理，这里是本次上锁/开锁使用的码。
+
+### 温控
+
+| 消息 | Matter 写属性（Thermostat `513`） |
+|------|-----------------------------------|
+| `occupied_heating_setpoint`、`occupied_cooling_setpoint`、`unoccupied_*`（°C） | 属性 `18`、`17`、`20`、`19` = `round(°C * 100)`；温控没有该设定点时拒绝 |
+| `system_mode` | 属性 `28`（SystemMode）；取值见[属性](#属性) |
+| `local_temperature_calibration`（°C，-2.5–2.5） | 属性 `16` = `round(°C * 10)` |
+
+数值可以是数字或数字字符串。
 
 ### `<prefix>/<node>/get`
 
@@ -690,6 +721,8 @@ broker 随即回放的 retained topic 会与刚刚发布的内容比对，多出
 |------|------|
 | OnOff + LevelControl | `light`，JSON schema，`brightness_scale: 254`，`supported_color_modes` 由 ColorControl feature map 推导（`hs`、`xy`、`color_temp`），`min_mireds`/`max_mireds` 取设备上报值 |
 | 仅 OnOff | `switch`（载荷 `{"state":"ON"}` / `{"state":"OFF"}`） |
+| DoorLock | `lock`，载荷 `{"state":"LOCK"\|"UNLOCK"}`；有 DoorPositionSensor feature 时另有 `door_state` 枚举 `sensor` |
+| Thermostat | `climate`：`modes` 为 off，加上 FeatureMap 支持的 heat/cool/auto（RoomAirConditioner 另加 fan only 与 dry），Matter 独有的模式显示为最接近的 HA 模式；单一目标温度，两者都支持时为 low（制热）/ high（制冷）两个目标；`min_temp`/`max_temp` 取自绝对设定点限制；当前动作来自 `running_state`。室外温度与 PI 需求各为独立的 `sensor` |
 | WindowCovering | `cover`，载荷 `{"state":"OPEN"\|"CLOSE"\|"STOP"}`；窗帘跟踪位置时带 position 与 tilt 模板；device class 由 EndProductType 映射为 `shade`、`blind`、`curtain`、`shutter` 或 `awning` |
 | OccupancySensing | `binary_sensor`，device class `motion` |
 | BooleanState（ContactSensor） | `binary_sensor`，device class `door`，取反（`contact: false` = 打开 = `on`） |

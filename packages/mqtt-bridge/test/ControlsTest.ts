@@ -112,6 +112,164 @@ describe("Controls", () => {
         });
     });
 
+    describe("lock", () => {
+        const LOCK = { "1/257/0": 1, "1/257/3": 1 };
+
+        it("publishes state, lock_state and door_state", () => {
+            expect(stateOf(LOCK)).to.deep.equal({ state: "LOCK", lock_state: "locked", door_state: "closed" });
+            expect(stateOf({ "1/257/0": 3 })).to.deep.equal({ state: "UNLOCK", lock_state: "unlatched" });
+            expect(stateOf({ "1/257/0": null })).to.deep.equal({});
+        });
+
+        it("locks and unlocks, with an optional pin code", () => {
+            expect(parseEndpointSet({ state: "lock" }, LOCK, 1)).to.deep.equal({
+                actions: [{ clusterId: 257, commandName: "lockDoor", data: {} }],
+                warnings: [],
+            });
+            expect(parseEndpointSet({ state: "UNLOCK", pin_code: "1234" }, LOCK, 1)?.actions).to.deep.equal([
+                { clusterId: 257, commandName: "unlockDoor", data: { pinCode: "hex:31323334" } },
+            ]);
+        });
+
+        it("warns when the lock wants a pin and none is given", () => {
+            const pinLock = { ...LOCK, "1/257/51": true };
+            expect(parseEndpointSet({ state: "UNLOCK" }, pinLock, 1)?.warnings).to.deep.equal([
+                "this lock requires a pin_code for remote operation",
+            ]);
+            expect(parseEndpointSet({ state: "OPEN" }, LOCK, 1)?.warnings).to.deep.equal([
+                'invalid lock state "OPEN": expected LOCK or UNLOCK',
+            ]);
+        });
+
+        it("announces a Home Assistant lock and the door state", () => {
+            const [lockEntity, door] = discoveryOf(LOCK);
+            expect(lockEntity.topic).to.equal("homeassistant/lock/matter2mqtt_4/lock/config");
+            expect(lockEntity.config).to.include({
+                payload_lock: '{"state":"LOCK"}',
+                state_unlocked: "UNLOCK",
+                value_template: "{{ value_json.state }}",
+            });
+            expect(door.topic).to.equal("homeassistant/sensor/matter2mqtt_4/door_state/config");
+            expect(door.config.options).to.include("jammed");
+        });
+
+        it("exposes a zigbee2mqtt lock", () => {
+            const exposes = exposesOf(LOCK, relevantEndpointsOf(LOCK), capsFor(LOCK));
+            expect(exposes.map(e => e.type)).to.deep.equal(["lock", "enum"]);
+            expect((exposes[0].features as Expose[])[0]).to.include({ value_on: "LOCK", value_off: "UNLOCK" });
+        });
+    });
+
+    describe("thermostat", () => {
+        // Heating and cooling with auto mode (FeatureMap HEAT | COOL | AUTO), currently heating
+        const THERMOSTAT = {
+            "1/513/65532": 0b100011,
+            "1/513/0": 2150,
+            "1/513/3": 700,
+            "1/513/4": 3000,
+            "1/513/5": 1600,
+            "1/513/6": 3200,
+            "1/513/8": 40,
+            "1/513/16": -5,
+            "1/513/17": 2600,
+            "1/513/18": 2050,
+            "1/513/28": 4,
+            "1/513/41": 1,
+        };
+
+        it("publishes the zigbee2mqtt thermostat properties", () => {
+            expect(stateOf(THERMOSTAT)).to.deep.equal({
+                local_temperature: 21.5,
+                pi_heating_demand: 40,
+                occupied_heating_setpoint: 20.5,
+                occupied_cooling_setpoint: 26,
+                system_mode: "heat",
+                running_state: "heat",
+                local_temperature_calibration: -0.5,
+            });
+        });
+
+        it("reads the running state from a number or a decoded bitmap", () => {
+            expect(stateOf({ ...THERMOSTAT, "1/513/41": 0b10000 }).running_state).to.equal("cool");
+            expect(stateOf({ ...THERMOSTAT, "1/513/41": { fan: true } }).running_state).to.equal("fan_only");
+            expect(stateOf({ ...THERMOSTAT, "1/513/41": 0 }).running_state).to.equal("idle");
+        });
+
+        it("writes setpoints, the system mode and the calibration", () => {
+            expect(
+                parseEndpointSet(
+                    { occupied_heating_setpoint: 21.5, system_mode: "COOL", local_temperature_calibration: "1.2" },
+                    THERMOSTAT,
+                    1,
+                ),
+            ).to.deep.equal({
+                actions: [
+                    { clusterId: 513, attributeId: 18, value: 2150 },
+                    { clusterId: 513, attributeId: 28, value: 3 },
+                    { clusterId: 513, attributeId: 16, value: 12 },
+                ],
+                warnings: [],
+            });
+        });
+
+        it("refuses setpoints and modes the thermostat cannot take", () => {
+            const heatOnly = { "1/513/65532": 1, "1/513/18": 2000 };
+            expect(
+                parseEndpointSet({ occupied_cooling_setpoint: 24, system_mode: "turbo" }, heatOnly, 1)?.warnings,
+            ).to.deep.equal([
+                "occupied_cooling_setpoint not supported by this thermostat",
+                'invalid system_mode "turbo": expected one of off, auto, cool, heat, emergency_heating, precooling, fan_only, dry, sleep',
+            ]);
+            expect(parseEndpointSet({ local_temperature_calibration: 4 }, THERMOSTAT, 1)?.warnings).to.deep.equal([
+                "local_temperature_calibration 4 out of range -2.5..2.5",
+            ]);
+        });
+
+        it("announces a heat/cool climate entity with low and high targets", () => {
+            const [climate, demand] = discoveryOf(THERMOSTAT);
+            expect(climate.topic).to.equal("homeassistant/climate/matter2mqtt_4/climate/config");
+            expect(climate.config).to.include({
+                min_temp: 7,
+                max_temp: 32,
+                mode_command_template: '{"system_mode": "{{ value }}"}',
+                current_temperature_template: "{{ value_json.local_temperature }}",
+                temperature_low_command_template: '{"occupied_heating_setpoint": {{ value }}}',
+                temperature_high_state_template: "{{ value_json.occupied_cooling_setpoint }}",
+            });
+            expect(climate.config.modes).to.deep.equal(["off", "auto", "cool", "heat"]);
+            expect(climate.config.temperature_command_template).to.equal(undefined);
+            expect(demand.topic).to.equal("homeassistant/sensor/matter2mqtt_4/pi_heating_demand/config");
+        });
+
+        it("uses a single target for a cooling-only air conditioner and adds its modes", () => {
+            const ac = {
+                "1/29/0": [{ "0": 0x0072, "1": 2 }],
+                "1/513/65532": 2,
+                "1/513/17": 2400,
+                "1/513/28": 3,
+            };
+            const [climate] = discoveryOf(ac).filter(m => m.topic.includes("/climate/"));
+            expect(climate.config.temperature_command_template).to.equal('{"occupied_cooling_setpoint": {{ value }}}');
+            expect(climate.config.modes).to.deep.equal(["off", "cool", "fan_only", "dry"]);
+        });
+
+        it("exposes a zigbee2mqtt climate", () => {
+            const exposes = exposesOf(THERMOSTAT, relevantEndpointsOf(THERMOSTAT), capsFor(THERMOSTAT));
+            expect(exposes[0].type).to.equal("climate");
+            const features = exposes[0].features as Expose[];
+            expect(features.map(f => f.name)).to.deep.equal([
+                "local_temperature",
+                "occupied_heating_setpoint",
+                "occupied_cooling_setpoint",
+                "system_mode",
+                "running_state",
+                "local_temperature_calibration",
+            ]);
+            expect(features[1]).to.include({ value_min: 7, value_max: 30, value_step: 0.5, access: 7 });
+            expect(exposes[1]).to.include({ name: "pi_heating_demand", unit: "%" });
+        });
+    });
+
     describe("routing", () => {
         it("accepts /set on control endpoints without OnOff", () => {
             expect(controllableEndpointsOf({ ...CURTAIN, "2/6/0": true, "3/1026/0": 2000 })).to.deep.equal([1, 2]);

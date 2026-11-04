@@ -237,6 +237,17 @@ built from the controller's attribute cache, so it is available without an extra
 | `position` | WindowCovering `258/14` | 0 (closed) – 100 (open), `100 - raw/100` |
 | `tilt` | WindowCovering `258/15` | 0 (closed) – 100 (open), `100 - raw/100` |
 | `moving` | WindowCovering `258/10` (global bits) | `UP` (opening), `DOWN` (closing), `STOP` |
+| `state` (lock) | DoorLock `257/0` | `LOCK` when locked, else `UNLOCK` |
+| `lock_state` | DoorLock `257/0` | `not_fully_locked`, `locked`, `unlocked`, `unlatched` |
+| `door_state` | DoorLock `257/3` | `open`, `closed`, `jammed`, `forced_open`, `error`, `ajar` |
+| `local_temperature` | Thermostat `513/0` | °C, `raw/100` |
+| `outdoor_temperature` | Thermostat `513/1` | °C, `raw/100` |
+| `occupied_heating_setpoint`, `occupied_cooling_setpoint` | Thermostat `513/18`, `513/17` | °C, `raw/100`; only with the Heating / Cooling feature |
+| `unoccupied_heating_setpoint`, `unoccupied_cooling_setpoint` | Thermostat `513/20`, `513/19` | °C, `raw/100` |
+| `system_mode` | Thermostat `513/28` | `off`, `auto`, `cool`, `heat`, `emergency_heating`, `precooling`, `fan_only`, `dry`, `sleep` |
+| `running_state` | Thermostat `513/41` | `heat`, `cool`, `fan_only` (from the stage bits) or `idle` |
+| `local_temperature_calibration` | Thermostat `513/16` | °C, `raw/10` |
+| `pi_heating_demand`, `pi_cooling_demand` | Thermostat `513/8`, `513/7` | % |
 | `pressure` | PressureMeasurement `1027/0` | hPa (the raw 0.1 kPa unit is exactly hPa) |
 | `flow` | FlowMeasurement `1028/0` | m³/h, `raw/10` |
 | `soil_moisture` | SoilMeasurement `1072/1` | % |
@@ -432,7 +443,7 @@ The target endpoint is, in order of precedence:
 2. the `<endpoint>` topic segment (`<prefix>/<node>/2/set`),
 3. the node's first controllable endpoint.
 
-An endpoint is controllable when it has the OnOff cluster or a device control (currently a cover). A
+An endpoint is controllable when it has the OnOff cluster or a device control (cover, lock, thermostat). A
 suffix that does not match a controllable endpoint is treated as part of the property name (matching
 zigbee2mqtt). Commands for any other endpoint are logged and dropped.
 
@@ -543,6 +554,27 @@ remaining ones.
 
 zigbee2mqtt counts `position` and `tilt` from closed (0) to open (100); Matter counts closure from open (0)
 to closed (10000). A bare `OPEN`, `CLOSE` or `STOP` payload works like `{"state": …}`.
+
+### Locks
+
+| Message | Matter command (DoorLock `257`) |
+|---------|----------------------------------|
+| `state: "LOCK"` / `"UNLOCK"` (any case) | `lockDoor` / `unlockDoor` |
+| … with `pin_code` | The same command with `pinCode` (the digits as an octet string) |
+
+A lock with RequirePINforRemoteOperation set refuses a command without a code; the bridge sends the command
+anyway and logs a warning, so the lock's own answer decides. Note that zigbee2mqtt uses `pin_code` for user
+management; here it is the code for this one lock or unlock.
+
+### Thermostats
+
+| Message | Matter write (Thermostat `513`) |
+|---------|----------------------------------|
+| `occupied_heating_setpoint`, `occupied_cooling_setpoint`, `unoccupied_*` (°C) | Attribute `18`, `17`, `20`, `19` = `round(°C * 100)`; refused when the thermostat lacks the setpoint |
+| `system_mode` | Attribute `28` (SystemMode); one of the names in [Properties](#properties) |
+| `local_temperature_calibration` (°C, -2.5–2.5) | Attribute `16` = `round(°C * 10)` |
+
+Values may be numbers or numeric strings.
 
 ### `<prefix>/<node>/get`
 
@@ -759,6 +791,8 @@ BasicInformation carries no product name.
 |-----------|--------|
 | OnOff + LevelControl | `light`, JSON schema, `brightness_scale: 254`, `supported_color_modes` from the ColorControl feature map (`hs`, `xy`, `color_temp`), `min_mireds`/`max_mireds` from the device |
 | OnOff only | `switch` (`{"state":"ON"}` / `{"state":"OFF"}` payloads) |
+| DoorLock | `lock` with `{"state":"LOCK"\|"UNLOCK"}` payloads; a `door_state` enum `sensor` with the DoorPositionSensor feature |
+| Thermostat | `climate`: `modes` off plus heat/cool/auto per FeatureMap (fan only and dry for a RoomAirConditioner), Matter-only modes shown as the closest HA mode; one target temperature, or low (heating) / high (cooling) targets when both are supported; `min_temp`/`max_temp` from the absolute setpoint limits; current action from `running_state`. Outdoor temperature and PI demands as separate `sensor`s |
 | WindowCovering | `cover` with `{"state":"OPEN"\|"CLOSE"\|"STOP"}` payloads; position and tilt templates when the cover tracks them; device class `shade`, `blind`, `curtain`, `shutter` or `awning` from EndProductType |
 | OccupancySensing | `binary_sensor`, device class `motion` |
 | BooleanState (ContactSensor) | `binary_sensor`, device class `door`, inverted (`contact: false` = open = `on`) |
