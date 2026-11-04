@@ -52,7 +52,8 @@ firewalled LAN and use broker credentials and ACLs.
 ## Topic Overview
 
 `<prefix>` is the configured topic prefix (default `matter2mqtt`), `<node>` is the Matter node id as a
-decimal string, `<endpoint>` a Matter endpoint number.
+decimal string — or `<node id>_<endpoint>` for a device behind a Matter bridge, see
+[Matter bridges](#matter-bridges) — and `<endpoint>` a Matter endpoint number.
 
 | Topic | Direction | Retained | Payload |
 |-------|-----------|----------|---------|
@@ -168,7 +169,7 @@ The remaining fields follow zigbee2mqtt's `bridge/devices` so that tools written
 
 | Field | Value |
 |-------|-------|
-| `friendly_name` | The `<node>` topic segment (the node id) |
+| `friendly_name` | The `<node>` topic segment (the node id, or `<node id>_<endpoint>` for a bridged device) |
 | `supported` | Always `true`: every Matter device is handled generically by device type and cluster |
 | `manufacturer`, `model_id` | BasicInformation VendorName / ProductName |
 | `software_build_id` | BasicInformation SoftwareVersionString (`0/40/10`) |
@@ -369,9 +370,8 @@ position in the state as `switch_position`.
 
 ### Multi-endpoint devices
 
-Endpoints that expose OnOff, OccupancySensing, IlluminanceMeasurement, TemperatureMeasurement,
-RelativeHumidityMeasurement or BooleanState contribute to the state object. A property provided by exactly
-one endpoint keeps its plain name; a property provided by several endpoints gets the zigbee2mqtt
+Every endpoint with a state property in [Properties](#properties) contributes to the state object. A
+property provided by exactly one endpoint keeps its plain name; a property provided by several endpoints gets the zigbee2mqtt
 `_<endpoint>` suffix on all of them. A dual relay therefore publishes:
 
 ```json
@@ -380,6 +380,29 @@ one endpoint keeps its plain name; a property provided by several endpoints gets
 
 Suffixing is decided from endpoint *capabilities*, not from current values, so names stay stable while
 values are still unknown.
+
+### Matter bridges
+
+A Matter bridge (Aggregator device type), such as a Zigbee-to-Matter bridge, is a single Matter node that
+exposes each device behind it on an endpoint of its own carrying BridgedDeviceBasicInformation (`57`).
+Like zigbee2mqtt, which lists every Zigbee device on its own, the bridge splits these off: each bridged
+device gets its own topics, `<prefix>/<node id>_<endpoint>` (e.g. `matter2mqtt/12_3`), with its own state,
+availability, `/set`, `/get` and actions, and its own Home Assistant device.
+
+- A bridged device's endpoints are the one with BridgedDeviceBasicInformation and its children (a bridged
+  dual switch has its relays on child endpoints), found through the node's endpoint parents, else the
+  bridged endpoint's PartsList. Properties are suffixed only among those endpoints.
+- Name, vendor, product, serial number and unique id come from BridgedDeviceBasicInformation (NodeLabel
+  `57/5` becomes the Home Assistant device name).
+- Availability is `online` while the bridge node is reachable **and** the device's Reachable (`57/17`) is
+  true.
+- `<prefix>/<node id>` keeps whatever the bridge node has of its own (its own firmware update, for
+  instance); it is cleared when that is nothing.
+- Firmware updates over MQTT apply to the bridge node, not to the devices behind it.
+- When the bridge drops a device, its topics and discovery are cleared like a removed node's.
+
+In `bridge/devices` a bridged device has `bridge_id` (the bridge's `<node>`) and `endpoint`, and
+`is_bridge: false`; its Home Assistant device names the bridge as `via_device`.
 
 ### Firmware updates
 

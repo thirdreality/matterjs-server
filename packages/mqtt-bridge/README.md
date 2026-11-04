@@ -26,7 +26,8 @@ matter-server --mqtt-url mqtt://user:password@localhost:1883 --mqtt-prefix matte
 | `<prefix>/<node>/get` | subscribe | re-publishes the current state (payload ignored) |
 | `<prefix>/<node>/<endpoint>/set` | subscribe | per-endpoint command variant; payloads may also target endpoints via the `_<endpoint>` property suffix (`{"state_1":"ON"}`) |
 
-`<node>` is the Matter node id. Home Assistant MQTT discovery is published under the
+`<node>` is the Matter node id, or `<node id>_<endpoint>` for a device behind a Matter bridge (e.g. a
+Zigbee-to-Matter bridge), which the bridge splits off into devices of their own. Home Assistant MQTT discovery is published under the
 `homeassistant/` prefix for the bridge itself and for every device.
 
 Full reference (state properties and conversions, `/set` semantics and Matter command mapping,

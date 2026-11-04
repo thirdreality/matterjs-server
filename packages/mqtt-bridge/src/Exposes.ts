@@ -201,7 +201,9 @@ export function powerSourceOf(attributes: AttributesData): string | undefined {
 
 /**
  * The zigbee2mqtt fields of a `bridge/devices` entry that describe what the device is and offers.
- * `friendly_name` is the topic segment, which for Matter nodes is the node id.
+ * `friendly_name` is the topic segment. `basicInformation` is the `<endpoint>/<cluster>` of the
+ * BasicInformation (`0/40`) or, for a bridged device, BridgedDeviceBasicInformation, which share the
+ * attribute ids used here.
  */
 export function deviceDescriptionOf(
     device: string,
@@ -209,19 +211,20 @@ export function deviceDescriptionOf(
     endpoints: number[],
     capsOf: (endpoint: number) => LightCapabilities,
     supportsOta: boolean,
+    basicInformation = "0/40",
 ): Record<string, unknown> {
     const text = (path: string) => {
         const value = attributes[path];
         return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
     };
-    const vendor = text("0/40/1");
-    const model = text("0/40/3");
+    const vendor = text(`${basicInformation}/1`);
+    const model = text(`${basicInformation}/3`);
     return {
         friendly_name: device,
         supported: true,
         manufacturer: vendor,
         model_id: model,
-        software_build_id: text("0/40/10"),
+        software_build_id: text(`${basicInformation}/10`),
         power_source: powerSourceOf(attributes),
         definition: {
             model,

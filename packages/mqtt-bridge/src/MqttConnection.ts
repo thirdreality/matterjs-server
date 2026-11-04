@@ -138,3 +138,6 @@ export class MqttConnection {
         return url.toString();
     }
 }
+
+/** What the bridge needs from its broker connection. */
+export type BridgeConnection = Pick<MqttConnection, "connect" | "subscribe" | "publish" | "clearRetained" | "close">;

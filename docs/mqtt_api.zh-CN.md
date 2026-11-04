@@ -46,8 +46,8 @@ URL 协议不支持时，桥在启动阶段直接构造失败。
 
 ## Topic 总览
 
-`<prefix>` 为配置的前缀（默认 `matter2mqtt`），`<node>` 为十进制字符串形式的 Matter node id，`<endpoint>` 为
-Matter endpoint 编号。
+`<prefix>` 为配置的前缀（默认 `matter2mqtt`），`<node>` 为十进制字符串形式的 Matter node id —— Matter 网桥后面的
+设备则为 `<node id>_<endpoint>`，见 [Matter 网桥](#matter-网桥) —— `<endpoint>` 为 Matter endpoint 编号。
 
 | Topic | 方向 | Retained | 载荷 |
 |-------|------|----------|------|
@@ -161,7 +161,7 @@ node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_
 
 | 字段 | 取值 |
 |------|------|
-| `friendly_name` | topic 里的 `<node>` 段（即 node id） |
+| `friendly_name` | topic 里的 `<node>` 段（node id，网桥后面的设备为 `<node id>_<endpoint>`） |
 | `supported` | 恒为 `true`：所有 Matter 设备都按设备类型和 cluster 通用处理 |
 | `manufacturer`、`model_id` | BasicInformation 的 VendorName / ProductName |
 | `software_build_id` | BasicInformation 的 SoftwareVersionString（`0/40/10`） |
@@ -348,8 +348,7 @@ Switch endpoint 时，action 带上 endpoint，类似 zigbee2mqtt 的 `single_le
 
 ### 多 endpoint 设备
 
-暴露 OnOff、OccupancySensing、IlluminanceMeasurement、TemperatureMeasurement、RelativeHumidityMeasurement
-或 BooleanState 的 endpoint 会参与状态合并。只有一个 endpoint 提供的属性保持原名；多个 endpoint 都提供的属性，
+带有[属性](#属性)中任一状态属性的 endpoint 都会参与状态合并。只有一个 endpoint 提供的属性保持原名；多个 endpoint 都提供的属性，
 全部加上 zigbee2mqtt 的 `_<endpoint>` 后缀。因此双路继电器发布的是：
 
 ```json
@@ -358,6 +357,24 @@ Switch endpoint 时，action 带上 endpoint，类似 zigbee2mqtt 的 `single_le
 
 后缀由 endpoint 的*能力*决定，而不是由当前值决定，所以在值还未知时属性名也是稳定的。
 
+
+### Matter 网桥
+
+Matter 网桥（Aggregator 设备类型），例如 Zigbee 转 Matter 网桥，在 Matter 里是一个节点，背后的每个设备各占一个
+带 BridgedDeviceBasicInformation（`57`）的 endpoint。zigbee2mqtt 会把每个 Zigbee 设备单独列出，bridge 也同样把它们
+拆开：每个网桥子设备有自己的 topic `<prefix>/<node id>_<endpoint>`（例如 `matter2mqtt/12_3`），各自拥有状态、可用性、
+`/set`、`/get` 与 action，在 Home Assistant 里也是独立的设备。
+
+- 子设备包含带 BridgedDeviceBasicInformation 的那个 endpoint 及其子 endpoint（网桥接入的双路开关，两路在子
+  endpoint 上），按节点的 endpoint parents 查找，没有则用该 endpoint 的 PartsList。属性后缀只在这些 endpoint 之间判定。
+- 名称、厂商、型号、序列号与 unique id 取自 BridgedDeviceBasicInformation（NodeLabel `57/5` 作为 Home Assistant 的设备名）。
+- 网桥节点可达 **且** 子设备的 Reachable（`57/17`）为 true 时，可用性为 `online`。
+- `<prefix>/<node id>` 只保留网桥节点自己的内容（例如它自己的固件更新）；没有内容时会被清空。
+- MQTT 侧的固件更新只针对网桥节点，不针对其背后的设备。
+- 网桥移除某个子设备时，它的 topic 与 discovery 会像被删除的节点一样清空。
+
+在 `bridge/devices` 中，网桥子设备带有 `bridge_id`（网桥的 `<node>`）与 `endpoint`，且 `is_bridge: false`；
+它的 Home Assistant 设备以网桥作为 `via_device`。
 ### 固件更新
 
 暴露 OTA Requestor cluster 的节点（存在 `0/42/2`）会带一个设备级的 `update` 属性，形状对齐 zigbee2mqtt：

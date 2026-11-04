@@ -20,13 +20,20 @@ import {
     OTA_COMMAND_NAMES,
     type BridgeCommandContext,
 } from "./BridgeCommands.js";
+import {
+    BRIDGED_BASIC_INFORMATION_CLUSTER_ID,
+    BRIDGED_REACHABLE_ATTRIBUTE_ID,
+    bridgedDeviceKey,
+    bridgedDevicesOf,
+    scopedAttributes,
+} from "./BridgedDevices.js";
 import { controllableEndpointsOf, isDeviceWrite, parseEndpointSet, type DeviceAction } from "./Controls.js";
 import { deviceStateOf, isDeviceLevelStateAttribute, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
 import { bridgeDiscoveryMessagesOf, discoveryMessagesOf } from "./Discovery.js";
 import { SWITCH_CLUSTER_ID, switchActionOf } from "./Events.js";
 import { deviceDescriptionOf } from "./Exposes.js";
 import { lightCapabilitiesOf } from "./LightCapabilities.js";
-import { MqttConnection } from "./MqttConnection.js";
+import { MqttConnection, type BridgeConnection } from "./MqttConnection.js";
 import { onOffEndpointsOf } from "./OnOffState.js";
 import { OtaTracker, supportsOta } from "./OtaState.js";
 import { messageOf, splitByEndpointSuffix } from "./SetCommands.js";
@@ -59,10 +66,16 @@ export interface MqttBridgeOptions {
     clientId?: string;
     /** Server version, published in `bridge/info`. */
     serverVersion?: string;
+    /** Broker connection to use instead of one to `url`, for tests. */
+    connection?: BridgeConnection;
 }
 
 interface DeviceEntry {
+    /** The `<device>` topic segment: the node id, or `<node>_<endpoint>` for a device behind a Matter bridge. */
+    key: string;
     nodeId: NodeId;
+    /** For a device behind a Matter bridge: the endpoint carrying its BridgedDeviceBasicInformation. */
+    bridgedEndpoint?: number;
     onOffEndpoints: number[];
     /** Endpoints contributing properties to the published device state. */
     relevantEndpoints: number[];
@@ -82,14 +95,16 @@ export class MqttBridge {
     readonly #commandHandler: ControllerCommandHandler;
     readonly #commandContext?: BridgeCommandContext;
     readonly #topics: Topics;
-    readonly #connection: MqttConnection;
+    readonly #connection: BridgeConnection;
     readonly #serverVersion?: string;
     readonly #observers = new ObserverGroup();
     readonly #ota = new OtaTracker();
     /** Discovery topics of the bridge's own entities, for telling ours from a previous version's. */
     #bridgeDiscoveryTopics = new Array<string>();
-    /** Known devices keyed by node id string (the `<device>` topic segment). */
+    /** Known devices keyed by their `<device>` topic segment. */
     readonly #devices = new Map<string, DeviceEntry>();
+    /** Per node: the device key of every endpoint that belongs to a bridged device; others belong to the node. */
+    readonly #owners = new Map<string, Map<number, string>>();
     #started = false;
     /** True once the initial publish has run; gates re-publishing from reconnect events. */
     #ready = false;
@@ -105,11 +120,13 @@ export class MqttBridge {
             commandContext === undefined ? undefined : { ...commandContext, commandHandler, ota: this.#ota };
         this.#serverVersion = options.serverVersion;
         this.#topics = new Topics(options.prefix ?? "matter2mqtt");
-        this.#connection = new MqttConnection({
-            url: options.url,
-            clientId: options.clientId ?? "matter2mqtt",
-            will: { topic: this.#topics.bridgeState, payload: bridgeStatePayload("offline") },
-        });
+        this.#connection =
+            options.connection ??
+            new MqttConnection({
+                url: options.url,
+                clientId: options.clientId ?? "matter2mqtt",
+                will: { topic: this.#topics.bridgeState, payload: bridgeStatePayload("offline") },
+            });
     }
 
     async start(): Promise<void> {
@@ -167,13 +184,11 @@ export class MqttBridge {
                 logger.warn(`Failed to publish structure change for node ${nodeId}:`, error);
             }
         });
-        this.#observers.on(events.nodeAvailabilityChanged, (nodeId, available) => {
+        this.#observers.on(events.nodeAvailabilityChanged, nodeId => {
             try {
-                this.#connection.publish(
-                    this.#topics.deviceAvailability(nodeId.toString()),
-                    available ? "online" : "offline",
-                    true,
-                );
+                for (const entry of this.#entriesOf(nodeId.toString())) {
+                    this.#publishAvailability(entry);
+                }
                 this.#publishDevices();
             } catch (error) {
                 logger.warn(`Failed to publish availability for node ${nodeId}:`, error);
@@ -181,7 +196,7 @@ export class MqttBridge {
         });
         this.#observers.on(events.nodeDecommissioned, nodeId => {
             try {
-                this.#removeDevice(nodeId.toString());
+                this.#removeNode(nodeId.toString());
                 this.#publishDevices();
             } catch (error) {
                 logger.warn(`Failed to clear topics for removed node ${nodeId}:`, error);
@@ -218,19 +233,30 @@ export class MqttBridge {
         path: { endpointId: number; clusterId: number; attributeId: number },
         _value: unknown,
     ): void {
+        if (
+            path.clusterId === BRIDGED_BASIC_INFORMATION_CLUSTER_ID &&
+            path.attributeId === BRIDGED_REACHABLE_ATTRIBUTE_ID
+        ) {
+            const bridged = this.#entryOf(nodeId, path.endpointId);
+            if (bridged !== undefined) {
+                this.#publishAvailability(bridged);
+                this.#publishDevices();
+            }
+            return;
+        }
         if (!isStateAttribute(path.clusterId, path.attributeId)) {
             return;
         }
-        const device = nodeId.toString();
-        let entry = this.#devices.get(device);
+        let entry = this.#entryOf(nodeId, path.endpointId);
         const endpointKnown =
             entry !== undefined &&
             (isDeviceLevelStateAttribute(path.clusterId, path.attributeId) ||
                 entry.relevantEndpoints.includes(path.endpointId));
         if (!endpointKnown) {
             // Unknown device or endpoint: the structure changed ahead of any structure event
-            entry = this.#refreshDevice(nodeId);
+            this.#refreshDevice(nodeId);
             this.#publishDevices();
+            entry = this.#entryOf(nodeId, path.endpointId);
         }
         if (entry === undefined) {
             return;
@@ -247,16 +273,16 @@ export class MqttBridge {
         if (path.clusterId !== SWITCH_CLUSTER_ID) {
             return;
         }
-        const device = nodeId.toString();
-        if (!this.#devices.has(device)) {
+        const entry = this.#entryOf(nodeId, path.endpointId);
+        if (entry === undefined) {
             return;
         }
-        const { attributes } = this.#commandHandler.getNodeDetails(nodeId);
+        const attributes = this.#attributesOf(entry, this.#commandHandler.getNodeDetails(nodeId).attributes);
         for (const { data } of occurrences) {
             const action = switchActionOf(attributes, path.endpointId, path.eventId, data);
             if (action !== undefined) {
-                logger.info(`Node ${device} action: ${action}`);
-                this.#connection.publish(this.#topics.deviceAction(device), action, false);
+                logger.info(`Device ${entry.key} action: ${action}`);
+                this.#connection.publish(this.#topics.deviceAction(entry.key), action, false);
             }
         }
     }
@@ -288,7 +314,7 @@ export class MqttBridge {
         }
         let attributes;
         try {
-            attributes = this.#commandHandler.getNodeDetails(entry.nodeId).attributes;
+            attributes = this.#attributesOf(entry, this.#commandHandler.getNodeDetails(entry.nodeId).attributes);
         } catch {
             logger.warn(`Cannot resolve capabilities for "${parsed.device}"`);
             return;
@@ -396,10 +422,10 @@ export class MqttBridge {
      * read, falls back to re-publishing what the cache holds.
      */
     async #handleGet(entry: DeviceEntry): Promise<void> {
-        const device = entry.nodeId.toString();
+        const device = entry.key;
         let attributes: AttributesData;
         try {
-            attributes = this.#commandHandler.getNodeDetails(entry.nodeId).attributes;
+            attributes = this.#attributesOf(entry, this.#commandHandler.getNodeDetails(entry.nodeId).attributes);
         } catch {
             logger.warn(`Cannot read state for "${device}"`);
             return;
@@ -443,6 +469,10 @@ export class MqttBridge {
         for (const [device, entry] of [...this.#devices]) {
             if (!this.#started) {
                 return;
+            }
+            // Matter OTA updates nodes; what is behind a bridge is the bridge's own business
+            if (entry.bridgedEndpoint !== undefined) {
+                continue;
             }
             let details: MatterNodeData;
             try {
@@ -545,80 +575,175 @@ export class MqttBridge {
     }
 
     /**
-     * Publish the merged zigbee2mqtt-style device state to the single `<node>` topic. `fresh` carries
+     * Publish the merged zigbee2mqtt-style device state to the device's single topic. `fresh` carries
      * values read directly from the device, which take precedence over the subscription cache.
      */
     #publishDeviceState(entry: DeviceEntry, fresh?: AttributesData): void {
-        const device = entry.nodeId.toString();
         let details: MatterNodeData;
         try {
             details = this.#commandHandler.getNodeDetails(entry.nodeId);
         } catch {
-            logger.warn(`Cannot read state for "${device}"`);
+            logger.warn(`Cannot read state for "${entry.key}"`);
             return;
         }
-        const attributes = fresh === undefined ? details.attributes : { ...details.attributes, ...fresh };
+        const attributes = this.#attributesOf(
+            entry,
+            fresh === undefined ? details.attributes : { ...details.attributes, ...fresh },
+        );
         const state = deviceStateOf(attributes, entry.relevantEndpoints, endpoint =>
             lightCapabilitiesOf(attributes, endpoint),
         );
-        const update = this.#ota.updateStateOf(device, attributes);
+        const update = this.#ota.updateStateOf(entry.key, attributes);
         if (update !== undefined) {
             state.update = update;
         }
         if (Object.keys(state).length === 0) {
+            // Also clears what this topic held before, e.g. a bridge's state from before its devices were split off
+            this.#connection.clearRetained(this.#topics.deviceState(entry.key));
             return;
         }
-        this.#connection.publish(this.#topics.deviceState(device), JSON.stringify(state), true);
+        this.#connection.publish(this.#topics.deviceState(entry.key), JSON.stringify(state), true);
+    }
+
+    /** The attributes of the device: a bridged device's endpoints, or its node without the bridged devices. */
+    #attributesOf(entry: DeviceEntry, attributes: AttributesData): AttributesData {
+        const owners = this.#owners.get(entry.nodeId.toString());
+        if (owners === undefined || owners.size === 0) {
+            return attributes;
+        }
+        const node = entry.nodeId.toString();
+        return scopedAttributes(attributes, endpoint => (owners.get(endpoint) ?? node) === entry.key);
+    }
+
+    /** The device an endpoint of a node belongs to. */
+    #entryOf(nodeId: NodeId, endpoint: number): DeviceEntry | undefined {
+        const node = nodeId.toString();
+        return this.#devices.get(this.#owners.get(node)?.get(endpoint) ?? node);
+    }
+
+    /** The node's own device and the devices behind it, if it is a bridge. */
+    #entriesOf(node: string): DeviceEntry[] {
+        return [...this.#devices.values()].filter(entry => entry.nodeId.toString() === node);
+    }
+
+    /** A bridged device is available while its bridge is and it reports itself reachable. */
+    #isAvailable(entry: DeviceEntry, details: MatterNodeData): boolean {
+        if (!details.available) {
+            return false;
+        }
+        if (entry.bridgedEndpoint === undefined) {
+            return true;
+        }
+        const reachable =
+            details.attributes[
+                `${entry.bridgedEndpoint}/${BRIDGED_BASIC_INFORMATION_CLUSTER_ID}/${BRIDGED_REACHABLE_ATTRIBUTE_ID}`
+            ];
+        return reachable !== false;
+    }
+
+    #publishAvailability(entry: DeviceEntry): void {
+        let details: MatterNodeData;
+        try {
+            details = this.#commandHandler.getNodeDetails(entry.nodeId);
+        } catch {
+            return;
+        }
+        this.#connection.publish(
+            this.#topics.deviceAvailability(entry.key),
+            this.#isAvailable(entry, details) ? "online" : "offline",
+            true,
+        );
     }
 
     /**
-     * (Re-)sync a device from the controller's attribute cache: track its OnOff endpoints
-     * and publish availability and current state. Returns undefined if the node is gone.
+     * (Re-)sync a node from the controller's attribute cache: split off the devices behind it when it
+     * is a Matter bridge, and publish discovery, availability and state of each. Drops the node when it
+     * is gone, and devices its bridge no longer has.
      */
-    #refreshDevice(nodeId: NodeId): DeviceEntry | undefined {
-        const device = nodeId.toString();
-
+    #refreshDevice(nodeId: NodeId): void {
+        const node = nodeId.toString();
         let details: MatterNodeData;
         try {
             details = this.#commandHandler.getNodeDetails(nodeId);
         } catch {
-            this.#removeDevice(device);
-            return undefined;
+            this.#removeNode(node);
+            return;
         }
 
-        const onOffEndpoints = onOffEndpointsOf(details.attributes);
-        const relevantEndpoints = relevantEndpointsOf(details.attributes);
-        const previous = this.#devices.get(device);
-        const entry: DeviceEntry = { nodeId, onOffEndpoints, relevantEndpoints, discoveryTopics: [] };
-        this.#devices.set(device, entry);
+        const bridged = bridgedDevicesOf(details.attributes, details.endpoint_parents);
+        const owners = new Map<number, string>();
+        for (const [endpoint, members] of bridged) {
+            for (const member of members) {
+                owners.set(member, bridgedDeviceKey(node, endpoint));
+            }
+        }
+        this.#owners.set(node, owners);
 
-        // Migration/cleanup: state now lives on the single `<node>` topic; clear any retained
+        const keys = new Set([node, ...[...bridged.keys()].map(endpoint => bridgedDeviceKey(node, endpoint))]);
+        for (const entry of this.#entriesOf(node)) {
+            if (!keys.has(entry.key)) {
+                this.#removeDevice(entry.key);
+            }
+        }
+        this.#refreshEntry(nodeId, node, undefined, details);
+        for (const endpoint of bridged.keys()) {
+            this.#refreshEntry(nodeId, bridgedDeviceKey(node, endpoint), endpoint, details);
+        }
+    }
+
+    #refreshEntry(nodeId: NodeId, key: string, bridgedEndpoint: number | undefined, details: MatterNodeData): void {
+        const previous = this.#devices.get(key);
+        const entry: DeviceEntry = {
+            key,
+            nodeId,
+            bridgedEndpoint,
+            onOffEndpoints: [],
+            relevantEndpoints: [],
+            discoveryTopics: [],
+        };
+        const attributes = this.#attributesOf(entry, details.attributes);
+        entry.onOffEndpoints = onOffEndpointsOf(attributes);
+        entry.relevantEndpoints = relevantEndpointsOf(attributes);
+        this.#devices.set(key, entry);
+
+        // Migration/cleanup: state now lives on the single `<device>` topic; clear any retained
         // per-endpoint state topics from earlier layouts
-        for (const endpoint of new Set([...relevantEndpoints, ...(previous?.relevantEndpoints ?? [])])) {
-            this.#connection.clearRetained(this.#topics.deviceState(device, endpoint));
+        for (const endpoint of new Set([...entry.relevantEndpoints, ...(previous?.relevantEndpoints ?? [])])) {
+            this.#connection.clearRetained(this.#topics.deviceState(key, endpoint));
         }
 
-        this.#publishDiscovery(entry, details, previous?.discoveryTopics ?? []);
+        this.#publishDiscovery(entry, attributes, previous?.discoveryTopics ?? []);
         this.#connection.publish(
-            this.#topics.deviceAvailability(device),
-            details.available ? "online" : "offline",
+            this.#topics.deviceAvailability(key),
+            this.#isAvailable(entry, details) ? "online" : "offline",
             true,
         );
         this.#publishDeviceState(entry);
-        return entry;
+    }
+
+    /** BasicInformation of a node, or BridgedDeviceBasicInformation of a bridged device. */
+    #basicInformationOf(entry: DeviceEntry): string {
+        return entry.bridgedEndpoint === undefined
+            ? "0/40"
+            : `${entry.bridgedEndpoint}/${BRIDGED_BASIC_INFORMATION_CLUSTER_ID}`;
     }
 
     /** Publish retained HA discovery for the device; clear topics that disappeared. */
-    #publishDiscovery(entry: DeviceEntry, details: MatterNodeData, previousTopics: string[]): void {
-        const device = entry.nodeId.toString();
-        const { attributes } = details;
+    #publishDiscovery(entry: DeviceEntry, attributes: AttributesData, previousTopics: string[]): void {
+        const basic = this.#basicInformationOf(entry);
         const messages = discoveryMessagesOf(
             {
-                device,
-                vendorName: stringAttribute(attributes, "0/40/1"),
-                productName: stringAttribute(attributes, "0/40/3"),
-                serialNumber: stringAttribute(attributes, "0/40/15"),
+                device: entry.key,
+                vendorName: stringAttribute(attributes, `${basic}/1`),
+                productName: stringAttribute(attributes, `${basic}/3`),
+                serialNumber: stringAttribute(attributes, `${basic}/15`),
                 serverVersion: this.#serverVersion,
+                ...(entry.bridgedEndpoint === undefined
+                    ? {}
+                    : {
+                          name: stringAttribute(attributes, `${basic}/5`),
+                          viaDevice: `matter2mqtt_${entry.nodeId.toString()}`,
+                      }),
             },
             attributes,
             entry.relevantEndpoints,
@@ -632,6 +757,13 @@ export class MqttBridge {
         for (const message of messages) {
             this.#connection.publish(message.topic, message.payload, true);
         }
+    }
+
+    #removeNode(node: string): void {
+        for (const entry of this.#entriesOf(node)) {
+            this.#removeDevice(entry.key);
+        }
+        this.#owners.delete(node);
     }
 
     #removeDevice(device: string): void {
@@ -652,29 +784,40 @@ export class MqttBridge {
     }
 
     #publishDevices(): void {
-        const devices = this.#commandHandler.getNodeIds().map(nodeId => {
-            const details = this.#commandHandler.getNodeDetails(nodeId);
-            const { attributes } = details;
-            const entry = this.#devices.get(nodeId.toString());
-            return {
-                id: nodeId.toString(),
-                node_id: details.node_id,
-                available: details.available,
-                is_bridge: details.is_bridge,
-                vendor_name: stringAttribute(attributes, "0/40/1"),
-                product_name: stringAttribute(attributes, "0/40/3"),
-                node_label: stringAttribute(attributes, "0/40/5"),
-                serial_number: stringAttribute(attributes, "0/40/15"),
-                unique_id: stringAttribute(attributes, "0/40/18"),
-                onoff_endpoints: entry?.onOffEndpoints ?? [],
-                ...deviceDescriptionOf(
-                    nodeId.toString(),
-                    attributes,
-                    entry?.relevantEndpoints ?? [],
-                    endpoint => lightCapabilitiesOf(attributes, endpoint),
-                    supportsOta(attributes),
-                ),
-            };
+        const devices = [...this.#devices.values()].flatMap(entry => {
+            let details: MatterNodeData;
+            try {
+                details = this.#commandHandler.getNodeDetails(entry.nodeId);
+            } catch {
+                return [];
+            }
+            const attributes = this.#attributesOf(entry, details.attributes);
+            const basic = this.#basicInformationOf(entry);
+            return [
+                {
+                    id: entry.key,
+                    node_id: details.node_id,
+                    ...(entry.bridgedEndpoint === undefined
+                        ? {}
+                        : { bridge_id: entry.nodeId.toString(), endpoint: entry.bridgedEndpoint }),
+                    available: this.#isAvailable(entry, details),
+                    is_bridge: entry.bridgedEndpoint === undefined && details.is_bridge,
+                    vendor_name: stringAttribute(attributes, `${basic}/1`),
+                    product_name: stringAttribute(attributes, `${basic}/3`),
+                    node_label: stringAttribute(attributes, `${basic}/5`),
+                    serial_number: stringAttribute(attributes, `${basic}/15`),
+                    unique_id: stringAttribute(attributes, `${basic}/18`),
+                    onoff_endpoints: entry.onOffEndpoints,
+                    ...deviceDescriptionOf(
+                        entry.key,
+                        attributes,
+                        entry.relevantEndpoints,
+                        endpoint => lightCapabilitiesOf(attributes, endpoint),
+                        supportsOta(attributes),
+                        basic,
+                    ),
+                },
+            ];
         });
         this.#connection.publish(this.#topics.bridgeDevices, toBigIntAwareJson(devices), true);
     }

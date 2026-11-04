@@ -22,6 +22,10 @@ export interface DiscoveryDeviceInfo {
     serialNumber?: string;
     /** Server version, reported as the discovery origin. */
     serverVersion?: string;
+    /** Device name; defaults to the product name. */
+    name?: string;
+    /** Home Assistant identifier of the device this one is reached through (its Matter bridge). */
+    viaDevice?: string;
 }
 
 export interface DiscoveryMessage {
@@ -215,10 +219,11 @@ export function discoveryMessagesOf(
     ];
     const device = {
         identifiers: [uidBase],
-        name: info.productName ?? `Matter node ${info.device}`,
+        name: info.name ?? info.productName ?? `Matter node ${info.device}`,
         manufacturer: info.vendorName,
         model: info.productName,
         serial_number: info.serialNumber,
+        ...(info.viaDevice === undefined ? {} : { via_device: info.viaDevice }),
     };
     const origin = { name: "matter2mqtt", sw_version: info.serverVersion };
     const common = {
