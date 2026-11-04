@@ -1,0 +1,190 @@
+# MQTT bridge 开发记录：问题、踩坑与 TODO
+
+记录 `tr/feature/mqtt-bridge` 在合并上游 1.5.5、对齐 zigbee2mqtt 过程中遇到的问题，以及留给后来者的教训。
+其中「踩坑记录」一节与实现语言无关，C++ 版 matter2mqtt 同样适用。
+
+最后更新：2026-11-04。
+
+## 目标
+
+1. 合并上游最新正式版（matterjs-server **v1.5.5**）。
+2. 以 **zigbee2mqtt** 为准（不以 C++ 版 matter2mqtt 为准，它也在开发中），完整支持所有 Matter 设备类型及其参数。
+
+## 踩坑记录（跨语言，务必先读）
+
+### 1. BooleanState 本身没有语义，必须看设备类型
+
+Matter 的门磁（ContactSensor `0x0015`）、漏水（WaterLeakDetector `0x0043`）、雨滴（RainSensor `0x0044`）、
+冰冻（WaterFreezeDetector `0x0041`）**共用同一个 BooleanState cluster（`0x0045`）**，`StateValue`（属性 0）
+都是一个布尔值。四者的区别**只**在该 endpoint 的 Descriptor DeviceTypeList（`<ep>/29/0`）。
+
+- 错误做法：看到 BooleanState 就当门磁。我们的 bridge 曾经这样做（见 P1）。
+- 正确做法：按设备类型映射到 zigbee2mqtt 属性，`contact` / `water_leak` / `rain` / `water_freeze`。
+- **只有门磁需要取反**：Matter `StateValue = true` 表示"接触（门关）"，HA 的 `door` 类 `on` 表示"门开"。
+  漏水、雨滴、冰冻是 `true` = 检测到，**不能**照搬门磁的取反。
+- 一个 endpoint 可能同时列出多个设备类型（例如再加一个 PowerSource 设备类型），要遍历整个列表。
+- 设备类型都不认识时回落为 `contact`（保持兼容），不要因此不发布。
+
+后果有多严重：漏水传感器被当成门磁、又被取反之后，漏水时 HA 显示"门已关闭"，不漏水时显示"门打开"，
+**告警等于不可见**。同类问题在其他"共用 cluster、靠设备类型区分"的场景还会再出现（例如 OnOff 在灯、插座、
+水泵、风扇上的含义不同），新增设备类型时都要先查 Descriptor。
+
+### 2. DeviceTypeList 条目的键名有两种
+
+同一个设备类型条目，在 matter.js server 的属性缓存（与 Python Matter Server 兼容的格式）里按 TLV tag 编号作键：
+`{"0": 67, "1": 1}`；在别的来源里可能是字段名：`{"deviceType": 67, "revision": 1}`。两种都要接受
+（dashboard 的 `getEndpointDeviceTypes` 也是这么做的）。
+
+### 3. retained topic 比进程活得久
+
+MQTT 的 retained 消息会一直留在 broker 上。实体改名（例如 `contact` → `water_leak`）或删除后，旧的 HA discovery
+config 不会自己消失，HA 里会留下一个"幽灵实体"。bridge 每次连接都会订阅自己的 retained 命名空间，把不再发布的
+topic 清空（`StaleTopics.ts`）。C++ 版需要同样的机制，否则每次改实体都要手工清 broker。
+
+### 4. 多 endpoint 的属性冲突才加后缀
+
+同一个属性只出现在一个 endpoint 上时保持原名；多个 endpoint 都提供时，按 zigbee2mqtt 的 multiEndpoint 规则加
+`_<endpoint>` 后缀（`state_1`、`water_leak_2`），HA 实体 id 与模板同步加后缀。
+
+### 5. hub 资源极其有限（2 GB 内存，4 核 ARM）
+
+- VS Code server 及扩展常驻约 1.2 GB；TypeScript 语言服务（tsserver）单独可涨到 ~580 MB。
+- `npm run lint` 的 type-aware 检查（tsgolint）峰值约 570 MB，**曾把整机拖到 OOM 崩溃重启**。
+- 现在的做法：
+  - swap：zram 978 MB（优先级 5）+ 磁盘 `/swapfile` 2 GB（优先级 -2，已写入 `/etc/fstab`）。
+    先用 zram，满了才落盘。
+  - 所有构建、lint、测试一律通过 `/root/lowmem-run.sh <命令>` 运行：`GOMAXPROCS=1`、`GOGC=50`、
+    `UV_THREADPOOL_SIZE=2`、Node 堆上限 768 MB、`nice 10`，并放进 `MemoryMax=900M` 的 cgroup，超限时内核只杀
+    这一条命令。
+  - oxlint / oxfmt 加 `--threads=1`。
+  - 构建和测试期间不运行常驻的 matter-server 或 bridge。
+  - 一次只跑一条重任务，不并发。
+- 原始日志一律写到磁盘，**不要写到 `/tmp`**（tmpfs，重启即丢）。
+
+### 6. 在 hub 上跑测试的已知坑
+
+- 起一个 matter-server 进程约需 32 s，其中仅 import ws-controller 就约 26 s（matter.js 0.18，模块初始化开销，
+  与 source map 或编译缓存无关）。超时时间按 30 s 写死的测试在 hub 上会超时。
+- 以 root 运行时 `chmod 0500` 拦不住写入，依赖文件权限的测试会失败。
+- `IntegrationTest` 会发真实的 mDNS 广播、起真实的 Matter 节点，会干扰同机或同网段的其他测试，跑之前先确认。
+- 部分 matter-server 测试（DCL、unix socket 等）会 spawn 真实服务进程，同样会发 mDNS。
+
+## 已完成
+
+| 提交 | 内容 |
+|------|------|
+| `11735ed` | Merge upstream v1.5.5（matter.js 0.18.0） |
+| `58d4cdf` | 1.5 新增配网能力接入 MQTT：`discovery_timeout_s`、错误 `reason`、`parse_onboarding_payload`、`device/share` 补全字段 |
+| `994b8cc` | 修复 P1：BooleanState 按设备类型发布为 `contact` / `water_leak` / `rain` / `water_freeze` |
+
+## 问题
+
+### P1 · 漏水 / 雨滴 / 冰冻传感器被当成门磁发布 —— **已修复（B0）**
+
+bridge 自身的 bug，不是 zigbee2mqtt 或 Home Assistant 的。原因和正确做法见踩坑记录第 1 条。升级后，旧的
+`.../contact/config` discovery topic 会被 bridge 的 retained 清理机制自动清掉（踩坑记录第 3 条）。
+
+### P2 · Matter 网桥后面的子设备没有拆成独立设备
+
+Aggregator（如 Hue / Aqara 网关接入的设备）作为一个节点发布，子设备只靠 `_<endpoint>` 后缀区分。z2m 的语义是
+每个物理设备一个 topic、一个 HA 设备。需要设计：子设备的 topic 命名、`bridge/devices` 中的表示、可用性与改名。
+
+### P3 · `bridge/devices` 缺少 z2m 的 `definition.exposes`
+
+z2m 在 `bridge/devices` 中为每个设备给出 `definition`（型号、厂商、描述）和 `exposes`（每个参数的类型、取值范围、
+单位、读写权限），z2m 前端和第三方集成都依赖它。我们目前只有 `vendor_name`、`product_name`、`onoff_endpoints`。
+后续每加一类设备都要同步 exposes，**宜尽早定格式**。
+
+### P4 · 测试在 hub 上无法全绿（判断为环境问题，需重新取证）
+
+2026-11-03 的观察：
+
+| 失败 | 判断 |
+|------|------|
+| ws-controller `WsBackpressureReproTest` 3 条超时（60 s） | 上游 1.5.3 新增的压力测试，单核跑不完 500 轮；干净的 v1.5.5 worktree 在同机复现，耗时与失败一致 |
+| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 6 条） |
+| matter-server `OtaUploadHandlerTest` 2 条 | root 运行 + 时序竞态 |
+| matter-server `IntegrationTest` | 未运行 |
+
+**原始日志当时写在 tmpfs，已随重启丢失。** 按本仓库规则，任何 bug 报告或根因结论都必须附完整原始日志。
+若要据此向上游报告或下结论，须重新跑并把日志保存到磁盘。
+
+### P5 · hub 上启动慢
+
+matter.js 0.18 下仅加载模块约 26 s（`@matter/main` 本身 14 s）。**没有 1.4.0 的基线，不能断定是回归**。
+bridge 自身只增加不到 1 s。
+
+### P6 · 杂项
+
+- 从 checkout 直接运行时，`bridge/info.version` 显示 `0.0.0-git`；release tarball 打包时才写入版本号。
+- `/var/lib/matter2mqtt.bak-20261103-pre-1.5.5`：升级到 matter.js 0.18 前的存储备份，确认不再回退旧版后可删除。
+
+## TODO
+
+### 目标 1 · 合并 release
+
+- [x] 合并 v1.5.5
+- [x] A 批：1.5 配网能力接入 MQTT
+- [ ] review 后 push
+- [ ] 在不干扰其他测试的时段跑一次 matter-server `IntegrationTest`（日志存盘）
+- [ ] （可选）测一次 1.4.0 的启动耗时，判断 P5 是否为回归
+
+### 目标 2 · zigbee2mqtt 对齐（建议顺序）
+
+- [x] **B0 修复 P1**：BooleanState 按设备类型区分
+- [ ] **B1 只读传感器**
+  - [ ] 气压 `pressure`、流量 `flow`、土壤湿度 `soil_moisture`
+  - [ ] 空气质量 `air_quality`，以及 `co2`、`co`、`pm1`、`pm25`、`pm10`、`voc`、`no2`、`o3`、`formaldehyd`、`radon`
+  - [ ] 烟雾 / CO 报警 `smoke`、`carbon_monoxide`、测试 / 静音状态
+  - [ ] 电量计 `power`、`voltage`、`current`、`energy`
+  - [ ] 电源详情：`battery_low`、电池电压、市电 / 电池供电
+- [ ] **C-exposes（P3）**：`bridge/devices` 增加 `definition` 与 `exposes`，补齐已支持设备的 exposes
+- [ ] **B2 常用控制**
+  - [ ] 窗帘 WindowCovering → `cover`（`state`、`position`、`tilt`）
+  - [ ] 门锁 DoorLock → `lock`（`state`、`lock_state`）
+  - [ ] 温控 / 空调 Thermostat、RoomAirConditioner → `climate`（`local_temperature`、`occupied_heating_setpoint`、`system_mode`、`running_state` 等）
+  - [ ] 风扇 / 空气净化器 / 油烟机 FanControl → `fan`（`fan_mode`、`fan_speed`）
+  - [ ] 水阀 ValveConfigurationAndControl → `valve`
+  - [ ] 水泵 PumpConfigurationAndControl
+  - [ ] ModeSelect → `select`
+- [ ] **B3 按键与事件**：GenericSwitch、Doorbell → `action`（`single` / `double` / `hold` / `release` 等），HA event / device_trigger
+- [ ] **B4 灯与插座通用参数**：`power_on_behavior`、`effect`（identify）、`color_temp_startup`、上电亮度、`on_time` / `off_wait_time`
+- [ ] **B7 Matter 网桥（P2）**：子设备拆成独立 z2m 设备
+- [ ] **B5 家电**：洗碗机、洗衣机、烘干机、冰箱 / 温控柜、烤箱、灶台、微波炉（OperationalState、各 Mode cluster、TemperatureControl）；扫地机 → HA `vacuum`
+- [ ] **B6 能源**：EnergyEvse、WaterHeater、HeatPump、SolarPower、BatteryStorage、DeviceEnergyManagement、电表 / 电价
+- [ ] **C 桥级功能（其余）**
+  - [ ] `bridge/event`（设备加入 / interview / 离开）
+  - [ ] `bridge/logging`
+  - [ ] `bridge/request/health_check`
+  - [ ] `last_seen`
+  - [ ] `device/options`
+  - [ ] `device/bind` / `unbind`（Matter Binding，开关类设备控灯依赖它）
+  - [ ] Matter groups（`bridge/groups`、`group/*`）
+  - [ ] `networkmap`（复用上游 Thread 拓扑）
+- [ ] 厂商私有 cluster（Aqara、Eve、Heiman、IKEA、Yeelight 等，定义已在 custom-clusters 包）按需映射
+
+每批：单独提交、带测试、同步 `docs/mqtt_api.md` 与 `docs/mqtt_api.zh-CN.md`，构建与测试通过 `/root/lowmem-run.sh` 运行。
+
+## 不在 MQTT 范围内
+
+- 摄像头、可视门铃、对讲（Camera、VideoDoorbell、Intercom 等）：视频走 WebRTC，MQTT 不承载；门铃按键事件归入 B3。
+- 媒体类（Speaker、BasicVideoPlayer、CastingVideoPlayer、ContentApp 等）：z2m 无对应概念，最后再议。
+- 纯控制器与基础设施（各类 Switch / Controller 设备类型本身、ThreadBorderRouter、NetworkInfrastructureManager、
+  CameraController、ControlBridge）：没有可发布的状态。
+
+## 附：Matter 设备类型覆盖（82 种，来自 matter.js 模型）
+
+| 分类 | 设备类型 | 状态 |
+|------|----------|------|
+| 灯 | OnOffLight、DimmableLight、ColorTemperatureLight、ExtendedColorLight | 已支持（缺 B4 参数） |
+| 插座 / 墙装 | OnOffPlugInUnit、DimmablePlugInUnit、MountedOnOffControl、MountedDimmableLoadControl | 已支持（缺 B4 参数） |
+| 传感器 | OccupancySensor、LightSensor、TemperatureSensor、HumiditySensor、ContactSensor | 已支持 |
+| 传感器 | WaterLeakDetector、RainSensor、WaterFreezeDetector | 已支持（B0 修复） |
+| 传感器 | PressureSensor、FlowSensor、SoilSensor、AirQualitySensor、SmokeCoAlarm、ElectricalMeter | B1 |
+| 控制 | WindowCovering、DoorLock、Thermostat、RoomAirConditioner、Fan、AirPurifier、ExtractorHood、WaterValve、Pump、ModeSelect | B2 |
+| 按键 / 事件 | GenericSwitch、Doorbell、Chime | B3 |
+| 网桥 | Aggregator（及 BridgedNode） | B7 |
+| 家电 | Dishwasher、LaundryWasher、LaundryDryer、Refrigerator、TemperatureControlledCabinet、Oven、CookSurface、Cooktop、MicrowaveOven、RoboticVacuumCleaner | B5 |
+| 能源 | EnergyEvse、WaterHeater、HeatPump、SolarPower、BatteryStorage、ElectricalUtilityMeter、ElectricalEnergyTariff、MeterReferencePoint | B6 |
+| 其他 | IrrigationSystem、ClosureController、Closure、ClosurePanel | 待评估（Closure 为 Matter 1.5 新的窗帘/门模型，可并入 B2） |
+| 范围外 | Camera、SnapshotCamera、FloodlightCamera、AudioDoorbell、VideoDoorbell、Intercom、CameraController、Speaker、BasicVideoPlayer、CastingVideoPlayer、CastingVideoClient、ContentApp、VideoRemoteControl、各类 Switch / Controller、ControlBridge、ThreadBorderRouter、NetworkInfrastructureManager | — |
