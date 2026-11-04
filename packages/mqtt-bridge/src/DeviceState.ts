@@ -6,6 +6,7 @@
 
 import type { AttributesData } from "@matter-server/ws-controller";
 import { hsvToXY, miredsToXY, xyToHsv, xyToMireds } from "./ColorMath.js";
+import { CONTROLS, controlsOf } from "./Controls.js";
 import { COLOR_CLUSTER_ID, LEVEL_CLUSTER_ID, ONOFF_CLUSTER_ID, type LightCapabilities } from "./LightCapabilities.js";
 import { BASIC_INFORMATION_CLUSTER_ID, OTA_REQUESTOR_CLUSTER_ID } from "./OtaState.js";
 import { DEVICE_SENSORS, deviceSensorEndpointOf, ENDPOINT_SENSORS } from "./Sensors.js";
@@ -35,6 +36,7 @@ export const STATE_ATTRIBUTE_PATHS: ReadonlySet<string> = new Set([
     `${COLOR_CLUSTER_ID}/8`, // colorMode
     `${COLOR_CLUSTER_ID}/16384`, // enhancedCurrentHue
     ...ENDPOINT_SENSORS.flatMap(sensor => sensor.paths),
+    ...CONTROLS.flatMap(control => control.paths),
     ...DEVICE_LEVEL_STATE_PATHS,
 ]);
 
@@ -61,6 +63,7 @@ export function relevantEndpointsOf(attributes: AttributesData): number[] {
         .filter(
             endpoint =>
                 attributes[`${endpoint}/${ONOFF_CLUSTER_ID}/0`] !== undefined ||
+                controlsOf(attributes, endpoint).length > 0 ||
                 ENDPOINT_SENSORS.some(sensor => sensor.present(attributes, endpoint)),
         )
         .sort((a, b) => a - b);
@@ -90,6 +93,9 @@ export function endpointPropertyKeysOf(
     }
     if (caps.colorTemp) {
         keys.push("color_temp");
+    }
+    for (const control of controlsOf(attributes, endpoint)) {
+        keys.push(...control.keys(attributes, endpoint));
     }
     for (const sensor of ENDPOINT_SENSORS) {
         if (sensor.present(attributes, endpoint)) {
@@ -248,6 +254,10 @@ export function endpointStateOf(
 
     if (caps.colorTemp || caps.hueSaturation || caps.xy) {
         Object.assign(state, colorStateOf(attributes, endpoint, caps));
+    }
+
+    for (const control of controlsOf(attributes, endpoint)) {
+        Object.assign(state, control.state(attributes, endpoint));
     }
 
     for (const sensor of ENDPOINT_SENSORS) {

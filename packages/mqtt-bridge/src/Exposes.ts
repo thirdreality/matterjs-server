@@ -6,6 +6,7 @@
 
 import type { AttributesData } from "@matter-server/ws-controller";
 import { PowerSource } from "@matter/main/clusters";
+import { controlsOf } from "./Controls.js";
 import { endpointPropertyKeysOf, propertyNameResolver } from "./DeviceState.js";
 import type { LightCapabilities } from "./LightCapabilities.js";
 import { DEVICE_SENSORS, deviceSensorEndpointOf, ENDPOINT_SENSORS, type SensorProperty } from "./Sensors.js";
@@ -102,6 +103,12 @@ export function exposesOf(
                 );
             }
             exposes.push(withEndpoint("state", { type: caps.brightness ? "light" : "switch", features }));
+        }
+
+        for (const control of controlsOf(attributes, endpoint)) {
+            for (const expose of control.exposes(attributes, endpoint, key => nameOf(endpoint, key))) {
+                exposes.push(withEndpoint(control.primaryKey, expose));
+            }
         }
 
         for (const sensor of ENDPOINT_SENSORS) {

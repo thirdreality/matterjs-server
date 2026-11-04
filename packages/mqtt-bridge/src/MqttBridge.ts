@@ -12,7 +12,7 @@ import {
     type MatterNodeData,
 } from "@matter-server/ws-controller";
 import { Logger, NodeId, ObserverGroup } from "@matter/main";
-import { ClusterId, EndpointNumber } from "@matter/main/types";
+import { AttributeId, ClusterId, EndpointNumber } from "@matter/main/types";
 import {
     CREDENTIAL_COMMAND_NAMES,
     DEFAULT_COMMISSION_MODE,
@@ -20,14 +20,15 @@ import {
     OTA_COMMAND_NAMES,
     type BridgeCommandContext,
 } from "./BridgeCommands.js";
+import { controllableEndpointsOf, isDeviceWrite, parseEndpointSet, type DeviceAction } from "./Controls.js";
 import { deviceStateOf, isDeviceLevelStateAttribute, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
 import { bridgeDiscoveryMessagesOf, discoveryMessagesOf } from "./Discovery.js";
 import { deviceDescriptionOf } from "./Exposes.js";
 import { lightCapabilitiesOf } from "./LightCapabilities.js";
 import { MqttConnection } from "./MqttConnection.js";
-import { onOffEndpointsOf, onOffValueOf } from "./OnOffState.js";
+import { onOffEndpointsOf } from "./OnOffState.js";
 import { OtaTracker, supportsOta } from "./OtaState.js";
-import { messageOf, parseSetObject, splitByEndpointSuffix } from "./SetCommands.js";
+import { messageOf, splitByEndpointSuffix } from "./SetCommands.js";
 import { staleRetainedReason } from "./StaleTopics.js";
 import { DISCOVERY_PREFIX, Topics } from "./Topics.js";
 
@@ -254,12 +255,6 @@ export class MqttBridge {
             void this.#handleGet(entry);
             return;
         }
-        const endpoint = parsed.endpoint ?? entry.onOffEndpoints[0];
-        if (endpoint === undefined || !entry.onOffEndpoints.includes(endpoint)) {
-            logger.warn(`Device "${parsed.device}" has no OnOff support on endpoint ${endpoint ?? "(none)"}`);
-            return;
-        }
-
         let attributes;
         try {
             attributes = this.#commandHandler.getNodeDetails(entry.nodeId).attributes;
@@ -267,43 +262,57 @@ export class MqttBridge {
             logger.warn(`Cannot resolve capabilities for "${parsed.device}"`);
             return;
         }
+        const controllable = controllableEndpointsOf(attributes);
+        const endpoint = parsed.endpoint ?? controllable[0];
+        if (endpoint === undefined || !controllable.includes(endpoint)) {
+            logger.warn(`Device "${parsed.device}" has nothing to control on endpoint ${endpoint ?? "(none)"}`);
+            return;
+        }
         const message = messageOf(payload, parsed.attribute);
         if (message === undefined) {
             logger.warn(`Ignoring unsupported set payload for "${parsed.device}": ${payload}`);
             return;
         }
-        for (const [targetEndpoint, subMessage] of splitByEndpointSuffix(message, entry.onOffEndpoints, endpoint)) {
-            const caps = lightCapabilitiesOf(attributes, targetEndpoint);
-            const result = parseSetObject(subMessage, caps, onOffValueOf(attributes, targetEndpoint));
+        for (const [targetEndpoint, subMessage] of splitByEndpointSuffix(message, controllable, endpoint)) {
+            const result = parseEndpointSet(subMessage, attributes, targetEndpoint);
             if (result === undefined) {
                 continue;
             }
             for (const warning of result.warnings) {
                 logger.warn(`Set for "${parsed.device}": ${warning}`);
             }
-            void this.#runCommands(entry, targetEndpoint, result.commands);
+            void this.#runActions(entry, targetEndpoint, result.actions);
         }
     }
 
-    /** Execute parsed set commands in order; a failing command is logged and does not stop the rest. */
-    async #runCommands(
-        entry: DeviceEntry,
-        endpoint: number,
-        commands: { clusterId: number; commandName: string; data: Record<string, unknown> }[],
-    ): Promise<void> {
+    /** Execute parsed set actions in order; a failing action is logged and does not stop the rest. */
+    async #runActions(entry: DeviceEntry, endpoint: number, actions: DeviceAction[]): Promise<void> {
         const node = this.#commandHandler.formatNode(entry.nodeId);
-        for (const command of commands) {
-            logger.info(`MQTT command for node ${node}/${endpoint}: ${command.commandName}`);
+        for (const action of actions) {
+            const label = isDeviceWrite(action)
+                ? `write ${action.clusterId}/${action.attributeId}`
+                : action.commandName;
+            logger.info(`MQTT command for node ${node}/${endpoint}: ${label}`);
             try {
-                await this.#commandHandler.handleInvoke({
-                    nodeId: entry.nodeId,
-                    endpointId: EndpointNumber(endpoint),
-                    clusterId: ClusterId(command.clusterId),
-                    commandName: command.commandName,
-                    data: command.data,
-                });
+                if (isDeviceWrite(action)) {
+                    await this.#commandHandler.handleWriteAttribute({
+                        nodeId: entry.nodeId,
+                        endpointId: EndpointNumber(endpoint),
+                        clusterId: ClusterId(action.clusterId),
+                        attributeId: AttributeId(action.attributeId),
+                        value: action.value,
+                    });
+                } else {
+                    await this.#commandHandler.handleInvoke({
+                        nodeId: entry.nodeId,
+                        endpointId: EndpointNumber(endpoint),
+                        clusterId: ClusterId(action.clusterId),
+                        commandName: action.commandName,
+                        data: action.data,
+                    });
+                }
             } catch (error) {
-                logger.warn(`Command "${command.commandName}" failed for node ${node}:`, error);
+                logger.warn(`"${label}" failed for node ${node}:`, error);
             }
         }
     }

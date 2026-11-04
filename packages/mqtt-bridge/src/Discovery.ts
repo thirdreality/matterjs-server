@@ -6,6 +6,7 @@
 
 import type { AttributesData } from "@matter-server/ws-controller";
 import { COMMISSION_MODE_NAMES } from "./BridgeCommands.js";
+import { controlsOf } from "./Controls.js";
 import { endpointPropertyKeysOf, propertyNameResolver } from "./DeviceState.js";
 import type { LightCapabilities } from "./LightCapabilities.js";
 import { supportsOta } from "./OtaState.js";
@@ -287,6 +288,24 @@ export function discoveryMessagesOf(
                 state_on: "ON",
                 state_off: "OFF",
             });
+        }
+
+        for (const control of controlsOf(attributes, endpoint)) {
+            const numbered = nameOf(endpoint, control.primaryKey) !== control.primaryKey;
+            const entities = control.discovery(attributes, endpoint, {
+                nameOf: key => nameOf(endpoint, key),
+                commandTopic: numbered
+                    ? `${topics.deviceState(info.device, endpoint)}/set`
+                    : `${topics.deviceState(info.device)}/set`,
+                entityName: base => (numbered ? `${base} ${endpoint}` : base),
+            });
+            for (const { component, objectId, config } of entities) {
+                add(component, numbered ? `${objectId}_${endpoint}` : objectId, {
+                    ...common,
+                    ...config,
+                    unique_id: `${uidBase}_${objectId}_${endpoint}`,
+                });
+            }
         }
 
         const objectId = (base: string) =>

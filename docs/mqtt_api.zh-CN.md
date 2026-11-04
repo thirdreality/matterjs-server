@@ -223,6 +223,10 @@ node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_
 | `water_leak` | WaterLeakDetector（`0x0043`）上的 BooleanState `69/0` | `true` = 检测到漏水 |
 | `rain` | RainSensor（`0x0044`）上的 BooleanState `69/0` | `true` = 检测到下雨 |
 | `water_freeze` | WaterFreezeDetector（`0x0041`）上的 BooleanState `69/0` | `true` = 检测到冰冻 |
+| `state`（窗帘） | WindowCovering `258/14`，没有则 `258/15` | `OPEN`，完全关闭时为 `CLOSE` |
+| `position` | WindowCovering `258/14` | 0（关）– 100（开），`100 - raw/100` |
+| `tilt` | WindowCovering `258/15` | 0（关）– 100（开），`100 - raw/100` |
+| `moving` | WindowCovering `258/10`（global 位） | `UP`（正在打开）、`DOWN`（正在关闭）、`STOP` |
 | `pressure` | PressureMeasurement `1027/0` | hPa（原始单位 0.1 kPa 恰好等于 hPa） |
 | `flow` | FlowMeasurement `1028/0` | m³/h，`raw/10` |
 | `soil_moisture` | SoilMeasurement `1072/1` | % |
@@ -397,10 +401,14 @@ matter2mqtt/5/set/color        →  {"hue":120,"saturation":80}
 
 1. 属性上的 `_<endpoint>` 后缀（`{"state_1":"ON","state_2":"OFF"}` 一条消息同时操作双路继电器的两个 endpoint）；
 2. topic 中的 `<endpoint>` 段（`<prefix>/<node>/2/set`）；
-3. 节点的第一个 OnOff endpoint。
+3. 节点的第一个可控 endpoint。
 
-后缀数字不属于已知 OnOff endpoint 时，会被当成属性名的一部分（与 zigbee2mqtt 一致）。命令只对暴露 OnOff cluster
-的 endpoint 生效，其余情况打日志后丢弃。
+带 OnOff cluster 或设备控制（目前是窗帘）的 endpoint 是可控的。后缀数字不属于可控 endpoint 时，会被当成属性名的
+一部分（与 zigbee2mqtt 一致）。发给其他 endpoint 的命令打日志后丢弃。
+
+在目标 endpoint 上，各设备控制先认领自己的属性（窗帘认领 `state`、`position`、`tilt`），剩下的交给下文的灯处理，
+谁都不认领的属性记为不支持。所以同一个属性名在不同 endpoint 上含义不同：`state` 在灯上是 `ON`/`OFF`，在窗帘上是
+`OPEN`/`CLOSE`/`STOP`。
 
 ### 颜色格式
 
@@ -484,6 +492,17 @@ LevelControl 与 ColorControl 命令均带 `optionsMask: 0, optionsOverride: 0` 
   命令，这样灯是带着新颜色亮起来的。
 
 同一条消息产生的多个命令按序 invoke。某个命令失败只打日志，不影响后续命令。
+
+### 窗帘
+
+| 消息 | Matter 命令（WindowCovering `258`） |
+|------|--------------------------------------|
+| `state: "OPEN"` / `"CLOSE"` / `"STOP"`（大小写不限） | `upOrOpen` / `downOrClose` / `stopMotion` |
+| `position` 0–100 | `goToLiftPercentage`，`liftPercent100thsValue = (100 - position) * 100`；需要 PositionAwareLift feature |
+| `tilt` 0–100 | `goToTiltPercentage`，`tiltPercent100thsValue = (100 - tilt) * 100`；需要 PositionAwareTilt feature |
+
+zigbee2mqtt 的 `position`、`tilt` 从关（0）数到开（100）；Matter 从开（0）数到关（10000）。裸载荷 `OPEN`、`CLOSE`、
+`STOP` 等同于 `{"state": …}`。
 
 ### `<prefix>/<node>/get`
 
@@ -671,6 +690,7 @@ broker 随即回放的 retained topic 会与刚刚发布的内容比对，多出
 |------|------|
 | OnOff + LevelControl | `light`，JSON schema，`brightness_scale: 254`，`supported_color_modes` 由 ColorControl feature map 推导（`hs`、`xy`、`color_temp`），`min_mireds`/`max_mireds` 取设备上报值 |
 | 仅 OnOff | `switch`（载荷 `{"state":"ON"}` / `{"state":"OFF"}`） |
+| WindowCovering | `cover`，载荷 `{"state":"OPEN"\|"CLOSE"\|"STOP"}`；窗帘跟踪位置时带 position 与 tilt 模板；device class 由 EndProductType 映射为 `shade`、`blind`、`curtain`、`shutter` 或 `awning` |
 | OccupancySensing | `binary_sensor`，device class `motion` |
 | BooleanState（ContactSensor） | `binary_sensor`，device class `door`，取反（`contact: false` = 打开 = `on`） |
 | BooleanState（WaterLeakDetector / RainSensor） | `binary_sensor`，device class `moisture`，不取反 |

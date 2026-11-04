@@ -233,6 +233,10 @@ built from the controller's attribute cache, so it is available without an extra
 | `water_leak` | BooleanState `69/0` on a WaterLeakDetector (`0x0043`) | `true` = leak detected |
 | `rain` | BooleanState `69/0` on a RainSensor (`0x0044`) | `true` = rain detected |
 | `water_freeze` | BooleanState `69/0` on a WaterFreezeDetector (`0x0041`) | `true` = freezing detected |
+| `state` (cover) | WindowCovering `258/14`, else `258/15` | `OPEN`, or `CLOSE` when fully closed |
+| `position` | WindowCovering `258/14` | 0 (closed) – 100 (open), `100 - raw/100` |
+| `tilt` | WindowCovering `258/15` | 0 (closed) – 100 (open), `100 - raw/100` |
+| `moving` | WindowCovering `258/10` (global bits) | `UP` (opening), `DOWN` (closing), `STOP` |
 | `pressure` | PressureMeasurement `1027/0` | hPa (the raw 0.1 kPa unit is exactly hPa) |
 | `flow` | FlowMeasurement `1028/0` | m³/h, `raw/10` |
 | `soil_moisture` | SoilMeasurement `1072/1` | % |
@@ -426,11 +430,16 @@ The target endpoint is, in order of precedence:
 1. the `_<endpoint>` suffix on a property (`{"state_1":"ON","state_2":"OFF"}` addresses both endpoints of a
    dual relay in one message),
 2. the `<endpoint>` topic segment (`<prefix>/<node>/2/set`),
-3. the node's first OnOff endpoint.
+3. the node's first controllable endpoint.
 
-A suffix that does not match a known OnOff endpoint is treated as part of the property name (matching
-zigbee2mqtt). Commands are only accepted for endpoints that expose the OnOff cluster; anything else is
-logged and dropped.
+An endpoint is controllable when it has the OnOff cluster or a device control (currently a cover). A
+suffix that does not match a controllable endpoint is treated as part of the property name (matching
+zigbee2mqtt). Commands for any other endpoint are logged and dropped.
+
+On the target endpoint, each device control takes its own properties first (a cover takes `state`,
+`position` and `tilt`), the light handling below takes what is left, and a property nobody takes is logged
+as unsupported. The same property name can therefore mean different things on different endpoints: `state`
+is `ON`/`OFF` on a light and `OPEN`/`CLOSE`/`STOP` on a cover.
 
 ### Color formats
 
@@ -523,6 +532,17 @@ zigbee2mqtt decision rules the bridge follows:
 
 Commands from one message are invoked sequentially. A failing command is logged and does not stop the
 remaining ones.
+
+### Covers
+
+| Message | Matter command (WindowCovering `258`) |
+|---------|----------------------------------------|
+| `state: "OPEN"` / `"CLOSE"` / `"STOP"` (any case) | `upOrOpen` / `downOrClose` / `stopMotion` |
+| `position` 0–100 | `goToLiftPercentage`, `liftPercent100thsValue = (100 - position) * 100`; needs the PositionAwareLift feature |
+| `tilt` 0–100 | `goToTiltPercentage`, `tiltPercent100thsValue = (100 - tilt) * 100`; needs the PositionAwareTilt feature |
+
+zigbee2mqtt counts `position` and `tilt` from closed (0) to open (100); Matter counts closure from open (0)
+to closed (10000). A bare `OPEN`, `CLOSE` or `STOP` payload works like `{"state": …}`.
 
 ### `<prefix>/<node>/get`
 
@@ -739,6 +759,7 @@ BasicInformation carries no product name.
 |-----------|--------|
 | OnOff + LevelControl | `light`, JSON schema, `brightness_scale: 254`, `supported_color_modes` from the ColorControl feature map (`hs`, `xy`, `color_temp`), `min_mireds`/`max_mireds` from the device |
 | OnOff only | `switch` (`{"state":"ON"}` / `{"state":"OFF"}` payloads) |
+| WindowCovering | `cover` with `{"state":"OPEN"\|"CLOSE"\|"STOP"}` payloads; position and tilt templates when the cover tracks them; device class `shade`, `blind`, `curtain`, `shutter` or `awning` from EndProductType |
 | OccupancySensing | `binary_sensor`, device class `motion` |
 | BooleanState (ContactSensor) | `binary_sensor`, device class `door`, inverted (`contact: false` = open = `on`) |
 | BooleanState (WaterLeakDetector / RainSensor) | `binary_sensor`, device class `moisture`, not inverted |
