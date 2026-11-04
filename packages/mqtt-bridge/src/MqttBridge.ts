@@ -19,6 +19,7 @@ import {
     executeBridgeCommand,
     OTA_COMMAND_NAMES,
     type BridgeCommandContext,
+    type ResolvedDevice,
 } from "./BridgeCommands.js";
 import {
     BRIDGED_BASIC_INFORMATION_CLUSTER_ID,
@@ -122,7 +123,14 @@ export class MqttBridge {
     ) {
         this.#commandHandler = commandHandler;
         this.#commandContext =
-            commandContext === undefined ? undefined : { ...commandContext, commandHandler, ota: this.#ota };
+            commandContext === undefined
+                ? undefined
+                : {
+                      ...commandContext,
+                      commandHandler,
+                      ota: this.#ota,
+                      resolveDevice: device => this.#resolveDevice(device),
+                  };
         this.#serverVersion = options.serverVersion;
         this.#lastSeenEnabled = options.lastSeen === true;
         this.#topics = new Topics(options.prefix ?? "matter2mqtt");
@@ -628,6 +636,23 @@ export class MqttBridge {
             return;
         }
         this.#connection.publish(this.#topics.deviceState(entry.key), JSON.stringify(state), true);
+    }
+
+    #resolveDevice(device: string): ResolvedDevice | undefined {
+        const entry = this.#devices.get(device);
+        if (entry === undefined) {
+            return undefined;
+        }
+        try {
+            const { attributes } = this.#commandHandler.getNodeDetails(entry.nodeId);
+            return {
+                nodeId: entry.nodeId,
+                attributes: this.#attributesOf(entry, attributes),
+                nodeAttributes: attributes,
+            };
+        } catch {
+            return undefined;
+        }
     }
 
     #markSeen(nodeId: NodeId, endpoint: number): void {

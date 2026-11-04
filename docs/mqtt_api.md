@@ -762,6 +762,8 @@ numbers). For every other command a payload that is not a JSON object is rejecte
 | `device/interview` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/rename` | `{"id": <node id>, "name": "…"}` | `{"id": <node id>, "name": "…"}` |
 | `device/share` | `{"id": <node id>, "timeout": 900}` | `{"id": <node id>, "manual_code": "…", "qr_code": "MT:…", "setup_pin_code": 20202021, "discriminator": 3840, "vendor_id": 4939, "product_id": 1, "commissioning_timeout": 900}` |
+| `device/bind` | `{"from": <device>, "to": <device>, "from_endpoint": 1, "to_endpoint": 1, "clusters": ["OnOff"]}` (endpoints and clusters optional) | `{"from": …, "from_endpoint": 1, "to": …, "to_endpoint": 1, "clusters": ["OnOff", "LevelControl"], "failed": []}` |
+| `device/unbind` | as `device/bind` | as `device/bind` |
 | `device/ota_update/check` | `{"id": <node id>}` | `{"id": …, "update_available": true, "latest_version": 16777236, "latest_version_string": "1.0.4", "latest_source": "main-net-dcl", "latest_release_notes": "…"}` |
 | `device/ota_update/update` | `{"id": <node id>, "software_version": 16777236}` | `{"id": …, "software_version": 16777236, "software_version_string": "1.0.4"}` |
 
@@ -817,6 +819,28 @@ credential store, which also enables MeshCoP diagnostics for that Thread network
 
 All credential commands write the reserved `default` credential entry — the same entry the WebSocket API
 uses when no `id` is given. Named credential lists are WebSocket-only for now.
+
+**device/bind** lets a controller — a switch, a dimmer, a remote — command another device directly, without
+the bridge in between, as zigbee2mqtt's bind does. Matter needs two writes for that, which the bridge does in
+this order:
+
+1. On the target (`to`), an AccessControl entry granting the source node Operate on the bound clusters of the
+   target endpoint (CASE). Skipped when the existing entries already grant it, and when both devices are on
+   the same node (two devices behind one Matter bridge), as a node always has access to itself.
+2. On the source (`from`), Binding targets naming the target node, endpoint and each cluster.
+
+Both lists are written whole (Matter has no "add one entry"), so the bridge reads the current lists from the
+cache and adds to them. It refuses with an error, writing nothing, when the target's ACL is not known or has no
+administrator entry: writing an ACL that lacks the controller's own entry would lock the controller out of the
+device for good. `from` and `to` are `<device>` segments (bridged devices included). Without `from_endpoint` the
+first endpoint with a Binding cluster is used; without `clusters`, the bindable clusters (OnOff, LevelControl,
+ColorControl, WindowCovering, DoorLock, Thermostat, FanControl) the source has as clients and the target endpoint
+serves; without `to_endpoint`, the first target endpoint serving them. Clusters may be given by Matter name,
+zigbee2mqtt name (`genOnOff`, `genLevelCtrl`, `lightingColorCtrl`, …) or id. Binding to groups is not supported
+yet.
+
+**device/unbind** removes those binding targets, then removes the clusters from ACL entries shaped like the ones
+`device/bind` adds (Operate, CASE, the source as the only subject). Other entries are left alone.
 
 **device/rename** writes BasicInformation `nodeLabel` (`0/40/5`). **device/share** opens a commissioning
 window and returns the pairing codes for multi-admin sharing, together with the setup PIN code,
@@ -973,7 +997,7 @@ only reachable through the [WebSocket API](websockets_api.md).
 | Device state | Retained per-node JSON, zigbee2mqtt property names | `attribute_updated` events, raw `endpoint/cluster/attribute` paths |
 | Device control | `<node>/set` with high-level properties | `device_command`, `write_attribute` (raw cluster commands) |
 | Commissioning | `bridge/request/commission` (`default` credentials), `bridge/request/parse_onboarding_payload` | `commission_with_code`, `commission_on_network`, named credential lists |
-| Node management | `bridge/request/device/{remove,interview,rename,share}` | `remove_node`, `interview_node`, `write_attribute`, `open_commissioning_window` |
+| Node management | `bridge/request/device/{remove,interview,rename,share,bind,unbind}` | `remove_node`, `interview_node`, `write_attribute`, `open_commissioning_window` |
 | Firmware updates | `bridge/request/device/ota_update/{check,update}` + the `update` state property | `check_node_update`, `update_node`, `initiate_ota_upload` (local image upload) |
 | Diagnostics, ACL, bindings, ICD, topology | not exposed | full command set |
 | Schema/versioning | none — the topic layout is versioned by the release | `schema_version` negotiation |

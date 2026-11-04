@@ -9,12 +9,30 @@ import {
     decodeOnboardingPayload,
     registerThreadCredentialsFromHex,
     ServerError,
+    type AttributesData,
     type ControllerCommandHandler,
     type MatterController,
 } from "@matter-server/ws-controller";
 import { Logger, MatterError, NodeId, Seconds, type Duration } from "@matter/main";
 import { AttributeId, ClusterId, EndpointNumber } from "@matter/main/types";
 import { freemem, loadavg, totalmem } from "node:os";
+import {
+    aclEntriesOf,
+    ACCESS_CONTROL_CLUSTER_ID,
+    BINDING_CLUSTER_ID,
+    bindableClustersOf,
+    bindingEndpointsOf,
+    bindingTargetsOf,
+    clusterIdOf,
+    clusterNameOf,
+    hasAdministrator,
+    targetEndpointOf,
+    withAccess,
+    withBinding,
+    withoutAccess,
+    withoutBinding,
+    type BindingRequest,
+} from "./Binding.js";
 import type { OtaTracker } from "./OtaState.js";
 
 const logger = Logger.get("BridgeCommands");
@@ -60,6 +78,16 @@ export interface BridgeCommandContext {
     commissionMode?: string;
     /** OTA bookkeeping shared with the state publisher. */
     ota?: OtaTracker;
+    /** Resolves a `<device>` topic segment, which for a device behind a Matter bridge is not a node id. */
+    resolveDevice?: (device: string) => ResolvedDevice | undefined;
+}
+
+export interface ResolvedDevice {
+    nodeId: NodeId;
+    /** The device's own attributes (for a bridged device, its endpoints only). */
+    attributes: AttributesData;
+    /** All attributes of the node, including its root endpoint. */
+    nodeAttributes: AttributesData;
 }
 
 export interface BridgeCommandResponse {
@@ -263,6 +291,49 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
      * Open a commissioning window (multi-admin share). Besides the pairing codes, the answer carries
      * what another ecosystem needs without decoding the QR code. `timeout` is in seconds.
      */
+    /**
+     * zigbee2mqtt `device/bind`: let a controller (`from`, e.g. a switch) command a device (`to`) directly.
+     * Writes the source's Binding and, across nodes, an ACL entry on the target granting the source Operate.
+     */
+    "device/bind": async (args, ctx) => {
+        const plan = bindingPlanOf(args, ctx);
+        const { commandHandler } = ctx;
+        const access = plan.acl === undefined ? undefined : withAccess(plan.acl, plan.request.access);
+        if (access !== undefined && access !== plan.acl) {
+            await writeChecked(commandHandler.setAclEntry(plan.to.nodeId, access), "target ACL");
+        }
+        await writeChecked(
+            commandHandler.setNodeBinding(
+                plan.from.nodeId,
+                EndpointNumber(plan.fromEndpoint),
+                withBinding(plan.bindings, plan.request.binding),
+            ),
+            "source binding",
+        );
+        return plan.response;
+    },
+
+    /** zigbee2mqtt `device/unbind`: remove the binding, then the ACL entry `device/bind` added for it. */
+    "device/unbind": async (args, ctx) => {
+        const plan = bindingPlanOf(args, ctx);
+        const { commandHandler } = ctx;
+        await writeChecked(
+            commandHandler.setNodeBinding(
+                plan.from.nodeId,
+                EndpointNumber(plan.fromEndpoint),
+                withoutBinding(plan.bindings, plan.request.binding),
+            ),
+            "source binding",
+        );
+        if (plan.acl !== undefined) {
+            const next = withoutAccess(plan.acl, plan.request.access);
+            if (next.length !== plan.acl.length || next.some((entry, index) => entry !== plan.acl?.[index])) {
+                await writeChecked(commandHandler.setAclEntry(plan.to.nodeId, next), "target ACL");
+            }
+        }
+        return plan.response;
+    },
+
     "device/share": async (args, { commandHandler }) => {
         const timeout = positiveNumberOf(args.timeout, "timeout");
         const window = await commandHandler.openCommissioningWindow({ nodeId: nodeIdOf(args), timeout });
@@ -424,6 +495,137 @@ function softwareVersionOf(value: unknown): number | undefined {
         throw new Error(`invalid "software_version" ${JSON.stringify(value)}`);
     }
     return version;
+}
+
+/**
+ * Resolve and check a bind/unbind request: both devices, the endpoints, the clusters, and the current binding
+ * and (across nodes) ACL lists, which are written back whole. Refuses rather than write an ACL it cannot read
+ * or that holds no administrator entry, since a wrong ACL locks the controller out of the target for good.
+ */
+function bindingPlanOf(args: Record<string, unknown>, ctx: BridgeCommandContext) {
+    const resolve = (key: unknown, role: string) => {
+        if (typeof key !== "string" && typeof key !== "number") {
+            throw new Error(`expected {"from": <device>, "to": <device>}`);
+        }
+        const device = ctx.resolveDevice?.(String(key));
+        if (device === undefined) {
+            throw new Error(`unknown ${role} device "${String(key)}"`);
+        }
+        return device;
+    };
+    const from = resolve(args.from, "source");
+    const to = resolve(args.to, "target");
+
+    const fromEndpoint = endpointArg(args.from_endpoint) ?? bindingEndpointsOf(from.attributes)[0];
+    if (fromEndpoint === undefined || from.attributes[`${fromEndpoint}/${BINDING_CLUSTER_ID}/0`] === undefined) {
+        throw new Error(
+            `device "${String(args.from)}" has no Binding cluster${fromEndpoint === undefined ? "" : ` on endpoint ${fromEndpoint}`}`,
+        );
+    }
+
+    let clusters: number[];
+    if (args.clusters !== undefined) {
+        if (!Array.isArray(args.clusters)) {
+            throw new Error('"clusters" must be a list of cluster names or ids');
+        }
+        clusters = args.clusters.map(name => {
+            const id = clusterIdOf(name);
+            if (id === undefined) {
+                throw new Error(`unknown cluster ${JSON.stringify(name)}`);
+            }
+            return id;
+        });
+    } else {
+        clusters = [];
+    }
+
+    let toEndpoint = endpointArg(args.to_endpoint);
+    if (clusters.length === 0) {
+        const candidates = toEndpoint === undefined ? targetEndpointsOf(to.attributes) : [toEndpoint];
+        for (const candidate of candidates) {
+            clusters = bindableClustersOf(from.attributes, fromEndpoint, to.attributes, candidate);
+            if (clusters.length > 0) {
+                toEndpoint = candidate;
+                break;
+            }
+        }
+        if (clusters.length === 0) {
+            throw new Error('the source controls none of the clusters the target serves; name them in "clusters"');
+        }
+    }
+    toEndpoint ??= targetEndpointOf(to.attributes, clusters);
+    if (toEndpoint === undefined) {
+        throw new Error(
+            `device "${String(args.to)}" has no endpoint serving ${clusters.map(clusterNameOf).join(", ")}`,
+        );
+    }
+
+    const bindings = bindingTargetsOf(from.nodeAttributes[`${fromEndpoint}/${BINDING_CLUSTER_ID}/0`]);
+    if (bindings === undefined) {
+        throw new Error("the source's current bindings are not known yet; try again once it reported them");
+    }
+
+    // A node always has access to itself, so a binding within one node (two devices behind the same bridge)
+    // needs no ACL entry
+    let acl;
+    if (from.nodeId !== to.nodeId) {
+        acl = aclEntriesOf(to.nodeAttributes[`0/${ACCESS_CONTROL_CLUSTER_ID}/0`]);
+        if (acl === undefined) {
+            throw new Error("the target's access control list is not known; refusing to rewrite it");
+        }
+        if (!hasAdministrator(acl)) {
+            throw new Error("the target's access control list has no administrator entry; refusing to rewrite it");
+        }
+    }
+
+    const request: BindingRequest = { node: BigInt(to.nodeId), endpoint: toEndpoint, clusters };
+    // The ACL subject is the source node; the binding target is the target node
+    const access: BindingRequest = { node: BigInt(from.nodeId), endpoint: toEndpoint, clusters };
+    return {
+        from,
+        to,
+        fromEndpoint,
+        bindings,
+        acl,
+        request: { binding: request, access },
+        response: {
+            from: String(args.from),
+            from_endpoint: fromEndpoint,
+            to: String(args.to),
+            to_endpoint: toEndpoint,
+            clusters: clusters.map(clusterNameOf),
+            failed: [],
+        },
+    };
+}
+
+function targetEndpointsOf(attributes: AttributesData): number[] {
+    const endpoints = new Set<number>();
+    for (const path of Object.keys(attributes)) {
+        const [endpoint, cluster, attribute] = path.split("/").map(Number);
+        if (cluster === 29 && attribute === 1 && endpoint !== undefined) {
+            endpoints.add(endpoint);
+        }
+    }
+    return [...endpoints].sort((a, b) => a - b);
+}
+
+function endpointArg(value: unknown): number | undefined {
+    if (value === undefined || value === null || value === "") {
+        return undefined;
+    }
+    const endpoint = typeof value === "string" ? Number(value) : value;
+    if (typeof endpoint !== "number" || !Number.isInteger(endpoint) || endpoint < 0) {
+        throw new Error(`invalid endpoint ${JSON.stringify(value)}`);
+    }
+    return endpoint;
+}
+
+async function writeChecked(write: Promise<{ status: number }[] | null>, what: string): Promise<void> {
+    const status = (await write)?.[0]?.status ?? 0;
+    if (status !== 0) {
+        throw new Error(`writing the ${what} failed with status ${status}`);
+    }
 }
 
 /** Optional positive number of seconds; Home Assistant templates deliver numbers as strings. */

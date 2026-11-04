@@ -706,6 +706,8 @@ zigbee2mqtt 的 `position`、`tilt` 从关（0）数到开（100）；Matter 从
 | `device/interview` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/rename` | `{"id": <node id>, "name": "…"}` | `{"id": <node id>, "name": "…"}` |
 | `device/share` | `{"id": <node id>, "timeout": 900}` | `{"id": <node id>, "manual_code": "…", "qr_code": "MT:…", "setup_pin_code": 20202021, "discriminator": 3840, "vendor_id": 4939, "product_id": 1, "commissioning_timeout": 900}` |
+| `device/bind` | `{"from": <device>, "to": <device>, "from_endpoint": 1, "to_endpoint": 1, "clusters": ["OnOff"]}`（endpoint 与 clusters 可省略） | `{"from": …, "from_endpoint": 1, "to": …, "to_endpoint": 1, "clusters": ["OnOff", "LevelControl"], "failed": []}` |
+| `device/unbind` | 同 `device/bind` | 同 `device/bind` |
 | `device/ota_update/check` | `{"id": <node id>}` | `{"id": …, "update_available": true, "latest_version": 16777236, "latest_version_string": "1.0.4", "latest_source": "main-net-dcl", "latest_release_notes": "…"}` |
 | `device/ota_update/update` | `{"id": <node id>, "software_version": 16777236}` | `{"id": …, "software_version": 16777236, "software_version_string": "1.0.4"}` |
 
@@ -753,6 +755,24 @@ MeshCoP 诊断（见 [Thread Network Diagnostics](websockets_api.md#thread-netwo
 
 所有凭据类命令写的都是保留的 `default` 凭据条目 —— 也就是 WebSocket API 不传 `id` 时使用的那一条。带名字的凭据
 列表目前只有 WebSocket API 支持。
+
+**device/bind** 让一个控制器（开关、调光器、遥控器）直接控制另一个设备，中间不经过 bridge，与 zigbee2mqtt 的 bind
+相同。Matter 需要两次写入，bridge 按以下顺序进行：
+
+1. 在目标（`to`）上加一条 AccessControl 条目，授予源节点对目标 endpoint 上被绑定 cluster 的 Operate 权限（CASE）。
+   现有条目已经授权、或两个设备在同一节点上（同一个 Matter 网桥后面的两个设备，节点访问自己天然有权限）时跳过。
+2. 在源（`from`）上写 Binding 目标：目标节点、endpoint 与每个 cluster。
+
+两张表都是整表写入（Matter 没有"追加一条"），所以 bridge 先从缓存读出现有内容再追加。目标的 ACL 未知或其中没有
+管理员条目时，bridge 报错且不写入任何内容：写入一个丢掉控制器自身条目的 ACL，会让控制器从此无法管理该设备。
+`from` 与 `to` 是 `<device>` 段（包括网桥子设备）。不给 `from_endpoint` 时使用第一个带 Binding cluster 的
+endpoint；不给 `clusters` 时，取源设备作为 client 拥有、且目标 endpoint 作为 server 提供的可绑定 cluster（OnOff、
+LevelControl、ColorControl、WindowCovering、DoorLock、Thermostat、FanControl）；不给 `to_endpoint` 时，取第一个提供
+这些 cluster 的目标 endpoint。cluster 可以用 Matter 名称、zigbee2mqtt 名称（`genOnOff`、`genLevelCtrl`、
+`lightingColorCtrl` 等）或 id 指定。暂不支持绑定到组。
+
+**device/unbind** 移除这些 Binding 目标，再从形如 `device/bind` 所加的 ACL 条目（Operate、CASE、源节点是唯一主体）
+中移除对应 cluster，其他条目保持不变。
 
 **device/rename** 写 BasicInformation 的 `nodeLabel`（`0/40/5`）。**device/share** 打开配网窗口并返回配对码，用于
 多管理员共享；同时返回 setup PIN、discriminator、厂商与产品 id 以及窗口的 `commissioning_timeout`（秒），方便直接
@@ -892,7 +912,7 @@ BasicInformation（40，设备元信息与固件版本）。
 | 设备状态 | 按节点的 retained JSON，zigbee2mqtt 属性名 | `attribute_updated` 事件，原始 `endpoint/cluster/attribute` 路径 |
 | 设备控制 | `<node>/set`，高层属性 | `device_command`、`write_attribute`（原始 cluster 命令） |
 | 配网 | `bridge/request/commission`（`default` 凭据）、`bridge/request/parse_onboarding_payload` | `commission_with_code`、`commission_on_network`，支持命名凭据列表 |
-| 节点管理 | `bridge/request/device/{remove,interview,rename,share}` | `remove_node`、`interview_node`、`write_attribute`、`open_commissioning_window` |
+| 节点管理 | `bridge/request/device/{remove,interview,rename,share,bind,unbind}` | `remove_node`、`interview_node`、`write_attribute`、`open_commissioning_window` |
 | 固件更新 | `bridge/request/device/ota_update/{check,update}` + `update` 状态属性 | `check_node_update`、`update_node`、`initiate_ota_upload`（本地镜像上传） |
 | 诊断、ACL、binding、ICD、拓扑 | 未暴露 | 完整命令集 |
 | Schema / 版本协商 | 无 —— topic 布局随发布版本演进 | `schema_version` 协商 |
