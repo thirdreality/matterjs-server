@@ -177,11 +177,60 @@ node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_
 | `water_leak` | WaterLeakDetector（`0x0043`）上的 BooleanState `69/0` | `true` = 检测到漏水 |
 | `rain` | RainSensor（`0x0044`）上的 BooleanState `69/0` | `true` = 检测到下雨 |
 | `water_freeze` | WaterFreezeDetector（`0x0041`）上的 BooleanState `69/0` | `true` = 检测到冰冻 |
+| `pressure` | PressureMeasurement `1027/0` | hPa（原始单位 0.1 kPa 恰好等于 hPa） |
+| `flow` | FlowMeasurement `1028/0` | m³/h，`raw/10` |
+| `soil_moisture` | SoilMeasurement `1072/1` | % |
+| `air_quality` | AirQuality `91/0` | `unknown`、`good`、`fair`、`moderate`、`poor`、`very_poor`、`extremely_poor` |
+| `co2`、`co`、`pm1`、`pm25`、`pm10`、`voc`、`formaldehyd`、`no2`、`o3`、`radon` | `<浓度 cluster>/0`，单位取自 `/8` | 见[浓度](#浓度) |
+| `<浓度属性>_level` | `<浓度 cluster>/10` | `unknown`、`low`、`medium`、`high`、`critical` |
+| `smoke` | SmokeCoAlarm `92/1` | SmokeState 非 normal 时为 `true` |
+| `smoke_state` | SmokeCoAlarm `92/1` | `normal`、`warning`、`critical` |
+| `carbon_monoxide` | SmokeCoAlarm `92/2` | COState 非 normal 时为 `true` |
+| `co_state` | SmokeCoAlarm `92/2` | `normal`、`warning`、`critical` |
+| `alarm_state` | SmokeCoAlarm `92/0` | ExpressedState：`normal`、`smoke_alarm`、`co_alarm`、`battery_alert`、`testing`、`hardware_fault`、`end_of_service`、`interconnect_smoke`、`interconnect_co`、`inoperative` |
+| `interconnect_smoke`、`interconnect_co` | SmokeCoAlarm `92/8`、`92/9` | 联动报警器鸣响时为 `true` |
+| `test` | SmokeCoAlarm `92/5` | 自检进行中为 `true` |
+| `muted` | SmokeCoAlarm `92/4` | 已静音为 `true` |
+| `battery_low` | SmokeCoAlarm `92/3` | BatteryAlert 非 normal 时为 `true` |
+| `hardware_fault` | SmokeCoAlarm `92/6` | 硬件故障时为 `true` |
+| `end_of_service` | SmokeCoAlarm `92/7` | 报警器到期后为 `true` |
+| `contamination` | SmokeCoAlarm `92/10` | `normal`、`low`、`warning`、`critical` |
+| `power` | ElectricalPowerMeasurement `144/8` | W，`raw/1000`（ActivePower 单位 mW） |
+| `voltage` | ElectricalPowerMeasurement `144/4`，没有则 `144/11`（RMS） | V，`raw/1000` |
+| `current` | ElectricalPowerMeasurement `144/5`，没有则 `144/12`（RMS） | A，`raw/1000` |
+| `ac_frequency` | ElectricalPowerMeasurement `144/14` | Hz，`raw/1000` |
+| `energy` | ElectricalEnergyMeasurement `145/1` | kWh，累计输入电能（`raw/10^6`，结构体的 `energy` 单位 mWh） |
+| `produced_energy` | ElectricalEnergyMeasurement `145/2` | kWh，累计输出电能 |
+| `battery` | PowerSource `47/12` | %，`raw/2`（BatPercentRemaining 以 0.5% 为单位）。设备级 |
+| `battery_low` | PowerSource `47/14` | BatChargeLevel 非 OK 时为 `true`。设备级 |
+| `voltage` | PowerSource `47/11` | mV，电池电压（zigbee2mqtt 的单位）。设备级 |
+| `update` | OtaSoftwareUpdateRequestor `42/{2,3}` + BasicInformation `40/{9,10}` | 固件更新状态对象，设备级 —— 见[固件更新](#固件更新) |
 
 BooleanState 本身不带语义：发布成哪个属性，由该 endpoint 的 Descriptor DeviceTypeList（`29/0`）里的设备类型决定。
 有 BooleanState 但不属于上述任何设备类型的 endpoint，回落为 `contact`。
-| `battery` | PowerSource `47/12` | %，`raw/2`（BatPercentRemaining 以 0.5% 为单位）。设备级：取第一个 PowerSource |
-| `update` | OtaSoftwareUpdateRequestor `42/{2,3}` + BasicInformation `40/{9,10}` | 固件更新状态对象，设备级 —— 见[固件更新](#固件更新) |
+
+设备级属性按 endpoint 顺序，取第一个带有该属性的 PowerSource endpoint。若某个 endpoint 已经提供同名属性（烟雾报警器
+自己的 `battery_low`、电量计的市电 `voltage`），以 endpoint 的值为准，不再发布设备级的那个。
+
+#### 浓度
+
+浓度测量类 cluster（CO2 `1037`、CO `1036`、PM1 `1068`、PM2.5 `1066`、PM10 `1069`、TVOC `1070`、甲醛 `1067`、
+NO2 `1043`、臭氧 `1045`、氡 `1071`）按设备在 MeasurementUnit（`/8`）里声明的单位上报数值。数值**只在同一量纲内**
+换算成 zigbee2mqtt 的单位 —— ppm/ppb/ppt 之间、mg/µg/ng 每立方米之间 —— 因为 parts 与质量浓度互换需要气体的摩尔
+质量。量纲不同的值按设备的单位原样发布，且不带 Home Assistant device class（HA 会拒绝与 device class 不匹配的单位）。
+
+| 属性 | 发布单位（HA device class） | 设备未声明单位时假定 |
+|------|------------------------------|----------------------|
+| `co2` | ppm（`carbon_dioxide`） | ppm |
+| `co` | ppm（`carbon_monoxide`） | ppm |
+| `pm1`、`pm25`、`pm10` | µg/m³（`pm1`、`pm25`、`pm10`） | µg/m³ |
+| `voc` | µg/m³（`volatile_organic_compounds`）或 ppb（`volatile_organic_compounds_parts`） | µg/m³ |
+| `formaldehyd` | mg/m³ 或 ppm（无 HA class）；沿用 zigbee2mqtt 的拼写 | mg/m³ |
+| `no2` | µg/m³（`nitrogen_dioxide`）或 ppb | µg/m³ |
+| `o3` | µg/m³（`ozone`）或 ppb | µg/m³ |
+| `radon` | Bq/m³（无 HA class） | Bq/m³ |
+
+只有 level 功能的传感器只发布 `<浓度属性>_level`。
 
 `color` 会在各种表示法之间保持一致，做法同 zigbee2mqtt 的 `syncColorState`：无论 endpoint 报告的是哪种模式，
 其余表示法都由它推导出来，这样消费方不会读到上一个模式留下的过期值。
@@ -583,7 +632,16 @@ broker 随即回放的 retained topic 会与刚刚发布的内容比对，多出
 | IlluminanceMeasurement | `sensor`，`lx`，measurement |
 | TemperatureMeasurement | `sensor`，`°C`，measurement |
 | RelativeHumidityMeasurement | `sensor`，`%`，measurement |
+| PressureMeasurement / FlowMeasurement / SoilMeasurement | `sensor`，device class 分别为 `pressure`（hPa）/ `volume_flow_rate`（m³/h）/ `moisture`（%），measurement |
+| AirQuality、浓度 level、`smoke_state`、`co_state`、`alarm_state`、`contamination` | `sensor`，device class `enum`，取值列表作为 `options` |
+| 浓度数值 | `sensor`，measurement，单位与 device class 见[浓度](#浓度) |
+| SmokeCoAlarm `smoke`、`interconnect_smoke` / `carbon_monoxide`、`interconnect_co` | `binary_sensor`，device class `smoke` / `carbon_monoxide` |
+| SmokeCoAlarm `test`、`muted`、`battery_low`、`hardware_fault`、`end_of_service` | `binary_sensor`，diagnostic；`battery_low` 为 `battery` 类，两个故障为 `problem` 类 |
+| ElectricalPowerMeasurement | `sensor`，device class `power`（W）、`voltage`（V）、`current`（A）、`frequency`（Hz），measurement |
+| ElectricalEnergyMeasurement | `sensor`，device class `energy`，kWh，`total_increasing` |
 | PowerSource `47/12` | `sensor`，`%`，battery，diagnostic（设备级） |
+| PowerSource `47/14` | `binary_sensor`，device class `battery`，diagnostic（设备级） |
+| PowerSource `47/11` | `sensor`，device class `voltage`，mV，diagnostic（设备级） |
 | OtaSoftwareUpdateRequestor `42/2` | `update`，device class `firmware`，config 分类（设备级）。安装走 `payload_install: {"id":"<node>"}`；版本经 `tojson` 输出，未知版本是 JSON `null` 而不是 Jinja 的 `None` |
 
 所有设备实体都用 `availability_mode: all` 组合两个 topic —— `<prefix>/bridge/state` 与

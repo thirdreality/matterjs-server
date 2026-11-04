@@ -6,9 +6,10 @@
 
 import type { AttributesData } from "@matter-server/ws-controller";
 import { COMMISSION_MODE_NAMES } from "./BridgeCommands.js";
-import { endpointPropertyKeysOf, propertyNameResolver, sensorPresenceOf } from "./DeviceState.js";
+import { endpointPropertyKeysOf, propertyNameResolver } from "./DeviceState.js";
 import type { LightCapabilities } from "./LightCapabilities.js";
 import { supportsOta } from "./OtaState.js";
+import { DEVICE_SENSORS, deviceSensorEndpointOf, ENDPOINT_SENSORS, type SensorEntity } from "./Sensors.js";
 import { DISCOVERY_PREFIX, type Topics } from "./Topics.js";
 
 export interface DiscoveryDeviceInfo {
@@ -288,88 +289,18 @@ export function discoveryMessagesOf(
             });
         }
 
-        const sensors = sensorPresenceOf(attributes, endpoint);
         const objectId = (base: string) =>
             keys.includes(base) && nameOf(endpoint, base) !== base ? `${base}_${endpoint}` : base;
-        if (sensors.occupancy) {
-            const key = nameOf(endpoint, "occupancy");
-            add("binary_sensor", objectId("occupancy"), {
-                ...common,
-                name: entityName("Occupancy"),
-                unique_id: `${uidBase}_occupancy_${endpoint}`,
-                device_class: "motion",
-                value_template: `{{ value_json.${key} }}`,
-                payload_on: true,
-                payload_off: false,
-            });
-        }
-        if (sensors.contact) {
-            const key = nameOf(endpoint, "contact");
-            // zigbee2mqtt semantics: contact true = closed; HA door class: on = open
-            add("binary_sensor", objectId("contact"), {
-                ...common,
-                name: entityName("Contact"),
-                unique_id: `${uidBase}_contact_${endpoint}`,
-                device_class: "door",
-                value_template: `{{ value_json.${key} }}`,
-                payload_on: false,
-                payload_off: true,
-            });
-        }
-        const alarms = [
-            { present: sensors.water_leak, base: "water_leak", name: "Water leak", deviceClass: "moisture" },
-            { present: sensors.rain, base: "rain", name: "Rain", deviceClass: "moisture" },
-            { present: sensors.water_freeze, base: "water_freeze", name: "Water freeze", deviceClass: "cold" },
-        ];
-        for (const { present, base, name, deviceClass } of alarms) {
-            if (!present) {
+        for (const sensor of ENDPOINT_SENSORS) {
+            if (!sensor.present(attributes, endpoint)) {
                 continue;
             }
-            const key = nameOf(endpoint, base);
-            add("binary_sensor", objectId(base), {
+            const { component, name, ...entity } = sensor.entity(attributes, endpoint);
+            add(component, objectId(sensor.key), {
                 ...common,
+                ...entityConfig(entity, nameOf(endpoint, sensor.key)),
                 name: entityName(name),
-                unique_id: `${uidBase}_${base}_${endpoint}`,
-                device_class: deviceClass,
-                value_template: `{{ value_json.${key} }}`,
-                payload_on: true,
-                payload_off: false,
-            });
-        }
-        if (sensors.illuminance) {
-            const key = nameOf(endpoint, "illuminance");
-            add("sensor", objectId("illuminance"), {
-                ...common,
-                name: entityName("Illuminance"),
-                unique_id: `${uidBase}_illuminance_${endpoint}`,
-                device_class: "illuminance",
-                unit_of_measurement: "lx",
-                state_class: "measurement",
-                value_template: `{{ value_json.${key} }}`,
-            });
-        }
-        if (sensors.temperature) {
-            const key = nameOf(endpoint, "temperature");
-            add("sensor", objectId("temperature"), {
-                ...common,
-                name: entityName("Temperature"),
-                unique_id: `${uidBase}_temperature_${endpoint}`,
-                device_class: "temperature",
-                unit_of_measurement: "°C",
-                state_class: "measurement",
-                value_template: `{{ value_json.${key} }}`,
-            });
-        }
-        if (sensors.humidity) {
-            const key = nameOf(endpoint, "humidity");
-            add("sensor", objectId("humidity"), {
-                ...common,
-                name: entityName("Humidity"),
-                unique_id: `${uidBase}_humidity_${endpoint}`,
-                device_class: "humidity",
-                unit_of_measurement: "%",
-                state_class: "measurement",
-                value_template: `{{ value_json.${key} }}`,
+                unique_id: `${uidBase}_${sensor.key}_${endpoint}`,
             });
         }
     }
@@ -395,23 +326,32 @@ export function discoveryMessagesOf(
         });
     }
 
-    // Device-level battery (first PowerSource occurrence)
-    for (const path of Object.keys(attributes)) {
-        const [, cluster, attribute] = path.split("/").map(Number);
-        if (cluster === 47 && attribute === 12) {
-            add("sensor", "battery", {
-                ...common,
-                name: "Battery",
-                unique_id: `${uidBase}_battery`,
-                device_class: "battery",
-                unit_of_measurement: "%",
-                state_class: "measurement",
-                entity_category: "diagnostic",
-                value_template: "{{ value_json.battery }}",
-            });
-            break;
+    const endpointKeys = new Set(
+        endpoints.flatMap(endpoint => endpointPropertyKeysOf(attributes, endpoint, capsOf(endpoint))),
+    );
+    for (const sensor of DEVICE_SENSORS) {
+        const endpoint = deviceSensorEndpointOf(attributes, sensor);
+        if (endpoint === undefined || endpointKeys.has(sensor.key)) {
+            continue;
         }
+        const { component, name, ...entity } = sensor.entity(attributes, endpoint);
+        add(component, sensor.key, {
+            ...common,
+            ...entityConfig(entity, sensor.key),
+            name,
+            unique_id: `${uidBase}_${sensor.key}`,
+        });
     }
 
     return messages;
+}
+
+/** Discovery fields of a sensor entity reading the published property `key`. */
+function entityConfig(entity: Omit<SensorEntity, "component" | "name">, key: string): Record<string, unknown> {
+    const { payload_on, ...rest } = entity;
+    return {
+        ...rest,
+        value_template: `{{ value_json.${key} }}`,
+        ...(payload_on === undefined ? {} : { payload_on, payload_off: !payload_on }),
+    };
 }

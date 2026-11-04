@@ -5,39 +5,10 @@
  */
 
 import type { AttributesData } from "@matter-server/ws-controller";
-import {
-    BooleanState,
-    Descriptor,
-    IlluminanceMeasurement,
-    OccupancySensing,
-    PowerSource,
-    RelativeHumidityMeasurement,
-    TemperatureMeasurement,
-} from "@matter/main/clusters";
 import { hsvToXY, miredsToXY, xyToHsv, xyToMireds } from "./ColorMath.js";
 import { COLOR_CLUSTER_ID, LEVEL_CLUSTER_ID, ONOFF_CLUSTER_ID, type LightCapabilities } from "./LightCapabilities.js";
 import { BASIC_INFORMATION_CLUSTER_ID, OTA_REQUESTOR_CLUSTER_ID } from "./OtaState.js";
-
-const OCCUPANCY_CLUSTER_ID = OccupancySensing.Cluster.id;
-const ILLUMINANCE_CLUSTER_ID = IlluminanceMeasurement.Cluster.id;
-const TEMPERATURE_CLUSTER_ID = TemperatureMeasurement.Cluster.id;
-const HUMIDITY_CLUSTER_ID = RelativeHumidityMeasurement.Cluster.id;
-const POWER_SOURCE_CLUSTER_ID = PowerSource.Cluster.id;
-const BOOLEAN_STATE_CLUSTER_ID = BooleanState.Cluster.id;
-const DESCRIPTOR_CLUSTER_ID = Descriptor.Cluster.id;
-
-/**
- * BooleanState means something different per device type, and contact sensors invert it in Home
- * Assistant; only the endpoint's Descriptor DeviceTypeList tells them apart.
- */
-const BOOLEAN_STATE_PROPERTY_BY_DEVICE_TYPE: ReadonlyMap<number, BooleanStateProperty> = new Map([
-    [0x0015, "contact"], // ContactSensor
-    [0x0043, "water_leak"], // WaterLeakDetector
-    [0x0044, "rain"], // RainSensor
-    [0x0041, "water_freeze"], // WaterFreezeDetector
-]);
-
-export type BooleanStateProperty = "contact" | "water_leak" | "rain" | "water_freeze";
+import { DEVICE_SENSORS, deviceSensorEndpointOf, ENDPOINT_SENSORS } from "./Sensors.js";
 
 /**
  * Device-level state attributes: they contribute a property to the whole device rather than to one
@@ -45,7 +16,7 @@ export type BooleanStateProperty = "contact" | "water_leak" | "rain" | "water_fr
  * must not be read as a structure change.
  */
 export const DEVICE_LEVEL_STATE_PATHS: ReadonlySet<string> = new Set([
-    `${POWER_SOURCE_CLUSTER_ID}/12`, // batPercentRemaining
+    ...DEVICE_SENSORS.flatMap(sensor => sensor.paths),
     `${OTA_REQUESTOR_CLUSTER_ID}/2`, // updateState
     `${OTA_REQUESTOR_CLUSTER_ID}/3`, // updateStateProgress
     `${BASIC_INFORMATION_CLUSTER_ID}/9`, // softwareVersion
@@ -63,11 +34,7 @@ export const STATE_ATTRIBUTE_PATHS: ReadonlySet<string> = new Set([
     `${COLOR_CLUSTER_ID}/7`, // colorTemperatureMireds
     `${COLOR_CLUSTER_ID}/8`, // colorMode
     `${COLOR_CLUSTER_ID}/16384`, // enhancedCurrentHue
-    `${OCCUPANCY_CLUSTER_ID}/0`,
-    `${ILLUMINANCE_CLUSTER_ID}/0`,
-    `${TEMPERATURE_CLUSTER_ID}/0`,
-    `${HUMIDITY_CLUSTER_ID}/0`,
-    `${BOOLEAN_STATE_CLUSTER_ID}/0`, // stateValue
+    ...ENDPOINT_SENSORS.flatMap(sensor => sensor.paths),
     ...DEVICE_LEVEL_STATE_PATHS,
 ]);
 
@@ -85,68 +52,18 @@ export function isDeviceLevelStateAttribute(clusterId: number, attributeId: numb
 export function relevantEndpointsOf(attributes: AttributesData): number[] {
     const endpoints = new Set<number>();
     for (const path of Object.keys(attributes)) {
-        const [endpoint, cluster, attribute] = path.split("/").map(Number);
-        if (endpoint === undefined || cluster === undefined || attribute !== 0) {
-            continue;
-        }
-        const stateClusters: number[] = [
-            ONOFF_CLUSTER_ID,
-            OCCUPANCY_CLUSTER_ID,
-            ILLUMINANCE_CLUSTER_ID,
-            TEMPERATURE_CLUSTER_ID,
-            HUMIDITY_CLUSTER_ID,
-            BOOLEAN_STATE_CLUSTER_ID,
-        ];
-        if (stateClusters.includes(cluster)) {
+        const endpoint = Number(path.split("/", 1)[0]);
+        if (Number.isInteger(endpoint)) {
             endpoints.add(endpoint);
         }
     }
-    return [...endpoints].sort((a, b) => a - b);
-}
-
-/** Sensor clusters present on an endpoint (attribute 0 cached, value may still be unknown). */
-export interface SensorPresence {
-    occupancy: boolean;
-    illuminance: boolean;
-    temperature: boolean;
-    humidity: boolean;
-    contact: boolean;
-    water_leak: boolean;
-    rain: boolean;
-    water_freeze: boolean;
-}
-
-export function sensorPresenceOf(attributes: AttributesData, endpoint: number): SensorPresence {
-    const has = (cluster: number) => attributes[`${endpoint}/${cluster}/0`] !== undefined;
-    const booleanState = has(BOOLEAN_STATE_CLUSTER_ID) ? booleanStatePropertyOf(attributes, endpoint) : undefined;
-    return {
-        occupancy: has(OCCUPANCY_CLUSTER_ID),
-        illuminance: has(ILLUMINANCE_CLUSTER_ID),
-        temperature: has(TEMPERATURE_CLUSTER_ID),
-        humidity: has(HUMIDITY_CLUSTER_ID),
-        contact: booleanState === "contact",
-        water_leak: booleanState === "water_leak",
-        rain: booleanState === "rain",
-        water_freeze: booleanState === "water_freeze",
-    };
-}
-
-/** The property an endpoint's BooleanState is published as; `contact` when no known device type names it. */
-export function booleanStatePropertyOf(attributes: AttributesData, endpoint: number): BooleanStateProperty {
-    const deviceTypes = attributes[`${endpoint}/${DESCRIPTOR_CLUSTER_ID}/0`];
-    if (Array.isArray(deviceTypes)) {
-        for (const entry of deviceTypes) {
-            if (typeof entry !== "object" || entry === null) {
-                continue;
-            }
-            const { "0": tagged, deviceType } = entry as Record<string, unknown>;
-            const property = BOOLEAN_STATE_PROPERTY_BY_DEVICE_TYPE.get(Number(tagged ?? deviceType));
-            if (property !== undefined) {
-                return property;
-            }
-        }
-    }
-    return "contact";
+    return [...endpoints]
+        .filter(
+            endpoint =>
+                attributes[`${endpoint}/${ONOFF_CLUSTER_ID}/0`] !== undefined ||
+                ENDPOINT_SENSORS.some(sensor => sensor.present(attributes, endpoint)),
+        )
+        .sort((a, b) => a - b);
 }
 
 /**
@@ -174,10 +91,9 @@ export function endpointPropertyKeysOf(
     if (caps.colorTemp) {
         keys.push("color_temp");
     }
-    const sensors = sensorPresenceOf(attributes, endpoint);
-    for (const [key, present] of Object.entries(sensors)) {
-        if (present) {
-            keys.push(key);
+    for (const sensor of ENDPOINT_SENSORS) {
+        if (sensor.present(attributes, endpoint)) {
+            keys.push(sensor.key);
         }
     }
     return keys;
@@ -307,8 +223,8 @@ function colorStateOf(attributes: AttributesData, endpoint: number, caps: LightC
 
 /**
  * zigbee2mqtt-style state properties of one endpoint, read from the attribute cache.
- * Value conventions follow z2m: hue 0-360, saturation 0-100, x/y 4 decimals,
- * illuminance in lux, temperature/humidity in real units.
+ * Value conventions follow z2m: hue 0-360, saturation 0-100, x/y 4 decimals; sensor units are listed
+ * with each property in {@link ENDPOINT_SENSORS}.
  */
 export function endpointStateOf(
     attributes: AttributesData,
@@ -334,32 +250,12 @@ export function endpointStateOf(
         Object.assign(state, colorStateOf(attributes, endpoint, caps));
     }
 
-    const occupancy = attributes[`${endpoint}/${OCCUPANCY_CLUSTER_ID}/0`];
-    if (typeof occupancy === "number") {
-        state.occupancy = (occupancy & 1) !== 0;
-    } else if (typeof occupancy === "object" && occupancy !== null) {
-        state.occupancy = (occupancy as { occupied?: boolean }).occupied === true;
-    }
-
-    // Matter and Zigbee share the encoding: MeasuredValue = 10000*log10(lux) + 1
-    const illuminanceRaw = numberOf(attributes, endpoint, ILLUMINANCE_CLUSTER_ID, 0);
-    if (illuminanceRaw !== undefined && illuminanceRaw > 0) {
-        state.illuminance = Math.round(10 ** ((illuminanceRaw - 1) / 10000));
-    }
-
-    const temperature = numberOf(attributes, endpoint, TEMPERATURE_CLUSTER_ID, 0);
-    if (temperature !== undefined) {
-        state.temperature = round(temperature / 100, 2);
-    }
-
-    const humidity = numberOf(attributes, endpoint, HUMIDITY_CLUSTER_ID, 0);
-    if (humidity !== undefined) {
-        state.humidity = round(humidity / 100, 2);
-    }
-
-    const booleanState = attributes[`${endpoint}/${BOOLEAN_STATE_CLUSTER_ID}/0`];
-    if (typeof booleanState === "boolean") {
-        state[booleanStatePropertyOf(attributes, endpoint)] = booleanState;
+    for (const sensor of ENDPOINT_SENSORS) {
+        // Several properties can read the same attribute (BooleanState); only the present one may publish
+        const value = sensor.present(attributes, endpoint) ? sensor.read(attributes, endpoint) : undefined;
+        if (value !== undefined) {
+            state[sensor.key] = value;
+        }
     }
 
     return state;
@@ -369,7 +265,8 @@ export function endpointStateOf(
  * Assemble the full zigbee2mqtt-style device state. Properties are plain as long as they
  * are unique across endpoints; only a property that several endpoints provide (a true
  * multi-instance device, e.g. a dual relay) gets the z2m `_<endpoint>` suffix.
- * `battery` is device-level (first PowerSource occurrence, usually endpoint 0).
+ * Device-level properties (`battery`, ...) come from the first PowerSource endpoint that has them, unless
+ * an endpoint already provides the same key.
  */
 export function deviceStateOf(
     attributes: AttributesData,
@@ -385,14 +282,14 @@ export function deviceStateOf(
         }
     }
 
-    for (const path of Object.keys(attributes)) {
-        const [endpoint, cluster, attribute] = path.split("/").map(Number);
-        if (cluster === POWER_SOURCE_CLUSTER_ID && attribute === 12 && endpoint !== undefined) {
-            const raw = attributes[path];
-            if (typeof raw === "number") {
-                device.battery = Math.round(raw / 2);
-            }
-            break;
+    for (const sensor of DEVICE_SENSORS) {
+        const endpoint = deviceSensorEndpointOf(attributes, sensor);
+        if (endpoint === undefined || sensor.key in device) {
+            continue;
+        }
+        const value = sensor.read(attributes, endpoint);
+        if (value !== undefined) {
+            device[sensor.key] = value;
         }
     }
 

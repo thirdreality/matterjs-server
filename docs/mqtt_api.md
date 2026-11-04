@@ -185,12 +185,65 @@ built from the controller's attribute cache, so it is available without an extra
 | `water_leak` | BooleanState `69/0` on a WaterLeakDetector (`0x0043`) | `true` = leak detected |
 | `rain` | BooleanState `69/0` on a RainSensor (`0x0044`) | `true` = rain detected |
 | `water_freeze` | BooleanState `69/0` on a WaterFreezeDetector (`0x0041`) | `true` = freezing detected |
+| `pressure` | PressureMeasurement `1027/0` | hPa (the raw 0.1 kPa unit is exactly hPa) |
+| `flow` | FlowMeasurement `1028/0` | m³/h, `raw/10` |
+| `soil_moisture` | SoilMeasurement `1072/1` | % |
+| `air_quality` | AirQuality `91/0` | `unknown`, `good`, `fair`, `moderate`, `poor`, `very_poor`, `extremely_poor` |
+| `co2`, `co`, `pm1`, `pm25`, `pm10`, `voc`, `formaldehyd`, `no2`, `o3`, `radon` | `<concentration cluster>/0`, unit from `/8` | See [Concentrations](#concentrations) |
+| `<concentration>_level` | `<concentration cluster>/10` | `unknown`, `low`, `medium`, `high`, `critical` |
+| `smoke` | SmokeCoAlarm `92/1` | `true` while SmokeState is not normal |
+| `smoke_state` | SmokeCoAlarm `92/1` | `normal`, `warning`, `critical` |
+| `carbon_monoxide` | SmokeCoAlarm `92/2` | `true` while COState is not normal |
+| `co_state` | SmokeCoAlarm `92/2` | `normal`, `warning`, `critical` |
+| `alarm_state` | SmokeCoAlarm `92/0` | ExpressedState: `normal`, `smoke_alarm`, `co_alarm`, `battery_alert`, `testing`, `hardware_fault`, `end_of_service`, `interconnect_smoke`, `interconnect_co`, `inoperative` |
+| `interconnect_smoke`, `interconnect_co` | SmokeCoAlarm `92/8`, `92/9` | `true` while an interconnected alarm sounds |
+| `test` | SmokeCoAlarm `92/5` | `true` while a self-test runs |
+| `muted` | SmokeCoAlarm `92/4` | `true` when muted |
+| `battery_low` | SmokeCoAlarm `92/3` | `true` while BatteryAlert is not normal |
+| `hardware_fault` | SmokeCoAlarm `92/6` | `true` on a hardware fault |
+| `end_of_service` | SmokeCoAlarm `92/7` | `true` once the alarm has expired |
+| `contamination` | SmokeCoAlarm `92/10` | `normal`, `low`, `warning`, `critical` |
+| `power` | ElectricalPowerMeasurement `144/8` | W, `raw/1000` (ActivePower is in mW) |
+| `voltage` | ElectricalPowerMeasurement `144/4`, else `144/11` (RMS) | V, `raw/1000` |
+| `current` | ElectricalPowerMeasurement `144/5`, else `144/12` (RMS) | A, `raw/1000` |
+| `ac_frequency` | ElectricalPowerMeasurement `144/14` | Hz, `raw/1000` |
+| `energy` | ElectricalEnergyMeasurement `145/1` | kWh, cumulative imported energy (`raw/10^6`, the struct's `energy` is in mWh) |
+| `produced_energy` | ElectricalEnergyMeasurement `145/2` | kWh, cumulative exported energy |
+| `battery` | PowerSource `47/12` | %, `raw/2` (BatPercentRemaining is in half percent). Device-level |
+| `battery_low` | PowerSource `47/14` | `true` while BatChargeLevel is not OK. Device-level |
+| `voltage` | PowerSource `47/11` | mV, battery voltage (zigbee2mqtt's unit). Device-level |
+| `update` | OtaSoftwareUpdateRequestor `42/{2,3}` + BasicInformation `40/{9,10}` | Firmware update state object, device-level — see [Firmware Updates](#firmware-updates) |
 
 BooleanState carries no meaning of its own: the device type in the endpoint's Descriptor DeviceTypeList
 (`29/0`) decides which property it is published as. An endpoint with BooleanState but none of these device
 types falls back to `contact`.
-| `battery` | PowerSource `47/12` | %, `raw/2` (BatPercentRemaining is in half percent). Device-level: the first PowerSource occurrence wins |
-| `update` | OtaSoftwareUpdateRequestor `42/{2,3}` + BasicInformation `40/{9,10}` | Firmware update state object, device-level — see [Firmware Updates](#firmware-updates) |
+
+Device-level properties are read from the first PowerSource endpoint (in endpoint order) that has the
+attribute. When an endpoint already provides the same property — a smoke alarm's own `battery_low`, a
+meter's mains `voltage` — the endpoint's value wins and the device-level one is not published.
+
+#### Concentrations
+
+The concentration measurement clusters (CO2 `1037`, CO `1036`, PM1 `1068`, PM2.5 `1066`, PM10 `1069`,
+TVOC `1070`, formaldehyde `1067`, NO2 `1043`, ozone `1045`, radon `1071`) report a value in the unit the
+device names in MeasurementUnit (`/8`). The value is converted to the zigbee2mqtt unit **within the same
+dimension only** — ppm/ppb/ppt among themselves, mg/µg/ng per m³ among themselves — because converting
+between parts and mass needs the gas's molar mass. A value in another dimension is published unconverted,
+in the device's unit and without a Home Assistant device class (HA rejects a device class with a unit it
+does not accept for that class).
+
+| Property | Published unit (HA device class) | Unit assumed when the device names none |
+|----------|-----------------------------------|------------------------------------------|
+| `co2` | ppm (`carbon_dioxide`) | ppm |
+| `co` | ppm (`carbon_monoxide`) | ppm |
+| `pm1`, `pm25`, `pm10` | µg/m³ (`pm1`, `pm25`, `pm10`) | µg/m³ |
+| `voc` | µg/m³ (`volatile_organic_compounds`) or ppb (`volatile_organic_compounds_parts`) | µg/m³ |
+| `formaldehyd` | mg/m³ or ppm (no HA class); zigbee2mqtt's spelling | mg/m³ |
+| `no2` | µg/m³ (`nitrogen_dioxide`) or ppb | µg/m³ |
+| `o3` | µg/m³ (`ozone`) or ppb | µg/m³ |
+| `radon` | Bq/m³ (no HA class) | Bq/m³ |
+
+A sensor with only the level feature publishes just `<concentration>_level`.
 
 `color` is kept consistent across representations, the way zigbee2mqtt's `syncColorState` does: whichever
 mode the endpoint reports, the others are derived from it, so a consumer never reads a value left over
@@ -645,7 +698,16 @@ BasicInformation carries no product name.
 | IlluminanceMeasurement | `sensor`, `lx`, measurement |
 | TemperatureMeasurement | `sensor`, `°C`, measurement |
 | RelativeHumidityMeasurement | `sensor`, `%`, measurement |
+| PressureMeasurement / FlowMeasurement / SoilMeasurement | `sensor`, device class `pressure` (hPa) / `volume_flow_rate` (m³/h) / `moisture` (%), measurement |
+| AirQuality, concentration levels, `smoke_state`, `co_state`, `alarm_state`, `contamination` | `sensor`, device class `enum` with the value list as `options` |
+| Concentration values | `sensor`, measurement, unit and device class per [Concentrations](#concentrations) |
+| SmokeCoAlarm `smoke`, `interconnect_smoke` / `carbon_monoxide`, `interconnect_co` | `binary_sensor`, device class `smoke` / `carbon_monoxide` |
+| SmokeCoAlarm `test`, `muted`, `battery_low`, `hardware_fault`, `end_of_service` | `binary_sensor`, diagnostic; `battery_low` class `battery`, the two faults class `problem` |
+| ElectricalPowerMeasurement | `sensor`, device class `power` (W), `voltage` (V), `current` (A), `frequency` (Hz), measurement |
+| ElectricalEnergyMeasurement | `sensor`, device class `energy`, kWh, `total_increasing` |
 | PowerSource `47/12` | `sensor`, `%`, battery, diagnostic (device-level) |
+| PowerSource `47/14` | `binary_sensor`, device class `battery`, diagnostic (device-level) |
+| PowerSource `47/11` | `sensor`, device class `voltage`, mV, diagnostic (device-level) |
 | OtaSoftwareUpdateRequestor `42/2` | `update`, device class `firmware`, config category (device-level). Installs via `payload_install: {"id":"<node>"}`; versions are piped through `tojson` so an unknown version stays JSON `null` instead of Jinja's `None` |
 
 All device entities use `availability_mode: all` over two topics — `<prefix>/bridge/state` and
