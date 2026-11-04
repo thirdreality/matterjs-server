@@ -70,7 +70,14 @@ z2m 里同一个属性名在不同设备上单位不同：电池电压 `voltage`
 很多测量属性可为 null（传感器还没测到）。null 时不发布该属性，但实体照常注册。int64（电能、频率等）在缓存里
 可能是 number 也可能是 bigint，都要接受；结构体字段按 TLV tag（`"0"`）或字段名两种键读取。
 
-### 9. hub 资源极其有限（2 GB 内存，4 核 ARM）
+### 9. exposes 只描述真正做得到的事
+
+`bridge/devices` 的 `definition.exposes` 是给工具看的契约：z2m 前端和第三方集成会照着它生成控件、校验取值。
+它必须和 `/set`、`/get` 的实际行为一致——`TOGGLE` 要真能用，`color_temp` 的范围用设备的物理范围，预设只列落在
+范围内的，传感器的 `access` 不能带 SET 位。exposes 和状态发布、HA discovery 读的是同一张传感器表，新增属性时
+三者自动同步，不要单独手写。
+
+### 10. hub 资源极其有限（2 GB 内存，4 核 ARM）
 
 - VS Code server 及扩展常驻约 1.2 GB；TypeScript 语言服务（tsserver）单独可涨到 ~580 MB。
 - `npm run lint` 的 type-aware 检查（tsgolint）峰值约 570 MB，**曾把整机拖到 OOM 崩溃重启**。
@@ -85,7 +92,7 @@ z2m 里同一个属性名在不同设备上单位不同：电池电压 `voltage`
   - 一次只跑一条重任务，不并发。
 - 原始日志一律写到磁盘，**不要写到 `/tmp`**（tmpfs，重启即丢）。
 
-### 10. 在 hub 上跑测试的已知坑
+### 11. 在 hub 上跑测试的已知坑
 
 - 起一个 matter-server 进程约需 32 s，其中仅 import ws-controller 就约 26 s（matter.js 0.18，模块初始化开销，
   与 source map 或编译缓存无关）。超时时间按 30 s 写死的测试在 hub 上会超时。
@@ -101,6 +108,7 @@ z2m 里同一个属性名在不同设备上单位不同：电池电压 `voltage`
 | `58d4cdf` | 1.5 新增配网能力接入 MQTT：`discovery_timeout_s`、错误 `reason`、`parse_onboarding_payload`、`device/share` 补全字段 |
 | `994b8cc` | 修复 P1：BooleanState 按设备类型发布为 `contact` / `water_leak` / `rain` / `water_freeze` |
 | `756c77e` | 只读传感器：气压、流量、土壤湿度、空气质量与 10 种浓度、烟雾 / CO 报警、电量计、电池详情；传感器改为表驱动（`Sensors.ts`） |
+| `8135894` | C-exposes：`bridge/devices` 增加 z2m 的 `definition.exposes`、`power_source` 等字段 |
 
 ## 问题
 
@@ -114,7 +122,7 @@ bridge 自身的 bug，不是 zigbee2mqtt 或 Home Assistant 的。原因和正�
 Aggregator（如 Hue / Aqara 网关接入的设备）作为一个节点发布，子设备只靠 `_<endpoint>` 后缀区分。z2m 的语义是
 每个物理设备一个 topic、一个 HA 设备。需要设计：子设备的 topic 命名、`bridge/devices` 中的表示、可用性与改名。
 
-### P3 · `bridge/devices` 缺少 z2m 的 `definition.exposes`
+### P3 · `bridge/devices` 缺少 z2m 的 `definition.exposes` —— **已解决（C-exposes）**
 
 z2m 在 `bridge/devices` 中为每个设备给出 `definition`（型号、厂商、描述）和 `exposes`（每个参数的类型、取值范围、
 单位、读写权限），z2m 前端和第三方集成都依赖它。我们目前只有 `vendor_name`、`product_name`、`onoff_endpoints`。
@@ -127,7 +135,7 @@ z2m 在 `bridge/devices` 中为每个设备给出 `definition`（型号、厂商
 | 失败 | 判断 |
 |------|------|
 | ws-controller `WsBackpressureReproTest` 3 条超时（60 s） | 上游 1.5.3 新增的压力测试，单核跑不完 500 轮；干净的 v1.5.5 worktree 在同机复现，耗时与失败一致 |
-| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 10 条） |
+| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 11 条） |
 | matter-server `OtaUploadHandlerTest` 2 条 | root 运行 + 时序竞态 |
 | matter-server `IntegrationTest` | 未运行 |
 
@@ -163,8 +171,8 @@ bridge 自身只增加不到 1 s。
   - [x] 烟雾 / CO 报警 `smoke`、`carbon_monoxide`、`alarm_state`、测试 / 静音 / 故障 / 到期状态
   - [x] 电量计 `power`、`voltage`、`current`、`ac_frequency`、`energy`、`produced_energy`
   - [x] 电源详情：`battery_low`、电池电压
-  - [ ] 市电 / 电池供电类型（`power_source`）：放进 C-exposes 的 `bridge/devices`
-- [ ] **C-exposes（P3）**：`bridge/devices` 增加 `definition` 与 `exposes`，补齐已支持设备的 exposes
+  - [x] 市电 / 电池供电类型（`power_source`）：放在 `bridge/devices`
+- [x] **C-exposes（P3）**：`bridge/devices` 增加 `definition` 与 `exposes`，补齐已支持设备的 exposes
 - [ ] **B2 常用控制**
   - [ ] 窗帘 WindowCovering → `cover`（`state`、`position`、`tilt`）
   - [ ] 门锁 DoorLock → `lock`（`state`、`lock_state`）
