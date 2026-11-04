@@ -77,7 +77,16 @@ z2m 里同一个属性名在不同设备上单位不同：电池电压 `voltage`
 范围内的，传感器的 `access` 不能带 SET 位。exposes 和状态发布、HA discovery 读的是同一张传感器表，新增属性时
 三者自动同步，不要单独手写。
 
-### 10. hub 资源极其有限（2 GB 内存，4 核 ARM）
+### 10. 同一个 `/set` 属性名，在不同 endpoint 上含义不同
+
+`state` 在灯上是 `ON`/`OFF`，在窗帘上是 `OPEN`/`CLOSE`/`STOP`，在门锁上是 `LOCK`/`UNLOCK`。`/set` 不能把所有键
+都交给一个解析器：先按目标 endpoint 的能力（有哪种设备控制）让各控制认领自己的键，剩下的再给灯，谁都不认的记为
+不支持。早期 bridge 只接受带 OnOff 的 endpoint，窗帘这类设备根本收不到命令。
+
+另外注意方向：zigbee2mqtt 的窗帘 `position` 是 0 = 关、100 = 开；Matter 的 Percent100ths 是 0 = 开、10000 = 关，
+两者正好相反。
+
+### 11. hub 资源极其有限（2 GB 内存，4 核 ARM）
 
 - VS Code server 及扩展常驻约 1.2 GB；TypeScript 语言服务（tsserver）单独可涨到 ~580 MB。
 - `npm run lint` 的 type-aware 检查（tsgolint）峰值约 570 MB，**曾把整机拖到 OOM 崩溃重启**。
@@ -92,7 +101,7 @@ z2m 里同一个属性名在不同设备上单位不同：电池电压 `voltage`
   - 一次只跑一条重任务，不并发。
 - 原始日志一律写到磁盘，**不要写到 `/tmp`**（tmpfs，重启即丢）。
 
-### 11. 在 hub 上跑测试的已知坑
+### 12. 在 hub 上跑测试的已知坑
 
 - 起一个 matter-server 进程约需 32 s，其中仅 import ws-controller 就约 26 s（matter.js 0.18，模块初始化开销，
   与 source map 或编译缓存无关）。超时时间按 30 s 写死的测试在 hub 上会超时。
@@ -109,6 +118,7 @@ z2m 里同一个属性名在不同设备上单位不同：电池电压 `voltage`
 | `994b8cc` | 修复 P1：BooleanState 按设备类型发布为 `contact` / `water_leak` / `rain` / `water_freeze` |
 | `756c77e` | 只读传感器：气压、流量、土壤湿度、空气质量与 10 种浓度、烟雾 / CO 报警、电量计、电池详情；传感器改为表驱动（`Sensors.ts`） |
 | `8135894` | C-exposes：`bridge/devices` 增加 z2m 的 `definition.exposes`、`power_source` 等字段 |
+| `3ec0b17` | B2 窗帘；`/set` 改为按 endpoint 能力分派，支持写属性 |
 
 ## 问题
 
@@ -135,7 +145,7 @@ z2m 在 `bridge/devices` 中为每个设备给出 `definition`（型号、厂商
 | 失败 | 判断 |
 |------|------|
 | ws-controller `WsBackpressureReproTest` 3 条超时（60 s） | 上游 1.5.3 新增的压力测试，单核跑不完 500 轮；干净的 v1.5.5 worktree 在同机复现，耗时与失败一致 |
-| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 11 条） |
+| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 12 条） |
 | matter-server `OtaUploadHandlerTest` 2 条 | root 运行 + 时序竞态 |
 | matter-server `IntegrationTest` | 未运行 |
 
@@ -174,7 +184,7 @@ bridge 自身只增加不到 1 s。
   - [x] 市电 / 电池供电类型（`power_source`）：放在 `bridge/devices`
 - [x] **C-exposes（P3）**：`bridge/devices` 增加 `definition` 与 `exposes`，补齐已支持设备的 exposes
 - [ ] **B2 常用控制**
-  - [ ] 窗帘 WindowCovering → `cover`（`state`、`position`、`tilt`）
+  - [x] 窗帘 WindowCovering → `cover`（`state`、`position`、`tilt`、`moving`）
   - [ ] 门锁 DoorLock → `lock`（`state`、`lock_state`）
   - [ ] 温控 / 空调 Thermostat、RoomAirConditioner → `climate`（`local_temperature`、`occupied_heating_setpoint`、`system_mode`、`running_state` 等）
   - [ ] 风扇 / 空气净化器 / 油烟机 FanControl → `fan`（`fan_mode`、`fan_speed`）
