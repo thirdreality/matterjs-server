@@ -28,6 +28,7 @@ import {
     RelativeHumidityMeasurement,
     SmokeCoAlarm,
     SoilMeasurement,
+    Switch,
     TemperatureMeasurement,
     TotalVolatileOrganicCompoundsConcentrationMeasurement,
 } from "@matter/main/clusters";
@@ -538,6 +539,21 @@ export const ENDPOINT_SENSORS: readonly SensorProperty[] = [
     }),
     energy("energy", 1, "Energy"),
     energy("produced_energy", 2, "Produced energy"),
+    // A latching switch rests in a position; a momentary one only passes through it, reported as actions
+    {
+        key: "switch_position",
+        paths: [`${Switch.Cluster.id}/1`],
+        present: (attributes, endpoint) => {
+            const features = numberAt(attributes, endpoint, Switch.Cluster.id, 65532);
+            return (
+                features !== undefined &&
+                (features & 1) !== 0 &&
+                hasAttribute(attributes, endpoint, Switch.Cluster.id, 1)
+            );
+        },
+        read: (attributes, endpoint) => numberAt(attributes, endpoint, Switch.Cluster.id, 1),
+        entity: () => ({ component: "sensor", name: "Switch position" }),
+    },
 ];
 
 const POWER_SOURCE = PowerSource.Cluster.id;

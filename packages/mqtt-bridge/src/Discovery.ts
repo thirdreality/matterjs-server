@@ -8,6 +8,7 @@ import type { AttributesData } from "@matter-server/ws-controller";
 import { COMMISSION_MODE_NAMES } from "./BridgeCommands.js";
 import { controlsOf } from "./Controls.js";
 import { endpointPropertyKeysOf, propertyNameResolver } from "./DeviceState.js";
+import { deviceActionsOf } from "./Events.js";
 import type { LightCapabilities } from "./LightCapabilities.js";
 import { supportsOta } from "./OtaState.js";
 import { DEVICE_SENSORS, deviceSensorEndpointOf, ENDPOINT_SENSORS, type SensorEntity } from "./Sensors.js";
@@ -320,6 +321,34 @@ export function discoveryMessagesOf(
                 ...entityConfig(entity, nameOf(endpoint, sensor.key)),
                 name: entityName(name),
                 unique_id: `${uidBase}_${sensor.key}_${endpoint}`,
+            });
+        }
+    }
+
+    // Buttons: one event entity with every action, plus a device trigger per action for automations
+    const actions = deviceActionsOf(attributes);
+    if (actions.length > 0) {
+        const actionTopic = topics.deviceAction(info.device);
+        add("event", "action", {
+            name: "Action",
+            unique_id: `${uidBase}_action`,
+            state_topic: actionTopic,
+            value_template: '{ "event_type": "{{ value }}" }',
+            event_types: actions,
+            availability,
+            availability_mode: "all",
+            device,
+            origin,
+        });
+        for (const action of actions) {
+            add("device_automation", `action_${action}`, {
+                automation_type: "trigger",
+                type: "action",
+                subtype: action,
+                payload: action,
+                topic: actionTopic,
+                device,
+                origin,
             });
         }
     }

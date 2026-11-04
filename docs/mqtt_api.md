@@ -69,6 +69,7 @@ decimal string, `<endpoint>` a Matter endpoint number.
 | `<prefix>/bridge/response/<command>` | publish | no | `{"status":"ok"\|"error", ...}` |
 | `<prefix>/<node>` | publish | yes | Full merged device state JSON |
 | `<prefix>/<node>/availability` | publish | yes | `online` / `offline` (plain string) |
+| `<prefix>/<node>/action` | publish | no | Button action as a plain string, see [Actions](#actions) |
 | `<prefix>/<node>/set` | subscribe | — | Device command, JSON object or bare value |
 | `<prefix>/<node>/set/<property>` | subscribe | — | Device command, bare payload for a single property |
 | `<prefix>/<node>/get` | subscribe | — | Re-publish the current state (payload ignored) |
@@ -261,6 +262,7 @@ built from the controller's attribute cache, so it is available without an extra
 | `pump_operation_mode` | PumpConfigurationAndControl `512/32` | `normal`, `minimum`, `maximum`, `local` |
 | `pump_control_mode` | PumpConfigurationAndControl `512/33` | `constant_speed`, `constant_pressure`, `proportional_pressure`, `constant_flow`, `constant_temperature`, `automatic` |
 | `smoke_sensitivity` | SmokeCoAlarm `92/11` | `high`, `standard`, `low` |
+| `switch_position` | Switch `59/1` | Current position of a latching switch (LatchingSwitch feature) |
 | `pressure` | PressureMeasurement `1027/0` | hPa (the raw 0.1 kPa unit is exactly hPa) |
 | `flow` | FlowMeasurement `1028/0` | m³/h, `raw/10` |
 | `soil_moisture` | SoilMeasurement `1072/1` | % |
@@ -341,6 +343,25 @@ what zigbee2mqtt reports too.
 
 Properties are only present when the endpoint actually exposes the cluster **and** a value is cached.
 The state topic is not published while the resulting object would be empty.
+
+### Actions
+
+Button presses arrive as Matter Switch (`59`) events and are published zigbee2mqtt-style as an `action`, on
+the separate topic `<prefix>/<node>/action` as a plain string. It is **not retained** and not part of the
+retained state, so a broker reconnect never replays a press.
+
+| Switch event | `action` |
+|--------------|----------|
+| MultiPressComplete (MultiPress feature) | `single`, `double`, `triple`, `quadruple`, or `many` beyond four presses |
+| ShortRelease (Release feature, no MultiPress) | `single` |
+| InitialPress (neither Release nor MultiPress, e.g. a doorbell) | `single` |
+| LongPress / LongRelease | `hold` / `release` |
+| SwitchLatched (LatchingSwitch feature) | `position_<new position>` |
+
+Each press is reported once: with the MultiPress feature only the completed sequence counts, so a double
+press is `double` and not `single` twice. On a device with several Switch endpoints the action carries the
+endpoint, like zigbee2mqtt's `single_left`: `single_1`, `hold_2`. A latching switch also keeps its resting
+position in the state as `switch_position`.
 
 ### Multi-endpoint devices
 
@@ -835,6 +856,7 @@ BasicInformation carries no product name.
 | Thermostat | `climate`: `modes` off plus heat/cool/auto per FeatureMap (fan only and dry for a RoomAirConditioner), Matter-only modes shown as the closest HA mode; one target temperature, or low (heating) / high (cooling) targets when both are supported; `min_temp`/`max_temp` from the absolute setpoint limits; current action from `running_state`. Outdoor temperature and PI demands as separate `sensor`s |
 | FanControl | `fan` with `{"fan_state":…}` payloads, percentage, an `auto` preset when the FanModeSequence has it, oscillation and direction when supported |
 | ValveConfigurationAndControl | `valve`, device class `water`, with position for the Level feature; remaining duration as a `sensor` |
+| Switch | One `event` entity for the device (event types: every action it can report, from the Switch features and MultiPressMax) and a `device_automation` trigger per action, both on `<prefix>/<node>/action` |
 | ModeSelect | `select` named after the cluster Description, options from SupportedModes |
 | Pump modes, smoke sensitivity | `select`, config category |
 | SmokeCoAlarm | Self test `button`, diagnostic category |

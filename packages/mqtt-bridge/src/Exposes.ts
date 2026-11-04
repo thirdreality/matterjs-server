@@ -8,6 +8,7 @@ import type { AttributesData } from "@matter-server/ws-controller";
 import { PowerSource } from "@matter/main/clusters";
 import { controlsOf } from "./Controls.js";
 import { endpointPropertyKeysOf, propertyNameResolver } from "./DeviceState.js";
+import { deviceActionsOf } from "./Events.js";
 import type { LightCapabilities } from "./LightCapabilities.js";
 import { DEVICE_SENSORS, deviceSensorEndpointOf, ENDPOINT_SENSORS, type SensorProperty } from "./Sensors.js";
 import { COLOR_TEMP_PRESETS } from "./SetCommands.js";
@@ -118,6 +119,18 @@ export function exposesOf(
                 );
             }
         }
+    }
+
+    const actions = deviceActionsOf(attributes);
+    if (actions.length > 0) {
+        exposes.push({
+            type: "enum",
+            name: "action",
+            label: "Action",
+            property: "action",
+            access: ACCESS_STATE,
+            values: actions,
+        });
     }
 
     const endpointKeys = new Set(

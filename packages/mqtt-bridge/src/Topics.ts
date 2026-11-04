@@ -61,6 +61,11 @@ export class Topics {
         return `${this.#prefix}/${device}/availability`;
     }
 
+    /** Button presses and other momentary events; not retained, so a reconnect cannot replay one. */
+    deviceAction(device: string): string {
+        return `${this.#prefix}/${device}/action`;
+    }
+
     /** Subscription filters covering all inbound command topic variants (disjoint set). */
     get commandFilters(): string[] {
         const p = this.#prefix;

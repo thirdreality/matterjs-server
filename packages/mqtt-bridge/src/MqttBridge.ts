@@ -23,6 +23,7 @@ import {
 import { controllableEndpointsOf, isDeviceWrite, parseEndpointSet, type DeviceAction } from "./Controls.js";
 import { deviceStateOf, isDeviceLevelStateAttribute, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
 import { bridgeDiscoveryMessagesOf, discoveryMessagesOf } from "./Discovery.js";
+import { SWITCH_CLUSTER_ID, switchActionOf } from "./Events.js";
 import { deviceDescriptionOf } from "./Exposes.js";
 import { lightCapabilitiesOf } from "./LightCapabilities.js";
 import { MqttConnection } from "./MqttConnection.js";
@@ -143,6 +144,13 @@ export class MqttBridge {
                 logger.warn(`Failed to publish attribute change for node ${nodeId}:`, error);
             }
         });
+        this.#observers.on(events.eventChanged, (nodeId, data) => {
+            try {
+                this.#handleEvent(nodeId, data.path, data.events);
+            } catch (error) {
+                logger.warn(`Failed to publish event for node ${nodeId}:`, error);
+            }
+        });
         this.#observers.on(events.nodeAdded, nodeId => {
             try {
                 this.#refreshDevice(nodeId);
@@ -228,6 +236,29 @@ export class MqttBridge {
             return;
         }
         this.#publishDeviceState(entry);
+    }
+
+    /** zigbee2mqtt-style `action` for button events, on the non-retained `<node>/action` topic. */
+    #handleEvent(
+        nodeId: NodeId,
+        path: { endpointId: number; clusterId: number; eventId: number },
+        occurrences: { data: unknown }[],
+    ): void {
+        if (path.clusterId !== SWITCH_CLUSTER_ID) {
+            return;
+        }
+        const device = nodeId.toString();
+        if (!this.#devices.has(device)) {
+            return;
+        }
+        const { attributes } = this.#commandHandler.getNodeDetails(nodeId);
+        for (const { data } of occurrences) {
+            const action = switchActionOf(attributes, path.endpointId, path.eventId, data);
+            if (action !== undefined) {
+                logger.info(`Node ${device} action: ${action}`);
+                this.#connection.publish(this.#topics.deviceAction(device), action, false);
+            }
+        }
     }
 
     #handleMessage(topic: string, payload: string): void {

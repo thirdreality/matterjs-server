@@ -64,6 +64,7 @@ Matter endpoint 编号。
 | `<prefix>/bridge/response/<command>` | 发布 | 否 | `{"status":"ok"\|"error", ...}` |
 | `<prefix>/<node>` | 发布 | 是 | 合并后的完整设备状态 JSON |
 | `<prefix>/<node>/availability` | 发布 | 是 | `online` / `offline`（纯字符串） |
+| `<prefix>/<node>/action` | 发布 | 否 | 按键 action，纯字符串，见[按键 action](#按键-action) |
 | `<prefix>/<node>/set` | 订阅 | — | 设备命令，JSON 对象或裸值 |
 | `<prefix>/<node>/set/<property>` | 订阅 | — | 设备命令，单个属性的裸载荷形式 |
 | `<prefix>/<node>/get` | 订阅 | — | 重发当前状态（载荷忽略） |
@@ -251,6 +252,7 @@ node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_
 | `pump_operation_mode` | PumpConfigurationAndControl `512/32` | `normal`、`minimum`、`maximum`、`local` |
 | `pump_control_mode` | PumpConfigurationAndControl `512/33` | `constant_speed`、`constant_pressure`、`proportional_pressure`、`constant_flow`、`constant_temperature`、`automatic` |
 | `smoke_sensitivity` | SmokeCoAlarm `92/11` | `high`、`standard`、`low` |
+| `switch_position` | Switch `59/1` | 拨动开关（LatchingSwitch feature）的当前档位 |
 | `pressure` | PressureMeasurement `1027/0` | hPa（原始单位 0.1 kPa 恰好等于 hPa） |
 | `flow` | FlowMeasurement `1028/0` | m³/h，`raw/10` |
 | `soil_moisture` | SoilMeasurement `1072/1` | % |
@@ -322,6 +324,23 @@ EnhancedHue 特性时，优先用 `enhancedCurrentHue`（`768/16384`）而不是
 离普朗克轨迹很远 —— 但 zigbee2mqtt 报告的也是同样的值。
 
 只有 endpoint 确实暴露了对应 cluster **且** 已缓存到值时，属性才会出现。合并结果为空对象时不发布状态 topic。
+
+### 按键 action
+
+按键操作以 Matter Switch（`59`）事件到达，按 zigbee2mqtt 风格发布为 `action`，走单独的 topic
+`<prefix>/<node>/action`，载荷是纯字符串。它**不是 retained**，也不进入 retained 状态，所以 broker 重连不会回放按键。
+
+| Switch 事件 | `action` |
+|-------------|----------|
+| MultiPressComplete（MultiPress feature） | `single`、`double`、`triple`、`quadruple`，超过四次为 `many` |
+| ShortRelease（Release feature，无 MultiPress） | `single` |
+| InitialPress（既无 Release 也无 MultiPress，例如门铃） | `single` |
+| LongPress / LongRelease | `hold` / `release` |
+| SwitchLatched（LatchingSwitch feature） | `position_<新档位>` |
+
+每次按键只上报一次：有 MultiPress feature 时只看完成的整个序列，双击是 `double` 而不是两次 `single`。设备有多个
+Switch endpoint 时，action 带上 endpoint，类似 zigbee2mqtt 的 `single_left`：`single_1`、`hold_2`。拨动开关的静止
+档位另外以 `switch_position` 保留在状态中。
 
 ### 多 endpoint 设备
 
@@ -765,6 +784,7 @@ broker 随即回放的 retained topic 会与刚刚发布的内容比对，多出
 | Thermostat | `climate`：`modes` 为 off，加上 FeatureMap 支持的 heat/cool/auto（RoomAirConditioner 另加 fan only 与 dry），Matter 独有的模式显示为最接近的 HA 模式；单一目标温度，两者都支持时为 low（制热）/ high（制冷）两个目标；`min_temp`/`max_temp` 取自绝对设定点限制；当前动作来自 `running_state`。室外温度与 PI 需求各为独立的 `sensor` |
 | FanControl | `fan`，载荷 `{"fan_state":…}`；支持时带百分比、`auto` 预设（FanModeSequence 包含时）、摆动与风向 |
 | ValveConfigurationAndControl | `valve`，device class `water`，Level feature 时带位置；剩余时长为 `sensor` |
+| Switch | 每个设备一个 `event` 实体（事件类型为该设备可能上报的全部 action，由 Switch feature 与 MultiPressMax 决定），每种 action 一个 `device_automation` 触发器，都基于 `<prefix>/<node>/action` |
 | ModeSelect | `select`，名称取自 cluster 的 Description，选项来自 SupportedModes |
 | 水泵模式、烟雾灵敏度 | `select`，config 分类 |
 | SmokeCoAlarm | 自检 `button`，diagnostic 分类 |
