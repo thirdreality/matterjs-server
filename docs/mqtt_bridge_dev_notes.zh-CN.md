@@ -93,7 +93,19 @@ HA 的 MQTT 实体把 `*_value_template` 的输出和 `payload_*` / `state_*` �
 枚举映射（如 Matter 独有的 `emergency_heating` 映射到 HA 的 `heat`）也必须在模板里完成，否则 HA 报"不在可选列表"
 并把实体置为未知。
 
-### 12. hub 资源极其有限（2 GB 内存，4 核 ARM）
+### 12. 瞬时事件不能进 retained 状态
+
+按键是"发生了一次"，不是"处于某状态"。如果把 `action` 写进 retained 的设备状态 topic，broker 重连或 HA 重启时会把
+上一次按键回放一遍，自动化被误触发。action 要发到单独的非 retained topic（`<node>/action`）。同理，一次按键只能
+上报一次：带 MultiPress feature 的按键只在 MultiPressComplete 时报，否则双击会变成两次 single 加一次 double。
+
+### 13. Zigbee 的"全 1"在 Matter 里是 null
+
+Zigbee 用 0xFFFF / 0xFF 表示"沿用上次"或"使用另一个属性"（StartUpColorTemperature、OnLevel、OnTransitionTime 等）；
+Matter 对应的属性是 nullable，用 null 表达。对外按 z2m 的约定发布（65535 / 255 / `previous`），写入时再转换回 null。
+位图类属性（Options）只改需要的那一位，其余位必须保留。
+
+### 14. hub 资源极其有限（2 GB 内存，4 核 ARM）
 
 - VS Code server 及扩展常驻约 1.2 GB；TypeScript 语言服务（tsserver）单独可涨到 ~580 MB。
 - `npm run lint` 的 type-aware 检查（tsgolint）峰值约 570 MB，**曾把整机拖到 OOM 崩溃重启**。
@@ -108,7 +120,7 @@ HA 的 MQTT 实体把 `*_value_template` 的输出和 `payload_*` / `state_*` �
   - 一次只跑一条重任务，不并发。
 - 原始日志一律写到磁盘，**不要写到 `/tmp`**（tmpfs，重启即丢）。
 
-### 13. 在 hub 上跑测试的已知坑
+### 15. 在 hub 上跑测试的已知坑
 
 - 起一个 matter-server 进程约需 32 s，其中仅 import ws-controller 就约 26 s（matter.js 0.18，模块初始化开销，
   与 source map 或编译缓存无关）。超时时间按 30 s 写死的测试在 hub 上会超时。
@@ -128,6 +140,8 @@ HA 的 MQTT 实体把 `*_value_template` 的输出和 `payload_*` / `state_*` �
 | `3ec0b17` | B2 窗帘；`/set` 改为按 endpoint 能力分派，支持写属性 |
 | `c13f321` | B2 门锁、温控（climate） |
 | `b956344` | B2 风扇、水阀、ModeSelect、水泵模式、烟雾报警器自检与灵敏度 |
+| `5963f04` | B3 按键 action（Switch 事件 → `<node>/action`，HA event 实体与 device trigger） |
+| `223e807` | B4 灯的通用参数：`power_on_behavior`、`color_temp_startup`、`level_config`、`color_options`、`on_time`、`effect` / `identify` |
 
 ## 问题
 
@@ -154,7 +168,7 @@ z2m 在 `bridge/devices` 中为每个设备给出 `definition`（型号、厂商
 | 失败 | 判断 |
 |------|------|
 | ws-controller `WsBackpressureReproTest` 3 条超时（60 s） | 上游 1.5.3 新增的压力测试，单核跑不完 500 轮；干净的 v1.5.5 worktree 在同机复现，耗时与失败一致 |
-| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 13 条） |
+| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 15 条） |
 | matter-server `OtaUploadHandlerTest` 2 条 | root 运行 + 时序竞态 |
 | matter-server `IntegrationTest` | 未运行 |
 
@@ -201,8 +215,8 @@ bridge 自身只增加不到 1 s。
   - [x] 水泵 PumpConfigurationAndControl（运行 / 控制模式；转速、压力等读数待补）
   - [x] ModeSelect → `select`
   - [x] 烟雾 / CO 报警的控制：自检（SelfTestRequest）、灵敏度（SmokeSensitivityLevel，可写）
-- [ ] **B3 按键与事件**：GenericSwitch、Doorbell → `action`（`single` / `double` / `hold` / `release` 等），HA event / device_trigger
-- [ ] **B4 灯与插座通用参数**：`power_on_behavior`、`effect`（identify）、`color_temp_startup`、上电亮度、`on_time` / `off_wait_time`
+- [x] **B3 按键与事件**：GenericSwitch、Doorbell → `action`（`single` / `double` / `hold` / `release` 等），HA event / device_trigger
+- [x] **B4 灯与插座通用参数**：`power_on_behavior`、`effect`（identify）、`color_temp_startup`、上电亮度（`level_config`）、`color_options`、`on_time` / `off_wait_time`
 - [ ] **B7 Matter 网桥（P2）**：子设备拆成独立 z2m 设备
 - [ ] **B5 家电**：洗碗机、洗衣机、烘干机、冰箱 / 温控柜、烤箱、灶台、微波炉（OperationalState、各 Mode cluster、TemperatureControl）；扫地机 → HA `vacuum`
 - [ ] **B6 能源**：EnergyEvse、WaterHeater、HeatPump、SolarPower、BatteryStorage、DeviceEnergyManagement、电表 / 电价
@@ -230,13 +244,13 @@ bridge 自身只增加不到 1 s。
 
 | 分类 | 设备类型 | 状态 |
 |------|----------|------|
-| 灯 | OnOffLight、DimmableLight、ColorTemperatureLight、ExtendedColorLight | 已支持（缺 B4 参数） |
-| 插座 / 墙装 | OnOffPlugInUnit、DimmablePlugInUnit、MountedOnOffControl、MountedDimmableLoadControl | 已支持（缺 B4 参数） |
+| 灯 | OnOffLight、DimmableLight、ColorTemperatureLight、ExtendedColorLight | 已支持（含 B4 参数） |
+| 插座 / 墙装 | OnOffPlugInUnit、DimmablePlugInUnit、MountedOnOffControl、MountedDimmableLoadControl | 已支持（含 B4 参数） |
 | 传感器 | OccupancySensor、LightSensor、TemperatureSensor、HumiditySensor、ContactSensor | 已支持 |
 | 传感器 | WaterLeakDetector、RainSensor、WaterFreezeDetector | 已支持（B0 修复） |
 | 传感器 | PressureSensor、FlowSensor、SoilSensor、AirQualitySensor、SmokeCoAlarm、ElectricalMeter | 已支持（B1） |
 | 控制 | WindowCovering、DoorLock、Thermostat、RoomAirConditioner、Fan、AirPurifier、ExtractorHood、WaterValve、Pump、ModeSelect | 已支持（B2） |
-| 按键 / 事件 | GenericSwitch、Doorbell、Chime | B3 |
+| 按键 / 事件 | GenericSwitch、Doorbell | 已支持（B3）；Chime 待做 |
 | 网桥 | Aggregator（及 BridgedNode） | B7 |
 | 家电 | Dishwasher、LaundryWasher、LaundryDryer、Refrigerator、TemperatureControlledCabinet、Oven、CookSurface、Cooktop、MicrowaveOven、RoboticVacuumCleaner | B5 |
 | 能源 | EnergyEvse、WaterHeater、HeatPump、SolarPower、BatteryStorage、ElectricalUtilityMeter、ElectricalEnergyTariff、MeterReferencePoint | B6 |
