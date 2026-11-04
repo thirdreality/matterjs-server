@@ -238,6 +238,19 @@ node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_
 | `running_state` | Thermostat `513/41` | 由各级运行位得出 `heat`、`cool`、`fan_only`，否则 `idle` |
 | `local_temperature_calibration` | Thermostat `513/16` | °C，`raw/10` |
 | `pi_heating_demand`、`pi_cooling_demand` | Thermostat `513/8`、`513/7` | % |
+| `fan_state` | FanControl `514/0` | FanMode 不为 off 时为 `ON` |
+| `fan_mode` | FanControl `514/0` | `off`、`low`、`medium`、`high`、`on`、`auto`、`smart` |
+| `percentage` | FanControl `514/3`，没有则 `514/2` | 0–100 |
+| `fan_speed` | FanControl `514/6`，没有则 `514/5` | 0–SpeedMax（MultiSpeed feature） |
+| `oscillation` | FanControl `514/8` | 任一摆动方式开启时为 `true` |
+| `airflow_direction` | FanControl `514/11` | `forward`、`reverse` |
+| `state`（水阀） | ValveConfigurationAndControl `129/4` | `OPEN`、`CLOSE`；动作过程中不发布 |
+| `position`（水阀） | ValveConfigurationAndControl `129/6` | 0–100（Level feature） |
+| `remaining_duration` | ValveConfigurationAndControl `129/3` | s |
+| `mode` | ModeSelect `80/3` | SupportedModes（`80/2`）中当前模式的 label |
+| `pump_operation_mode` | PumpConfigurationAndControl `512/32` | `normal`、`minimum`、`maximum`、`local` |
+| `pump_control_mode` | PumpConfigurationAndControl `512/33` | `constant_speed`、`constant_pressure`、`proportional_pressure`、`constant_flow`、`constant_temperature`、`automatic` |
+| `smoke_sensitivity` | SmokeCoAlarm `92/11` | `high`、`standard`、`low` |
 | `pressure` | PressureMeasurement `1027/0` | hPa（原始单位 0.1 kPa 恰好等于 hPa） |
 | `flow` | FlowMeasurement `1028/0` | m³/h，`raw/10` |
 | `soil_moisture` | SoilMeasurement `1072/1` | % |
@@ -414,7 +427,7 @@ matter2mqtt/5/set/color        →  {"hue":120,"saturation":80}
 2. topic 中的 `<endpoint>` 段（`<prefix>/<node>/2/set`）；
 3. 节点的第一个可控 endpoint。
 
-带 OnOff cluster 或设备控制（窗帘、门锁、温控）的 endpoint 是可控的。后缀数字不属于可控 endpoint 时，会被当成属性名的
+带 OnOff cluster 或设备控制（窗帘、门锁、温控、风扇、水阀、模式选择、水泵或烟雾报警器设置）的 endpoint 是可控的。后缀数字不属于可控 endpoint 时，会被当成属性名的
 一部分（与 zigbee2mqtt 一致）。发给其他 endpoint 的命令打日志后丢弃。
 
 在目标 endpoint 上，各设备控制先认领自己的属性（窗帘认领 `state`、`position`、`tilt`），剩下的交给下文的灯处理，
@@ -534,6 +547,33 @@ zigbee2mqtt 的 `position`、`tilt` 从关（0）数到开（100）；Matter 从
 | `local_temperature_calibration`（°C，-2.5–2.5） | 属性 `16` = `round(°C * 10)` |
 
 数值可以是数字或数字字符串。
+
+### 风扇
+
+| 消息 | Matter 写属性（FanControl `514`） |
+|------|-----------------------------------|
+| `fan_state: "ON"` / `"OFF"` | FanMode `0` = On（由风扇决定转速）/ Off |
+| `fan_mode` | 按名称写 FanMode `0` |
+| `percentage` 0–100 | PercentSetting `2` |
+| `fan_speed` | SpeedSetting `5`，0–SpeedMax |
+| `oscillation: true` / `false` | RockSetting `8` = RockSupport 中的全部摆动方式 / 0 |
+| `airflow_direction: "forward"` / `"reverse"` | AirflowDirection `11` |
+
+### 水阀
+
+| 消息 | Matter 命令（ValveConfigurationAndControl `129`） |
+|------|----------------------------------------------------|
+| `state: "OPEN"`，可带 `position`（1–100）与 `duration`（秒） | `open`，带 `targetLevel` 与 `openDuration` |
+| `state: "CLOSE"`，或 `position: 0` | `close` |
+
+### 模式与设置
+
+| 消息 | Matter |
+|------|--------|
+| `mode`（label 或模式编号） | ModeSelect `changeToMode`；不在 SupportedModes 中的模式会被拒绝 |
+| `pump_operation_mode`、`pump_control_mode` | 写 PumpConfigurationAndControl `512/32`、`512/33` |
+| `smoke_sensitivity` | 写 SmokeCoAlarm `92/11` |
+| `self_test`（任意值） | SmokeCoAlarm `selfTestRequest` |
 
 ### `<prefix>/<node>/get`
 
@@ -723,6 +763,11 @@ broker 随即回放的 retained topic 会与刚刚发布的内容比对，多出
 | 仅 OnOff | `switch`（载荷 `{"state":"ON"}` / `{"state":"OFF"}`） |
 | DoorLock | `lock`，载荷 `{"state":"LOCK"\|"UNLOCK"}`；有 DoorPositionSensor feature 时另有 `door_state` 枚举 `sensor` |
 | Thermostat | `climate`：`modes` 为 off，加上 FeatureMap 支持的 heat/cool/auto（RoomAirConditioner 另加 fan only 与 dry），Matter 独有的模式显示为最接近的 HA 模式；单一目标温度，两者都支持时为 low（制热）/ high（制冷）两个目标；`min_temp`/`max_temp` 取自绝对设定点限制；当前动作来自 `running_state`。室外温度与 PI 需求各为独立的 `sensor` |
+| FanControl | `fan`，载荷 `{"fan_state":…}`；支持时带百分比、`auto` 预设（FanModeSequence 包含时）、摆动与风向 |
+| ValveConfigurationAndControl | `valve`，device class `water`，Level feature 时带位置；剩余时长为 `sensor` |
+| ModeSelect | `select`，名称取自 cluster 的 Description，选项来自 SupportedModes |
+| 水泵模式、烟雾灵敏度 | `select`，config 分类 |
+| SmokeCoAlarm | 自检 `button`，diagnostic 分类 |
 | WindowCovering | `cover`，载荷 `{"state":"OPEN"\|"CLOSE"\|"STOP"}`；窗帘跟踪位置时带 position 与 tilt 模板；device class 由 EndProductType 映射为 `shade`、`blind`、`curtain`、`shutter` 或 `awning` |
 | OccupancySensing | `binary_sensor`，device class `motion` |
 | BooleanState（ContactSensor） | `binary_sensor`，device class `door`，取反（`contact: false` = 打开 = `on`） |

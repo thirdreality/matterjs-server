@@ -248,6 +248,19 @@ built from the controller's attribute cache, so it is available without an extra
 | `running_state` | Thermostat `513/41` | `heat`, `cool`, `fan_only` (from the stage bits) or `idle` |
 | `local_temperature_calibration` | Thermostat `513/16` | °C, `raw/10` |
 | `pi_heating_demand`, `pi_cooling_demand` | Thermostat `513/8`, `513/7` | % |
+| `fan_state` | FanControl `514/0` | `ON` unless FanMode is off |
+| `fan_mode` | FanControl `514/0` | `off`, `low`, `medium`, `high`, `on`, `auto`, `smart` |
+| `percentage` | FanControl `514/3`, else `514/2` | 0–100 |
+| `fan_speed` | FanControl `514/6`, else `514/5` | 0–SpeedMax (MultiSpeed feature) |
+| `oscillation` | FanControl `514/8` | `true` while any rocking motion is on |
+| `airflow_direction` | FanControl `514/11` | `forward`, `reverse` |
+| `state` (valve) | ValveConfigurationAndControl `129/4` | `OPEN`, `CLOSE`; omitted while transitioning |
+| `position` (valve) | ValveConfigurationAndControl `129/6` | 0–100 (Level feature) |
+| `remaining_duration` | ValveConfigurationAndControl `129/3` | s |
+| `mode` | ModeSelect `80/3` | The label of the current mode from SupportedModes (`80/2`) |
+| `pump_operation_mode` | PumpConfigurationAndControl `512/32` | `normal`, `minimum`, `maximum`, `local` |
+| `pump_control_mode` | PumpConfigurationAndControl `512/33` | `constant_speed`, `constant_pressure`, `proportional_pressure`, `constant_flow`, `constant_temperature`, `automatic` |
+| `smoke_sensitivity` | SmokeCoAlarm `92/11` | `high`, `standard`, `low` |
 | `pressure` | PressureMeasurement `1027/0` | hPa (the raw 0.1 kPa unit is exactly hPa) |
 | `flow` | FlowMeasurement `1028/0` | m³/h, `raw/10` |
 | `soil_moisture` | SoilMeasurement `1072/1` | % |
@@ -443,7 +456,7 @@ The target endpoint is, in order of precedence:
 2. the `<endpoint>` topic segment (`<prefix>/<node>/2/set`),
 3. the node's first controllable endpoint.
 
-An endpoint is controllable when it has the OnOff cluster or a device control (cover, lock, thermostat). A
+An endpoint is controllable when it has the OnOff cluster or a device control (cover, lock, thermostat, fan, valve, mode select, pump or smoke alarm settings). A
 suffix that does not match a controllable endpoint is treated as part of the property name (matching
 zigbee2mqtt). Commands for any other endpoint are logged and dropped.
 
@@ -575,6 +588,33 @@ management; here it is the code for this one lock or unlock.
 | `local_temperature_calibration` (°C, -2.5–2.5) | Attribute `16` = `round(°C * 10)` |
 
 Values may be numbers or numeric strings.
+
+### Fans
+
+| Message | Matter write (FanControl `514`) |
+|---------|----------------------------------|
+| `fan_state: "ON"` / `"OFF"` | FanMode `0` = On (the fan picks its speed) / Off |
+| `fan_mode` | FanMode `0` by name |
+| `percentage` 0–100 | PercentSetting `2` |
+| `fan_speed` | SpeedSetting `5`, 0–SpeedMax |
+| `oscillation: true` / `false` | RockSetting `8` = every motion in RockSupport / 0 |
+| `airflow_direction: "forward"` / `"reverse"` | AirflowDirection `11` |
+
+### Valves
+
+| Message | Matter command (ValveConfigurationAndControl `129`) |
+|---------|------------------------------------------------------|
+| `state: "OPEN"`, optionally with `position` (1–100) and `duration` (s) | `open` with `targetLevel` and `openDuration` |
+| `state: "CLOSE"`, or `position: 0` | `close` |
+
+### Modes and settings
+
+| Message | Matter |
+|---------|--------|
+| `mode` (label or mode number) | ModeSelect `changeToMode`; refused for a mode not in SupportedModes |
+| `pump_operation_mode`, `pump_control_mode` | Write PumpConfigurationAndControl `512/32`, `512/33` |
+| `smoke_sensitivity` | Write SmokeCoAlarm `92/11` |
+| `self_test` (any value) | SmokeCoAlarm `selfTestRequest` |
 
 ### `<prefix>/<node>/get`
 
@@ -793,6 +833,11 @@ BasicInformation carries no product name.
 | OnOff only | `switch` (`{"state":"ON"}` / `{"state":"OFF"}` payloads) |
 | DoorLock | `lock` with `{"state":"LOCK"\|"UNLOCK"}` payloads; a `door_state` enum `sensor` with the DoorPositionSensor feature |
 | Thermostat | `climate`: `modes` off plus heat/cool/auto per FeatureMap (fan only and dry for a RoomAirConditioner), Matter-only modes shown as the closest HA mode; one target temperature, or low (heating) / high (cooling) targets when both are supported; `min_temp`/`max_temp` from the absolute setpoint limits; current action from `running_state`. Outdoor temperature and PI demands as separate `sensor`s |
+| FanControl | `fan` with `{"fan_state":…}` payloads, percentage, an `auto` preset when the FanModeSequence has it, oscillation and direction when supported |
+| ValveConfigurationAndControl | `valve`, device class `water`, with position for the Level feature; remaining duration as a `sensor` |
+| ModeSelect | `select` named after the cluster Description, options from SupportedModes |
+| Pump modes, smoke sensitivity | `select`, config category |
+| SmokeCoAlarm | Self test `button`, diagnostic category |
 | WindowCovering | `cover` with `{"state":"OPEN"\|"CLOSE"\|"STOP"}` payloads; position and tilt templates when the cover tracks them; device class `shade`, `blind`, `curtain`, `shutter` or `awning` from EndProductType |
 | OccupancySensing | `binary_sensor`, device class `motion` |
 | BooleanState (ContactSensor) | `binary_sensor`, device class `door`, inverted (`contact: false` = open = `on`) |

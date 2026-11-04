@@ -5,7 +5,16 @@
  */
 
 import type { AttributesData } from "@matter-server/ws-controller";
-import { DoorLock, Thermostat, WindowCovering } from "@matter/main/clusters";
+import {
+    DoorLock,
+    FanControl,
+    ModeSelect,
+    PumpConfigurationAndControl,
+    SmokeCoAlarm,
+    Thermostat,
+    ValveConfigurationAndControl,
+    WindowCovering,
+} from "@matter/main/clusters";
 import type { Expose } from "./Exposes.js";
 import { lightCapabilitiesOf, ONOFF_CLUSTER_ID } from "./LightCapabilities.js";
 import { parseSetObject, type DeviceCommand } from "./SetCommands.js";
@@ -795,8 +804,642 @@ const thermostat: Control = {
     },
 };
 
-/** Controls in entity order. An endpoint normally carries at most one. */
-export const CONTROLS: readonly Control[] = [cover, lock, thermostat];
+// Fan. Matter's FanModeEnum matches the Zigbee fan cluster that zigbee2mqtt's fan_mode follows.
+
+const FAN = FanControl.Cluster.id;
+const FAN_MODE = 0;
+const FAN_MODE_SEQUENCE = 1;
+const FAN_PERCENT_SETTING = 2;
+const FAN_PERCENT_CURRENT = 3;
+const FAN_SPEED_MAX = 4;
+const FAN_SPEED_SETTING = 5;
+const FAN_SPEED_CURRENT = 6;
+const FAN_ROCK_SUPPORT = 7;
+const FAN_ROCK_SETTING = 8;
+const FAN_AIRFLOW_DIRECTION = 11;
+const FAN_MODES = ["off", "low", "medium", "high", "on", "auto", "smart"] as const;
+const AIRFLOW_DIRECTIONS = ["forward", "reverse"] as const;
+
+/** Writable fan modes per FanModeSequence; `on` and `smart` are always accepted by the cluster. */
+const FAN_MODE_SEQUENCES: Readonly<Record<number, readonly string[]>> = {
+    0: ["off", "low", "medium", "high"],
+    1: ["off", "low", "high"],
+    2: ["off", "low", "medium", "high", "auto"],
+    3: ["off", "low", "high", "auto"],
+    4: ["off", "high", "auto"],
+    5: ["off", "high"],
+};
+
+function fanModesOf(attributes: AttributesData, endpoint: number): readonly string[] {
+    const sequence = numberAt(attributes, endpoint, FAN, FAN_MODE_SEQUENCE);
+    return FAN_MODE_SEQUENCES[sequence ?? 0] ?? FAN_MODE_SEQUENCES[0];
+}
+
+function bitmapOf(value: unknown): number | undefined {
+    if (typeof value === "number") {
+        return value;
+    }
+    if (typeof value === "object" && value !== null) {
+        return Object.values(value).reduce<number>((bits, flag, index) => (flag ? bits | (1 << index) : bits), 0);
+    }
+    return undefined;
+}
+
+function boundedNumber(value: unknown, key: string, min: number, max: number, warnings: string[]): number | undefined {
+    const number = typeof value === "string" ? Number(value) : value;
+    if (typeof number !== "number" || !Number.isFinite(number) || number < min || number > max) {
+        warnings.push(`invalid ${key} ${JSON.stringify(value)}: expected ${min}-${max}`);
+        return undefined;
+    }
+    return Math.round(number);
+}
+
+function present(attributes: AttributesData, endpoint: number, cluster: number, attribute: number): boolean {
+    return raw(attributes, endpoint, cluster, attribute) !== undefined;
+}
+
+const fan: Control = {
+    present: (attributes, endpoint) => present(attributes, endpoint, FAN, FAN_MODE),
+    keys: (attributes, endpoint) => {
+        const keys = ["fan_state", "fan_mode"];
+        if (present(attributes, endpoint, FAN, FAN_PERCENT_SETTING)) {
+            keys.push("percentage");
+        }
+        if (present(attributes, endpoint, FAN, FAN_SPEED_SETTING)) {
+            keys.push("fan_speed");
+        }
+        if (present(attributes, endpoint, FAN, FAN_ROCK_SETTING)) {
+            keys.push("oscillation");
+        }
+        if (present(attributes, endpoint, FAN, FAN_AIRFLOW_DIRECTION)) {
+            keys.push("airflow_direction");
+        }
+        return keys;
+    },
+    paths: [
+        FAN_MODE,
+        FAN_PERCENT_SETTING,
+        FAN_PERCENT_CURRENT,
+        FAN_SPEED_SETTING,
+        FAN_SPEED_CURRENT,
+        FAN_ROCK_SETTING,
+        FAN_AIRFLOW_DIRECTION,
+    ].map(attribute => `${FAN}/${attribute}`),
+    state: (attributes, endpoint) => {
+        const state: Record<string, unknown> = {};
+        const mode = numberAt(attributes, endpoint, FAN, FAN_MODE);
+        if (mode !== undefined && FAN_MODES[mode] !== undefined) {
+            state.fan_mode = FAN_MODES[mode];
+            state.fan_state = mode === 0 ? "OFF" : "ON";
+        }
+        const percentage =
+            numberAt(attributes, endpoint, FAN, FAN_PERCENT_CURRENT) ??
+            numberAt(attributes, endpoint, FAN, FAN_PERCENT_SETTING);
+        if (percentage !== undefined) {
+            state.percentage = percentage;
+        }
+        const speed =
+            numberAt(attributes, endpoint, FAN, FAN_SPEED_CURRENT) ??
+            numberAt(attributes, endpoint, FAN, FAN_SPEED_SETTING);
+        if (speed !== undefined) {
+            state.fan_speed = speed;
+        }
+        const rock = bitmapOf(raw(attributes, endpoint, FAN, FAN_ROCK_SETTING));
+        if (rock !== undefined) {
+            state.oscillation = rock !== 0;
+        }
+        const direction = numberAt(attributes, endpoint, FAN, FAN_AIRFLOW_DIRECTION);
+        if (direction !== undefined && AIRFLOW_DIRECTIONS[direction] !== undefined) {
+            state.airflow_direction = AIRFLOW_DIRECTIONS[direction];
+        }
+        return state;
+    },
+    setKeys: ["fan_state", "fan_mode", "percentage", "fan_speed", "oscillation", "airflow_direction"],
+    parse: (message, attributes, endpoint) => {
+        const actions: DeviceAction[] = [];
+        const warnings: string[] = [];
+        const write = (attributeId: number, value: unknown) => actions.push({ clusterId: FAN, attributeId, value });
+        const keys = fan.keys(attributes, endpoint);
+        if (message.fan_state !== undefined) {
+            const state = String(message.fan_state).toUpperCase();
+            if (state === "ON" || state === "OFF") {
+                // FanMode On lets the fan pick its speed, which is what a bare "turn on" means
+                write(FAN_MODE, state === "ON" ? 4 : 0);
+            } else {
+                warnings.push(`invalid fan_state ${JSON.stringify(message.fan_state)}: expected ON or OFF`);
+            }
+        }
+        if (message.fan_mode !== undefined) {
+            const name = String(message.fan_mode).toLowerCase();
+            const index = FAN_MODES.indexOf(name as (typeof FAN_MODES)[number]);
+            if (index < 0) {
+                warnings.push(
+                    `invalid fan_mode ${JSON.stringify(message.fan_mode)}: expected one of ${FAN_MODES.join(", ")}`,
+                );
+            } else {
+                write(FAN_MODE, index);
+            }
+        }
+        const numeric = (key: string, attributeId: number, max: number) => {
+            if (message[key] === undefined) {
+                return;
+            }
+            if (!keys.includes(key)) {
+                warnings.push(`${key} not supported by this fan`);
+                return;
+            }
+            const value = boundedNumber(message[key], key, 0, max, warnings);
+            if (value !== undefined) {
+                write(attributeId, value);
+            }
+        };
+        numeric("percentage", FAN_PERCENT_SETTING, 100);
+        numeric("fan_speed", FAN_SPEED_SETTING, numberAt(attributes, endpoint, FAN, FAN_SPEED_MAX) ?? 100);
+        if (message.oscillation !== undefined) {
+            if (!keys.includes("oscillation")) {
+                warnings.push("oscillation not supported by this fan");
+            } else {
+                const on = message.oscillation === true || String(message.oscillation).toLowerCase() === "true";
+                // Oscillating turns on every rocking motion the fan supports
+                write(FAN_ROCK_SETTING, on ? (bitmapOf(raw(attributes, endpoint, FAN, FAN_ROCK_SUPPORT)) ?? 1) : 0);
+            }
+        }
+        if (message.airflow_direction !== undefined) {
+            const index = AIRFLOW_DIRECTIONS.indexOf(String(message.airflow_direction).toLowerCase() as "forward");
+            if (!keys.includes("airflow_direction")) {
+                warnings.push("airflow_direction not supported by this fan");
+            } else if (index < 0) {
+                warnings.push(
+                    `invalid airflow_direction ${JSON.stringify(message.airflow_direction)}: expected forward or reverse`,
+                );
+            } else {
+                write(FAN_AIRFLOW_DIRECTION, index);
+            }
+        }
+        return { actions, warnings };
+    },
+    primaryKey: "fan_state",
+    discovery: (attributes, endpoint, ctx) => {
+        const keys = fan.keys(attributes, endpoint);
+        const value = (key: string) => `value_json.${ctx.nameOf(key)}`;
+        const presets = fanModesOf(attributes, endpoint).filter(mode => mode === "auto");
+        const config: Record<string, unknown> = {
+            name: ctx.entityName("Fan"),
+            command_topic: ctx.commandTopic,
+            state_value_template: `{{ ${value("fan_state")} }}`,
+            payload_on: '{"fan_state":"ON"}',
+            payload_off: '{"fan_state":"OFF"}',
+        };
+        if (keys.includes("percentage")) {
+            Object.assign(config, {
+                percentage_command_topic: ctx.commandTopic,
+                percentage_command_template: '{"percentage": {{ value }}}',
+                percentage_value_template: `{{ ${value("percentage")} }}`,
+            });
+        }
+        if (presets.length > 0) {
+            Object.assign(config, {
+                preset_modes: presets,
+                preset_mode_command_topic: ctx.commandTopic,
+                preset_mode_command_template: '{"fan_mode": "{{ value }}"}',
+                preset_mode_value_template: `{{ ${value("fan_mode")} if ${value("fan_mode")} in ${JSON.stringify(presets)} else 'None' }}`,
+            });
+        }
+        if (keys.includes("oscillation")) {
+            Object.assign(config, {
+                oscillation_command_topic: ctx.commandTopic,
+                oscillation_command_template: '{"oscillation": {{ value }}}',
+                payload_oscillation_on: "true",
+                payload_oscillation_off: "false",
+                oscillation_value_template: `{{ ${value("oscillation")} | lower }}`,
+            });
+        }
+        if (keys.includes("airflow_direction")) {
+            Object.assign(config, {
+                direction_command_topic: ctx.commandTopic,
+                direction_command_template: '{"airflow_direction": "{{ value }}"}',
+                direction_value_template: `{{ ${value("airflow_direction")} }}`,
+            });
+        }
+        return [{ component: "fan", objectId: "fan", config }];
+    },
+    exposes: (attributes, endpoint, property) => {
+        const keys = fan.keys(attributes, endpoint);
+        const features: Expose[] = [
+            {
+                type: "binary",
+                name: "fan_state",
+                label: "Fan state",
+                property: property("fan_state"),
+                access: READ_WRITE,
+                value_on: "ON",
+                value_off: "OFF",
+            },
+            {
+                type: "enum",
+                name: "fan_mode",
+                label: "Fan mode",
+                property: property("fan_mode"),
+                access: READ_WRITE,
+                values: fanModesOf(attributes, endpoint),
+            },
+        ];
+        if (keys.includes("percentage")) {
+            features.push({
+                type: "numeric",
+                name: "percentage",
+                label: "Percentage",
+                property: property("percentage"),
+                access: READ_WRITE,
+                value_min: 0,
+                value_max: 100,
+                unit: "%",
+            });
+        }
+        if (keys.includes("fan_speed")) {
+            const max = numberAt(attributes, endpoint, FAN, FAN_SPEED_MAX) ?? 100;
+            features.push({
+                type: "numeric",
+                name: "fan_speed",
+                label: "Fan speed",
+                property: property("fan_speed"),
+                access: READ_WRITE,
+                value_min: 0,
+                value_max: max,
+            });
+        }
+        if (keys.includes("oscillation")) {
+            features.push({
+                type: "binary",
+                name: "oscillation",
+                label: "Oscillation",
+                property: property("oscillation"),
+                access: READ_WRITE,
+                value_on: true,
+                value_off: false,
+            });
+        }
+        if (keys.includes("airflow_direction")) {
+            features.push({
+                type: "enum",
+                name: "airflow_direction",
+                label: "Airflow direction",
+                property: property("airflow_direction"),
+                access: READ_WRITE,
+                values: AIRFLOW_DIRECTIONS,
+            });
+        }
+        return [{ type: "fan", features }];
+    },
+};
+
+// Valve. Published like a cover: state OPEN/CLOSE and, with the Level feature, position 0-100.
+
+const VALVE = ValveConfigurationAndControl.Cluster.id;
+const VALVE_REMAINING_DURATION = 3;
+const VALVE_CURRENT_STATE = 4;
+const VALVE_CURRENT_LEVEL = 6;
+
+const valve: Control = {
+    present: (attributes, endpoint) => present(attributes, endpoint, VALVE, VALVE_CURRENT_STATE),
+    keys: (attributes, endpoint) => {
+        const keys = ["state"];
+        if (present(attributes, endpoint, VALVE, VALVE_CURRENT_LEVEL)) {
+            keys.push("position");
+        }
+        if (present(attributes, endpoint, VALVE, VALVE_REMAINING_DURATION)) {
+            keys.push("remaining_duration");
+        }
+        return keys;
+    },
+    paths: [VALVE_REMAINING_DURATION, VALVE_CURRENT_STATE, VALVE_CURRENT_LEVEL].map(
+        attribute => `${VALVE}/${attribute}`,
+    ),
+    state: (attributes, endpoint) => {
+        const state: Record<string, unknown> = {};
+        const current = numberAt(attributes, endpoint, VALVE, VALVE_CURRENT_STATE);
+        if (current === 0 || current === 1) {
+            state.state = current === 1 ? "OPEN" : "CLOSE";
+        }
+        const level = numberAt(attributes, endpoint, VALVE, VALVE_CURRENT_LEVEL);
+        if (level !== undefined) {
+            state.position = level;
+        }
+        const remaining = numberAt(attributes, endpoint, VALVE, VALVE_REMAINING_DURATION);
+        if (remaining !== undefined) {
+            state.remaining_duration = remaining;
+        }
+        return state;
+    },
+    setKeys: ["state", "position", "duration"],
+    parse: (message, attributes, endpoint) => {
+        const warnings: string[] = [];
+        const data: Record<string, unknown> = {};
+        if (message.duration !== undefined) {
+            const seconds = boundedNumber(message.duration, "duration", 1, 0xffffffff, warnings);
+            if (seconds !== undefined) {
+                data.openDuration = seconds;
+            }
+        }
+        if (message.position !== undefined) {
+            if (!present(attributes, endpoint, VALVE, VALVE_CURRENT_LEVEL)) {
+                warnings.push("position not supported by this valve");
+            } else {
+                const level = boundedNumber(message.position, "position", 0, 100, warnings);
+                if (level === 0) {
+                    return { actions: [{ clusterId: VALVE, commandName: "close", data: {} }], warnings };
+                }
+                if (level !== undefined) {
+                    data.targetLevel = level;
+                }
+            }
+        }
+        const state = message.state === undefined ? undefined : String(message.state).toUpperCase();
+        if (state === "CLOSE") {
+            return { actions: [{ clusterId: VALVE, commandName: "close", data: {} }], warnings };
+        }
+        if (state !== undefined && state !== "OPEN") {
+            warnings.push(`invalid valve state ${JSON.stringify(message.state)}: expected OPEN or CLOSE`);
+            return { actions: [], warnings };
+        }
+        if (state === undefined && Object.keys(data).length === 0) {
+            return { actions: [], warnings };
+        }
+        return { actions: [{ clusterId: VALVE, commandName: "open", data }], warnings };
+    },
+    primaryKey: "state",
+    discovery: (attributes, endpoint, ctx) => {
+        const keys = valve.keys(attributes, endpoint);
+        const config: Record<string, unknown> = {
+            name: ctx.entityName("Valve"),
+            command_topic: ctx.commandTopic,
+            value_template: `{{ value_json.${ctx.nameOf("state")} }}`,
+            payload_open: '{"state":"OPEN"}',
+            payload_close: '{"state":"CLOSE"}',
+            state_open: "OPEN",
+            state_closed: "CLOSE",
+            device_class: "water",
+        };
+        if (keys.includes("position")) {
+            Object.assign(config, {
+                reports_position: true,
+                position_template: `{{ value_json.${ctx.nameOf("position")} }}`,
+                set_position_template: '{"position": {{ position }}}',
+            });
+        }
+        const entities: ControlEntity[] = [{ component: "valve", objectId: "valve", config }];
+        if (keys.includes("remaining_duration")) {
+            entities.push({
+                component: "sensor",
+                objectId: "remaining_duration",
+                config: {
+                    name: ctx.entityName("Remaining duration"),
+                    value_template: `{{ value_json.${ctx.nameOf("remaining_duration")} }}`,
+                    device_class: "duration",
+                    unit_of_measurement: "s",
+                },
+            });
+        }
+        return entities;
+    },
+    exposes: (attributes, endpoint, property) => {
+        const keys = valve.keys(attributes, endpoint);
+        const features: Expose[] = [
+            {
+                type: "enum",
+                name: "state",
+                label: "State",
+                property: property("state"),
+                access: READ_WRITE,
+                values: ["OPEN", "CLOSE"],
+            },
+        ];
+        if (keys.includes("position")) {
+            features.push({
+                type: "numeric",
+                name: "position",
+                label: "Position",
+                property: property("position"),
+                access: READ_WRITE,
+                value_min: 0,
+                value_max: 100,
+                unit: "%",
+            });
+        }
+        const exposes: Expose[] = [{ type: "valve", features }];
+        if (keys.includes("remaining_duration")) {
+            exposes.push({
+                type: "numeric",
+                name: "remaining_duration",
+                label: "Remaining duration",
+                property: property("remaining_duration"),
+                access: READ_ONLY,
+                unit: "s",
+            });
+        }
+        return exposes;
+    },
+};
+
+/**
+ * A writable enum attribute as a zigbee2mqtt enum property and a Home Assistant select (pump modes,
+ * smoke sensitivity, ...).
+ */
+function enumSetting(
+    key: string,
+    label: string,
+    cluster: number,
+    attribute: number,
+    names: Readonly<Record<number, string>>,
+): Control {
+    const values = Object.values(names);
+    return {
+        present: (attributes, endpoint) => present(attributes, endpoint, cluster, attribute),
+        keys: () => [key],
+        paths: [`${cluster}/${attribute}`],
+        state: (attributes, endpoint) => {
+            const value = numberAt(attributes, endpoint, cluster, attribute);
+            return value !== undefined && names[value] !== undefined ? { [key]: names[value] } : {};
+        },
+        setKeys: [key],
+        parse: message => {
+            const name = String(message[key]).toLowerCase();
+            const entry = Object.entries(names).find(([, value]) => value === name);
+            if (entry === undefined) {
+                return {
+                    actions: [],
+                    warnings: [`invalid ${key} ${JSON.stringify(message[key])}: expected one of ${values.join(", ")}`],
+                };
+            }
+            return { actions: [{ clusterId: cluster, attributeId: attribute, value: Number(entry[0]) }], warnings: [] };
+        },
+        primaryKey: key,
+        discovery: (_attributes, _endpoint, ctx) => [
+            {
+                component: "select",
+                objectId: key,
+                config: {
+                    name: ctx.entityName(label),
+                    command_topic: ctx.commandTopic,
+                    command_template: `{"${key}": "{{ value }}"}`,
+                    value_template: `{{ value_json.${ctx.nameOf(key)} }}`,
+                    options: values,
+                    entity_category: "config",
+                },
+            },
+        ],
+        exposes: (_attributes, _endpoint, property) => [
+            { type: "enum", name: key, label, property: property(key), access: READ_WRITE, values },
+        ],
+    };
+}
+
+const PUMP = PumpConfigurationAndControl.Cluster.id;
+const pumpOperationMode = enumSetting("pump_operation_mode", "Pump operation mode", PUMP, 32, {
+    0: "normal",
+    1: "minimum",
+    2: "maximum",
+    3: "local",
+});
+const pumpControlMode = enumSetting("pump_control_mode", "Pump control mode", PUMP, 33, {
+    0: "constant_speed",
+    1: "constant_pressure",
+    2: "proportional_pressure",
+    3: "constant_flow",
+    5: "constant_temperature",
+    7: "automatic",
+});
+
+const SMOKE_CO = SmokeCoAlarm.Cluster.id;
+const smokeSensitivity = enumSetting("smoke_sensitivity", "Smoke sensitivity", SMOKE_CO, 11, {
+    0: "high",
+    1: "standard",
+    2: "low",
+});
+
+/** The SelfTestRequest command, as a write-only property and a Home Assistant button. */
+const smokeSelfTest: Control = {
+    present: (attributes, endpoint) => present(attributes, endpoint, SMOKE_CO, 0),
+    keys: () => [],
+    paths: [],
+    state: () => ({}),
+    setKeys: ["self_test"],
+    parse: () => ({ actions: [{ clusterId: SMOKE_CO, commandName: "selfTestRequest", data: {} }], warnings: [] }),
+    primaryKey: "self_test",
+    discovery: (_attributes, _endpoint, ctx) => [
+        {
+            component: "button",
+            objectId: "self_test",
+            config: {
+                name: ctx.entityName("Self test"),
+                command_topic: ctx.commandTopic,
+                payload_press: '{"self_test": true}',
+                entity_category: "diagnostic",
+            },
+        },
+    ],
+    exposes: (_attributes, _endpoint, property) => [
+        {
+            type: "enum",
+            name: "self_test",
+            label: "Self test",
+            property: property("self_test"),
+            access: 2,
+            values: ["start"],
+        },
+    ],
+};
+
+// ModeSelect: the device names its own modes, so options come from SupportedModes.
+
+const MODE_SELECT = ModeSelect.Cluster.id;
+const MODE_SUPPORTED = 2;
+const MODE_CURRENT = 3;
+
+function supportedModesOf(attributes: AttributesData, endpoint: number): { label: string; mode: number }[] {
+    const list = raw(attributes, endpoint, MODE_SELECT, MODE_SUPPORTED);
+    if (!Array.isArray(list)) {
+        return [];
+    }
+    return list.flatMap(entry => {
+        const record = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : {};
+        const label = record["0"] ?? record.label;
+        const mode = record["1"] ?? record.mode;
+        return typeof label === "string" && typeof mode === "number" ? [{ label, mode }] : [];
+    });
+}
+
+const modeSelect: Control = {
+    present: (attributes, endpoint) => present(attributes, endpoint, MODE_SELECT, MODE_CURRENT),
+    keys: () => ["mode"],
+    paths: [`${MODE_SELECT}/${MODE_CURRENT}`, `${MODE_SELECT}/${MODE_SUPPORTED}`],
+    state: (attributes, endpoint) => {
+        const current = numberAt(attributes, endpoint, MODE_SELECT, MODE_CURRENT);
+        const option = supportedModesOf(attributes, endpoint).find(({ mode }) => mode === current);
+        return option === undefined ? {} : { mode: option.label };
+    },
+    setKeys: ["mode"],
+    parse: (message, attributes, endpoint) => {
+        const modes = supportedModesOf(attributes, endpoint);
+        const wanted = message.mode;
+        const option = modes.find(({ label, mode }) => label === wanted || mode === wanted || String(mode) === wanted);
+        if (option === undefined) {
+            return {
+                actions: [],
+                warnings: [
+                    `invalid mode ${JSON.stringify(wanted)}: expected one of ${modes.map(m => m.label).join(", ")}`,
+                ],
+            };
+        }
+        return {
+            actions: [{ clusterId: MODE_SELECT, commandName: "changeToMode", data: { newMode: option.mode } }],
+            warnings: [],
+        };
+    },
+    primaryKey: "mode",
+    discovery: (attributes, endpoint, ctx) => {
+        const description = raw(attributes, endpoint, MODE_SELECT, 0);
+        return [
+            {
+                component: "select",
+                objectId: "mode",
+                config: {
+                    name: ctx.entityName(
+                        typeof description === "string" && description.length > 0 ? description : "Mode",
+                    ),
+                    command_topic: ctx.commandTopic,
+                    command_template: '{"mode": "{{ value }}"}',
+                    value_template: `{{ value_json.${ctx.nameOf("mode")} }}`,
+                    options: supportedModesOf(attributes, endpoint).map(({ label }) => label),
+                },
+            },
+        ];
+    },
+    exposes: (attributes, endpoint, property) => [
+        {
+            type: "enum",
+            name: "mode",
+            label: "Mode",
+            property: property("mode"),
+            access: READ_WRITE,
+            values: supportedModesOf(attributes, endpoint).map(({ label }) => label),
+        },
+    ],
+};
+
+/** Controls in entity order. Each takes distinct `/set` properties, so several may share an endpoint. */
+export const CONTROLS: readonly Control[] = [
+    cover,
+    lock,
+    thermostat,
+    fan,
+    valve,
+    modeSelect,
+    pumpOperationMode,
+    pumpControlMode,
+    smokeSensitivity,
+    smokeSelfTest,
+];
 
 export function controlsOf(attributes: AttributesData, endpoint: number): Control[] {
     return CONTROLS.filter(control => control.present(attributes, endpoint));
