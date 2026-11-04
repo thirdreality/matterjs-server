@@ -116,7 +116,17 @@ Zigbee 转 Matter 这类网桥在 Matter 里只占一个 node id，背后的每�
 - 网桥增删子设备时同步清理 topic；网桥节点原来那份合并状态在拆分后要清空，否则 broker 上留着旧的大杂烩。
 - 实现上把节点属性按 endpoint 过滤后交给原有逻辑，所有设备能力自动适用于子设备，不必为网桥另写一套。
 
-### 15. hub 资源极其有限（2 GB 内存，4 核 ARM）
+### 15. ACL 是整表写入，写错就永久失去设备
+
+Matter 的 AccessControl ACL 与 Binding 都只能整张表写入，没有"追加一条"。给开关绑灯时要往灯的 ACL 里加一条授权，
+如果直接写入新条目，会把原来的管理员条目（控制器自己）覆盖掉——此后控制器再也无法管理这台设备，只能恢复出厂。
+规则：
+- 先从缓存读出现有 ACL，追加后整表写回。
+- 读不到现有 ACL，或其中没有管理员（Administer + CASE）条目时，**拒绝写入**并报错。
+- 先写 ACL 再写 Binding；解绑时先删 Binding 再收回 ACL，且只删自己加的那种条目（Operate、CASE、主体只有源节点）。
+- 同一节点内的两个设备（同一网桥后面）互相绑定不需要 ACL：节点访问自己天然有权限。
+
+### 16. hub 资源极其有限（2 GB 内存，4 核 ARM）
 
 - VS Code server 及扩展常驻约 1.2 GB；TypeScript 语言服务（tsserver）单独可涨到 ~580 MB。
 - `npm run lint` 的 type-aware 检查（tsgolint）峰值约 570 MB，**曾把整机拖到 OOM 崩溃重启**。
@@ -131,7 +141,7 @@ Zigbee 转 Matter 这类网桥在 Matter 里只占一个 node id，背后的每�
   - 一次只跑一条重任务，不并发。
 - 原始日志一律写到磁盘，**不要写到 `/tmp`**（tmpfs，重启即丢）。
 
-### 16. 在 hub 上跑测试的已知坑
+### 17. 在 hub 上跑测试的已知坑
 
 - 起一个 matter-server 进程约需 32 s，其中仅 import ws-controller 就约 26 s（matter.js 0.18，模块初始化开销，
   与 source map 或编译缓存无关）。超时时间按 30 s 写死的测试在 hub 上会超时。
@@ -154,6 +164,8 @@ Zigbee 转 Matter 这类网桥在 Matter 里只占一个 node id，背后的每�
 | `5963f04` | B3 按键 action（Switch 事件 → `<node>/action`，HA event 实体与 device trigger） |
 | `223e807` | B4 灯的通用参数：`power_on_behavior`、`color_temp_startup`、`level_config`、`color_options`、`on_time`、`effect` / `identify` |
 | `8a0aaca` | B7 Matter 网桥拆分：网桥后面的每个设备单独成为 `<node>_<endpoint>` 设备 |
+| `666bbca` | C `bridge/event`、`last_seen`（`--mqtt-last-seen`）、`health_check` |
+| `eb381ed` | C `device/bind` / `device/unbind`（Binding + 目标 ACL） |
 
 ## 问题
 
@@ -180,7 +192,7 @@ z2m 在 `bridge/devices` 中为每个设备给出 `definition`（型号、厂商
 | 失败 | 判断 |
 |------|------|
 | ws-controller `WsBackpressureReproTest` 3 条超时（60 s） | 上游 1.5.3 新增的压力测试，单核跑不完 500 轮；干净的 v1.5.5 worktree 在同机复现，耗时与失败一致 |
-| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 16 条） |
+| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 17 条） |
 | matter-server `OtaUploadHandlerTest` 2 条 | root 运行 + 时序竞态 |
 | matter-server `IntegrationTest` | 未运行 |
 
@@ -233,12 +245,12 @@ bridge 自身只增加不到 1 s。
 - [ ] **B5 家电**：洗碗机、洗衣机、烘干机、冰箱 / 温控柜、烤箱、灶台、微波炉（OperationalState、各 Mode cluster、TemperatureControl）；扫地机 → HA `vacuum`
 - [ ] **B6 能源**：EnergyEvse、WaterHeater、HeatPump、SolarPower、BatteryStorage、DeviceEnergyManagement、电表 / 电价
 - [ ] **C 桥级功能（其余）**
-  - [ ] `bridge/event`（设备加入 / interview / 离开）
+  - [x] `bridge/event`（设备加入 / interview / 离开）
   - [ ] `bridge/logging`
-  - [ ] `bridge/request/health_check`
-  - [ ] `last_seen`
+  - [x] `bridge/request/health_check`
+  - [x] `last_seen`（默认关闭，`--mqtt-last-seen` 开启）
   - [ ] `device/options`
-  - [ ] `device/bind` / `unbind`（Matter Binding，开关类设备控灯依赖它）
+  - [x] `device/bind` / `unbind`（Matter Binding，开关类设备控灯依赖它；绑定到组待 groups 完成后再做）
   - [ ] Matter groups（`bridge/groups`、`group/*`）
   - [ ] `networkmap`（复用上游 Thread 拓扑）
 - [ ] 厂商私有 cluster（Aqara、Eve、Heiman、IKEA、Yeelight 等，定义已在 custom-clusters 包）按需映射
