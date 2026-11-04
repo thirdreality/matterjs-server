@@ -22,6 +22,7 @@ import {
 } from "./BridgeCommands.js";
 import { deviceStateOf, isDeviceLevelStateAttribute, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
 import { bridgeDiscoveryMessagesOf, discoveryMessagesOf } from "./Discovery.js";
+import { deviceDescriptionOf } from "./Exposes.js";
 import { lightCapabilitiesOf } from "./LightCapabilities.js";
 import { MqttConnection } from "./MqttConnection.js";
 import { onOffEndpointsOf, onOffValueOf } from "./OnOffState.js";
@@ -614,6 +615,7 @@ export class MqttBridge {
         const devices = this.#commandHandler.getNodeIds().map(nodeId => {
             const details = this.#commandHandler.getNodeDetails(nodeId);
             const { attributes } = details;
+            const entry = this.#devices.get(nodeId.toString());
             return {
                 id: nodeId.toString(),
                 node_id: details.node_id,
@@ -624,7 +626,14 @@ export class MqttBridge {
                 node_label: stringAttribute(attributes, "0/40/5"),
                 serial_number: stringAttribute(attributes, "0/40/15"),
                 unique_id: stringAttribute(attributes, "0/40/18"),
-                onoff_endpoints: this.#devices.get(nodeId.toString())?.onOffEndpoints ?? [],
+                onoff_endpoints: entry?.onOffEndpoints ?? [],
+                ...deviceDescriptionOf(
+                    nodeId.toString(),
+                    attributes,
+                    entry?.relevantEndpoints ?? [],
+                    endpoint => lightCapabilitiesOf(attributes, endpoint),
+                    supportsOta(attributes),
+                ),
             };
         });
         this.#connection.publish(this.#topics.bridgeDevices, toBigIntAwareJson(devices), true);

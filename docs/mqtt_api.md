@@ -129,7 +129,31 @@ availability change:
     "node_label": "Desk lamp",
     "serial_number": "0123456789",
     "unique_id": "A1B2C3D4",
-    "onoff_endpoints": [1]
+    "onoff_endpoints": [1],
+    "friendly_name": "5",
+    "supported": true,
+    "manufacturer": "ThirdReality",
+    "model_id": "Smart Bulb",
+    "software_build_id": "1.0.4",
+    "power_source": "Mains (single phase)",
+    "definition": {
+      "model": "Smart Bulb",
+      "vendor": "ThirdReality",
+      "description": "Smart Bulb",
+      "exposes": [
+        {
+          "type": "light",
+          "features": [
+            { "type": "binary", "name": "state", "label": "State", "property": "state", "access": 7,
+              "value_on": "ON", "value_off": "OFF", "value_toggle": "TOGGLE" },
+            { "type": "numeric", "name": "brightness", "label": "Brightness", "property": "brightness",
+              "access": 7, "value_min": 0, "value_max": 254 }
+          ]
+        }
+      ],
+      "options": [],
+      "supports_ota": true
+    }
   }
 ]
 ```
@@ -138,6 +162,30 @@ availability change:
 `unique_id` come from BasicInformation (`0/40/1`, `0/40/3`, `0/40/5`, `0/40/15`, `0/40/18`) and are omitted
 when the attribute is missing or blank. Node ids are serialized as unquoted JSON numbers and may exceed
 `Number.MAX_SAFE_INTEGER` — see [BigInt Handling](websockets_api.md#bigint-handling).
+
+The remaining fields follow zigbee2mqtt's `bridge/devices` so that tools written for it can read the list:
+
+| Field | Value |
+|-------|-------|
+| `friendly_name` | The `<node>` topic segment (the node id) |
+| `supported` | Always `true`: every Matter device is handled generically by device type and cluster |
+| `manufacturer`, `model_id` | BasicInformation VendorName / ProductName |
+| `software_build_id` | BasicInformation SoftwareVersionString (`0/40/10`) |
+| `power_source` | From the primary PowerSource (lowest Order): `Mains (single phase)` or `DC Source` for a wired source, `Battery` for a battery; omitted when the node reports none |
+| `definition.model`, `vendor`, `description` | ProductName, VendorName, ProductName |
+| `definition.exposes` | What the device offers, see below |
+| `definition.options` | Always empty for now |
+| `definition.supports_ota` | The node has the OTA Software Update Requestor cluster |
+
+`exposes` uses zigbee2mqtt's format. Each OnOff endpoint contributes a `light` (with LevelControl) or
+`switch`, whose `features` are `state` (binary, `ON`/`OFF`/`TOGGLE`), `brightness` (0–254), `color_temp`
+(mireds within the device's physical range, with the `coolest`…`warmest` presets that range allows),
+`color_xy` and `color_hs` (composite on the `color` property), as far as the endpoint supports them. Every
+sensor property in [Properties](#properties) follows as a `numeric` (with `unit`), `binary` (with
+`value_on`/`value_off`; `contact` is inverted) or `enum` (with `values`) expose, and the device-level
+properties last. `access` is a bitmask: 1 = published in the state, 2 = settable via `/set`, 4 = readable
+via `/get`; lights and switches are 7, sensors 5. A property that several endpoints provide carries its
+`_<endpoint>` suffix in `property`, and the expose names the endpoint in `endpoint`.
 
 ### Commissioning feedback topics
 

@@ -26,7 +26,7 @@ export interface ParsedSetMessage {
 const STATE_VALUES = ["on", "off", "toggle", "open", "close", "stop", "lock", "unlock"];
 
 /** color_temp presets (zigbee2mqtt light_colortemp): coolest/warmest resolve to the device range. */
-const COLOR_TEMP_PRESETS: Record<string, number | "min" | "max"> = {
+export const COLOR_TEMP_PRESETS: Readonly<Record<string, number | "min" | "max">> = {
     coolest: "min",
     cool: 250,
     neutral: 370,

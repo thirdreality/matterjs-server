@@ -122,7 +122,31 @@ controller 已知的全部已配网节点。节点新增/移除、结构变化�
     "node_label": "Desk lamp",
     "serial_number": "0123456789",
     "unique_id": "A1B2C3D4",
-    "onoff_endpoints": [1]
+    "onoff_endpoints": [1],
+    "friendly_name": "5",
+    "supported": true,
+    "manufacturer": "ThirdReality",
+    "model_id": "Smart Bulb",
+    "software_build_id": "1.0.4",
+    "power_source": "Mains (single phase)",
+    "definition": {
+      "model": "Smart Bulb",
+      "vendor": "ThirdReality",
+      "description": "Smart Bulb",
+      "exposes": [
+        {
+          "type": "light",
+          "features": [
+            { "type": "binary", "name": "state", "label": "State", "property": "state", "access": 7,
+              "value_on": "ON", "value_off": "OFF", "value_toggle": "TOGGLE" },
+            { "type": "numeric", "name": "brightness", "label": "Brightness", "property": "brightness",
+              "access": 7, "value_min": 0, "value_max": 254 }
+          ]
+        }
+      ],
+      "options": [],
+      "supports_ota": true
+    }
   }
 ]
 ```
@@ -131,6 +155,28 @@ controller 已知的全部已配网节点。节点新增/移除、结构变化�
 来自 BasicInformation（`0/40/1`、`0/40/3`、`0/40/5`、`0/40/15`、`0/40/18`），属性缺失或为空白时该字段被省略。
 node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_INTEGER`，参见
 [BigInt Handling](websockets_api.md#bigint-handling)。
+
+其余字段沿用 zigbee2mqtt 的 `bridge/devices` 格式，为 z2m 写的工具可以直接读取：
+
+| 字段 | 取值 |
+|------|------|
+| `friendly_name` | topic 里的 `<node>` 段（即 node id） |
+| `supported` | 恒为 `true`：所有 Matter 设备都按设备类型和 cluster 通用处理 |
+| `manufacturer`、`model_id` | BasicInformation 的 VendorName / ProductName |
+| `software_build_id` | BasicInformation 的 SoftwareVersionString（`0/40/10`） |
+| `power_source` | 取主电源（Order 最小的 PowerSource）：有线为 `Mains (single phase)` 或 `DC Source`，电池为 `Battery`；节点没有上报时省略 |
+| `definition.model`、`vendor`、`description` | ProductName、VendorName、ProductName |
+| `definition.exposes` | 设备提供的能力，见下文 |
+| `definition.options` | 目前恒为空 |
+| `definition.supports_ota` | 节点带有 OTA Software Update Requestor cluster |
+
+`exposes` 采用 zigbee2mqtt 的格式。每个 OnOff endpoint 贡献一个 `light`（带 LevelControl 时）或 `switch`，其
+`features` 依 endpoint 实际支持的能力包含 `state`（binary，`ON`/`OFF`/`TOGGLE`）、`brightness`（0–254）、
+`color_temp`（设备物理范围内的 mireds，附带该范围允许的 `coolest`…`warmest` 预设）、`color_xy` 与 `color_hs`
+（作用在 `color` 属性上的 composite）。[属性](#属性)中的每个传感器属性随后作为 `numeric`（带 `unit`）、`binary`
+（带 `value_on`/`value_off`；`contact` 取反）或 `enum`（带 `values`）列出，设备级属性放在最后。`access` 是位掩码：
+1 = 出现在状态中，2 = 可经 `/set` 设置，4 = 可经 `/get` 读取；灯和开关为 7，传感器为 5。多个 endpoint 都提供的
+属性，`property` 里带 `_<endpoint>` 后缀，expose 的 `endpoint` 字段写明对应的 endpoint。
 
 ### 配网反馈 topic
 
