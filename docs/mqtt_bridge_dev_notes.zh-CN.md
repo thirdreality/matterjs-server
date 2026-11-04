@@ -86,7 +86,14 @@ z2m 里同一个属性名在不同设备上单位不同：电池电压 `voltage`
 另外注意方向：zigbee2mqtt 的窗帘 `position` 是 0 = 关、100 = 开；Matter 的 Percent100ths 是 0 = 开、10000 = 关，
 两者正好相反。
 
-### 11. hub 资源极其有限（2 GB 内存，4 核 ARM）
+### 11. HA 的模板输出必须和 payload 字符串一字不差
+
+HA 的 MQTT 实体把 `*_value_template` 的输出和 `payload_*` / `state_*` 做**字符串比较**。Jinja 输出 Python 风格的
+`True`/`False`/`None`，与 JSON 的 `true`/`false`/`null` 不相等：布尔值要 `| lower`，可能为空的值要 `| tojson`；
+枚举映射（如 Matter 独有的 `emergency_heating` 映射到 HA 的 `heat`）也必须在模板里完成，否则 HA 报"不在可选列表"
+并把实体置为未知。
+
+### 12. hub 资源极其有限（2 GB 内存，4 核 ARM）
 
 - VS Code server 及扩展常驻约 1.2 GB；TypeScript 语言服务（tsserver）单独可涨到 ~580 MB。
 - `npm run lint` 的 type-aware 检查（tsgolint）峰值约 570 MB，**曾把整机拖到 OOM 崩溃重启**。
@@ -101,7 +108,7 @@ z2m 里同一个属性名在不同设备上单位不同：电池电压 `voltage`
   - 一次只跑一条重任务，不并发。
 - 原始日志一律写到磁盘，**不要写到 `/tmp`**（tmpfs，重启即丢）。
 
-### 12. 在 hub 上跑测试的已知坑
+### 13. 在 hub 上跑测试的已知坑
 
 - 起一个 matter-server 进程约需 32 s，其中仅 import ws-controller 就约 26 s（matter.js 0.18，模块初始化开销，
   与 source map 或编译缓存无关）。超时时间按 30 s 写死的测试在 hub 上会超时。
@@ -119,6 +126,8 @@ z2m 里同一个属性名在不同设备上单位不同：电池电压 `voltage`
 | `756c77e` | 只读传感器：气压、流量、土壤湿度、空气质量与 10 种浓度、烟雾 / CO 报警、电量计、电池详情；传感器改为表驱动（`Sensors.ts`） |
 | `8135894` | C-exposes：`bridge/devices` 增加 z2m 的 `definition.exposes`、`power_source` 等字段 |
 | `3ec0b17` | B2 窗帘；`/set` 改为按 endpoint 能力分派，支持写属性 |
+| `c13f321` | B2 门锁、温控（climate） |
+| `b956344` | B2 风扇、水阀、ModeSelect、水泵模式、烟雾报警器自检与灵敏度 |
 
 ## 问题
 
@@ -145,7 +154,7 @@ z2m 在 `bridge/devices` 中为每个设备给出 `definition`（型号、厂商
 | 失败 | 判断 |
 |------|------|
 | ws-controller `WsBackpressureReproTest` 3 条超时（60 s） | 上游 1.5.3 新增的压力测试，单核跑不完 500 轮；干净的 v1.5.5 worktree 在同机复现，耗时与失败一致 |
-| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 12 条） |
+| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 13 条） |
 | matter-server `OtaUploadHandlerTest` 2 条 | root 运行 + 时序竞态 |
 | matter-server `IntegrationTest` | 未运行 |
 
@@ -183,15 +192,15 @@ bridge 自身只增加不到 1 s。
   - [x] 电源详情：`battery_low`、电池电压
   - [x] 市电 / 电池供电类型（`power_source`）：放在 `bridge/devices`
 - [x] **C-exposes（P3）**：`bridge/devices` 增加 `definition` 与 `exposes`，补齐已支持设备的 exposes
-- [ ] **B2 常用控制**
+- [x] **B2 常用控制**
   - [x] 窗帘 WindowCovering → `cover`（`state`、`position`、`tilt`、`moving`）
-  - [ ] 门锁 DoorLock → `lock`（`state`、`lock_state`）
-  - [ ] 温控 / 空调 Thermostat、RoomAirConditioner → `climate`（`local_temperature`、`occupied_heating_setpoint`、`system_mode`、`running_state` 等）
-  - [ ] 风扇 / 空气净化器 / 油烟机 FanControl → `fan`（`fan_mode`、`fan_speed`）
-  - [ ] 水阀 ValveConfigurationAndControl → `valve`
-  - [ ] 水泵 PumpConfigurationAndControl
-  - [ ] ModeSelect → `select`
-  - [ ] 烟雾 / CO 报警的控制：自检（SelfTestRequest）、灵敏度（SmokeSensitivityLevel，可写）
+  - [x] 门锁 DoorLock → `lock`（`state`、`lock_state`、`door_state`）
+  - [x] 温控 / 空调 Thermostat、RoomAirConditioner → `climate`（`local_temperature`、`occupied_heating_setpoint`、`system_mode`、`running_state` 等）
+  - [x] 风扇 / 空气净化器 / 油烟机 FanControl → `fan`（`fan_mode`、`fan_speed`、`percentage`、`oscillation`、`airflow_direction`）
+  - [x] 水阀 ValveConfigurationAndControl → `valve`
+  - [x] 水泵 PumpConfigurationAndControl（运行 / 控制模式；转速、压力等读数待补）
+  - [x] ModeSelect → `select`
+  - [x] 烟雾 / CO 报警的控制：自检（SelfTestRequest）、灵敏度（SmokeSensitivityLevel，可写）
 - [ ] **B3 按键与事件**：GenericSwitch、Doorbell → `action`（`single` / `double` / `hold` / `release` 等），HA event / device_trigger
 - [ ] **B4 灯与插座通用参数**：`power_on_behavior`、`effect`（identify）、`color_temp_startup`、上电亮度、`on_time` / `off_wait_time`
 - [ ] **B7 Matter 网桥（P2）**：子设备拆成独立 z2m 设备
@@ -226,7 +235,7 @@ bridge 自身只增加不到 1 s。
 | 传感器 | OccupancySensor、LightSensor、TemperatureSensor、HumiditySensor、ContactSensor | 已支持 |
 | 传感器 | WaterLeakDetector、RainSensor、WaterFreezeDetector | 已支持（B0 修复） |
 | 传感器 | PressureSensor、FlowSensor、SoilSensor、AirQualitySensor、SmokeCoAlarm、ElectricalMeter | 已支持（B1） |
-| 控制 | WindowCovering、DoorLock、Thermostat、RoomAirConditioner、Fan、AirPurifier、ExtractorHood、WaterValve、Pump、ModeSelect | B2 |
+| 控制 | WindowCovering、DoorLock、Thermostat、RoomAirConditioner、Fan、AirPurifier、ExtractorHood、WaterValve、Pump、ModeSelect | 已支持（B2） |
 | 按键 / 事件 | GenericSwitch、Doorbell、Chime | B3 |
 | 网桥 | Aggregator（及 BridgedNode） | B7 |
 | 家电 | Dishwasher、LaundryWasher、LaundryDryer、Refrigerator、TemperatureControlledCabinet、Oven、CookSurface、Cooktop、MicrowaveOven、RoboticVacuumCleaner | B5 |
