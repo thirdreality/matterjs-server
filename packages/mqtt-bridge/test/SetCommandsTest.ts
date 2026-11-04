@@ -18,6 +18,7 @@ const FULL_COLOR: LightCapabilities = {
     colorTemp: true,
     colorTempMinMireds: 25,
     colorTempMaxMireds: 1000,
+    timedOnOff: true,
 };
 
 const PLAIN_HS: LightCapabilities = { ...FULL_COLOR, enhancedHue: false };
@@ -30,6 +31,7 @@ const ONOFF_ONLY: LightCapabilities = {
     enhancedHue: false,
     xy: false,
     colorTemp: false,
+    timedOnOff: false,
 };
 
 describe("SetCommands", () => {

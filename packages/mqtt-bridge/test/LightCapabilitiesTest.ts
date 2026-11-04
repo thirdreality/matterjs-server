@@ -30,6 +30,7 @@ describe("LightCapabilities", () => {
             colorTemp: true,
             colorTempMinMireds: 25,
             colorTempMaxMireds: 1000,
+            timedOnOff: false,
         });
     });
 
@@ -43,6 +44,7 @@ describe("LightCapabilities", () => {
             enhancedHue: false,
             xy: false,
             colorTemp: false,
+            timedOnOff: false,
             colorTempMinMireds: undefined,
             colorTempMaxMireds: undefined,
         });

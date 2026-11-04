@@ -253,6 +253,10 @@ node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_
 | `pump_control_mode` | PumpConfigurationAndControl `512/33` | `constant_speed`、`constant_pressure`、`proportional_pressure`、`constant_flow`、`constant_temperature`、`automatic` |
 | `smoke_sensitivity` | SmokeCoAlarm `92/11` | `high`、`standard`、`low` |
 | `switch_position` | Switch `59/1` | 拨动开关（LatchingSwitch feature）的当前档位 |
+| `power_on_behavior` | OnOff `6/16387`（StartUpOnOff） | `off`、`on`、`toggle`，或 `previous`（null） |
+| `color_temp_startup` | ColorControl `768/16400` | mireds，previous（null）按 zigbee2mqtt 记为 `65535` |
+| `level_config` | LevelControl `8/{16,17,18,19,16384}` + Options `8/15` | 对象，按 endpoint 实际具备的属性包含 `on_off_transition_time`、`on_transition_time`、`off_transition_time`（单位 0.1 秒）、`on_level`、`current_level_startup` 与 `execute_if_off`；null 按 zigbee2mqtt 记为 `65535`（渐变时间）或 `255`（亮度） |
+| `color_options` | ColorControl Options `768/15` | `{"execute_if_off": true\|false}` |
 | `pressure` | PressureMeasurement `1027/0` | hPa（原始单位 0.1 kPa 恰好等于 hPa） |
 | `flow` | FlowMeasurement `1028/0` | m³/h，`raw/10` |
 | `soil_moisture` | SoilMeasurement `1072/1` | % |
@@ -446,7 +450,7 @@ matter2mqtt/5/set/color        →  {"hue":120,"saturation":80}
 2. topic 中的 `<endpoint>` 段（`<prefix>/<node>/2/set`）；
 3. 节点的第一个可控 endpoint。
 
-带 OnOff cluster 或设备控制（窗帘、门锁、温控、风扇、水阀、模式选择、水泵或烟雾报警器设置）的 endpoint 是可控的。后缀数字不属于可控 endpoint 时，会被当成属性名的
+带 OnOff cluster 或设备控制（窗帘、门锁、温控、风扇、水阀、模式选择、水泵或烟雾报警器设置、灯的选项、identify）的 endpoint 是可控的。后缀数字不属于可控 endpoint 时，会被当成属性名的
 一部分（与 zigbee2mqtt 一致）。发给其他 endpoint 的命令打日志后丢弃。
 
 在目标 endpoint 上，各设备控制先认领自己的属性（窗帘认领 `state`、`position`、`tilt`），剩下的交给下文的灯处理，
@@ -593,6 +597,19 @@ zigbee2mqtt 的 `position`、`tilt` 从关（0）数到开（100）；Matter 从
 | `pump_operation_mode`、`pump_control_mode` | 写 PumpConfigurationAndControl `512/32`、`512/33` |
 | `smoke_sensitivity` | 写 SmokeCoAlarm `92/11` |
 | `self_test`（任意值） | SmokeCoAlarm `selfTestRequest` |
+
+### 灯的选项
+
+| 消息 | Matter |
+|------|--------|
+| `on_time`（秒），可带 `off_wait_time`（秒），配 `state: "ON"` 或不带 state | OnOff `onWithTimedOff`，两个时间单位 0.1 秒；取代普通的 `on`，排在亮度变更之后；需要 OnOff 的 Lighting feature |
+| `effect`：`blink`、`breathe`、`okay`、`channel_change`、`finish_effect`、`stop_effect` | Identify `triggerEffect`（variant 0），排在同一消息的灯命令之后 |
+| `identify`（秒数，其他任意值为 3 秒） | Identify `identify` |
+| `power_on_behavior` | 写 OnOff `6/16387`；`previous` 写 null |
+| `color_temp_startup`（mireds、`coolest`…`warmest` 预设、`previous` 或 `65535`） | 在物理范围内写 ColorControl `768/16400`；previous 写 null |
+| `level_config: {…}`，包含上述任意字段（亮度类字段接受 `previous` 与 `minimum`） | 写对应的 LevelControl 属性；`execute_if_off` 设置 LevelControl Options 的 bit 0，其余位保持不变 |
+| `color_options: {"execute_if_off": …}` | ColorControl Options 的 bit 0，其余位保持不变 |
+
 
 ### `<prefix>/<node>/get`
 
@@ -784,6 +801,9 @@ broker 随即回放的 retained topic 会与刚刚发布的内容比对，多出
 | Thermostat | `climate`：`modes` 为 off，加上 FeatureMap 支持的 heat/cool/auto（RoomAirConditioner 另加 fan only 与 dry），Matter 独有的模式显示为最接近的 HA 模式；单一目标温度，两者都支持时为 low（制热）/ high（制冷）两个目标；`min_temp`/`max_temp` 取自绝对设定点限制；当前动作来自 `running_state`。室外温度与 PI 需求各为独立的 `sensor` |
 | FanControl | `fan`，载荷 `{"fan_state":…}`；支持时带百分比、`auto` 预设（FanModeSequence 包含时）、摆动与风向 |
 | ValveConfigurationAndControl | `valve`，device class `water`，Level feature 时带位置；剩余时长为 `sensor` |
+| Identify | 灯实体上的 `effect` 与 `effect_list`；一个 `identify` `button`，config 分类 |
+| OnOff StartUpOnOff | `power_on_behavior` `select`，config 分类 |
+| ColorControl StartUpColorTemperatureMireds | `color_temp_startup` `number`（物理范围内的 mireds），config 分类 |
 | Switch | 每个设备一个 `event` 实体（事件类型为该设备可能上报的全部 action，由 Switch feature 与 MultiPressMax 决定），每种 action 一个 `device_automation` 触发器，都基于 `<prefix>/<node>/action` |
 | ModeSelect | `select`，名称取自 cluster 的 Description，选项来自 SupportedModes |
 | 水泵模式、烟雾灵敏度 | `select`，config 分类 |

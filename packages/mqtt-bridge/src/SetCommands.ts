@@ -78,6 +78,15 @@ export function parseSetObject(
         warnings.push((error as Error).message);
     }
 
+    const timedCommand = timedOnCommandOf(message, caps, warnings);
+    if (timedCommand !== undefined && stateCommand?.clusterId === ONOFF_CLUSTER_ID) {
+        if (stateCommand.commandName === "off") {
+            warnings.push("on_time needs the light to be turned on");
+        }
+        // OnWithTimedOff turns the light on itself
+        stateCommand = undefined;
+    }
+
     const colorTempCommand = caps.colorTemp
         ? colorTempCommandOf(message, caps, transitionTime, warnings)
         : warnIfPresent(message, "color_temp", "color_temp not supported by this endpoint", warnings);
@@ -91,6 +100,8 @@ export function parseSetObject(
         "color",
         "color_temp",
         "transition",
+        "on_time",
+        "off_wait_time",
         ...MOVE_STEP_KEYS,
         ...MOVE_STEP_OPTION_KEYS,
     ];
@@ -106,7 +117,11 @@ export function parseSetObject(
     const turningOff = stateCommand?.commandName === "off" || (stateCommand?.data.level as number | undefined) === 0;
     const commands = turningOff
         ? [stateCommand as DeviceCommand, ...colorCommands]
-        : [...colorCommands, ...(stateCommand === undefined ? [] : [stateCommand])];
+        : [
+              ...colorCommands,
+              ...(stateCommand === undefined ? [] : [stateCommand]),
+              ...(timedCommand === undefined ? [] : [timedCommand]),
+          ];
 
     if (commands.length === 0 && warnings.length === 0) {
         return undefined;
@@ -271,6 +286,45 @@ function stateBrightnessCommand(
         level = 1;
     }
     return levelCommand(state === null ? "moveToLevel" : "moveToLevelWithOnOff", level, transitionTime);
+}
+
+/**
+ * zigbee2mqtt `on_time` / `off_wait_time` (seconds): OnWithTimedOff, which turns the light on for `on_time`
+ * and then ignores on commands for `off_wait_time`. Matter counts both in 1/10 s.
+ */
+function timedOnCommandOf(
+    message: Record<string, unknown>,
+    caps: LightCapabilities,
+    warnings: string[],
+): DeviceCommand | undefined {
+    if (message.on_time === undefined) {
+        if (message.off_wait_time !== undefined) {
+            warnings.push("off_wait_time needs on_time");
+        }
+        return undefined;
+    }
+    if (!caps.timedOnOff) {
+        warnings.push("on_time not supported by this endpoint");
+        return undefined;
+    }
+    const tenths = (value: unknown, key: string) => {
+        const seconds = Number(value ?? 0);
+        if (!Number.isFinite(seconds) || seconds < 0 || seconds * 10 > 0xfffe) {
+            warnings.push(`invalid ${key} ${JSON.stringify(value)}: expected 0-6553 seconds`);
+            return undefined;
+        }
+        return Math.round(seconds * 10);
+    };
+    const onTime = tenths(message.on_time, "on_time");
+    const offWaitTime = tenths(message.off_wait_time, "off_wait_time");
+    if (onTime === undefined || offWaitTime === undefined) {
+        return undefined;
+    }
+    return {
+        clusterId: ONOFF_CLUSTER_ID,
+        commandName: "onWithTimedOff",
+        data: { onOffControl: 0, onTime, offWaitTime },
+    };
 }
 
 function levelCommand(commandName: string, level: number, transitionTime: number): DeviceCommand {

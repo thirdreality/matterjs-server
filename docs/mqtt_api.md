@@ -263,6 +263,10 @@ built from the controller's attribute cache, so it is available without an extra
 | `pump_control_mode` | PumpConfigurationAndControl `512/33` | `constant_speed`, `constant_pressure`, `proportional_pressure`, `constant_flow`, `constant_temperature`, `automatic` |
 | `smoke_sensitivity` | SmokeCoAlarm `92/11` | `high`, `standard`, `low` |
 | `switch_position` | Switch `59/1` | Current position of a latching switch (LatchingSwitch feature) |
+| `power_on_behavior` | OnOff `6/16387` (StartUpOnOff) | `off`, `on`, `toggle`, or `previous` (null) |
+| `color_temp_startup` | ColorControl `768/16400` | Mireds, or `65535` for previous (null), as zigbee2mqtt |
+| `level_config` | LevelControl `8/{16,17,18,19,16384}` + Options `8/15` | Object with `on_off_transition_time`, `on_transition_time`, `off_transition_time` (1/10 s), `on_level`, `current_level_startup` and `execute_if_off`, as far as the endpoint has them; null values as zigbee2mqtt's `65535` (transitions) or `255` (levels) |
+| `color_options` | ColorControl Options `768/15` | `{"execute_if_off": true\|false}` |
 | `pressure` | PressureMeasurement `1027/0` | hPa (the raw 0.1 kPa unit is exactly hPa) |
 | `flow` | FlowMeasurement `1028/0` | m³/h, `raw/10` |
 | `soil_moisture` | SoilMeasurement `1072/1` | % |
@@ -477,7 +481,7 @@ The target endpoint is, in order of precedence:
 2. the `<endpoint>` topic segment (`<prefix>/<node>/2/set`),
 3. the node's first controllable endpoint.
 
-An endpoint is controllable when it has the OnOff cluster or a device control (cover, lock, thermostat, fan, valve, mode select, pump or smoke alarm settings). A
+An endpoint is controllable when it has the OnOff cluster or a device control (cover, lock, thermostat, fan, valve, mode select, pump or smoke alarm settings, light options, identify). A
 suffix that does not match a controllable endpoint is treated as part of the property name (matching
 zigbee2mqtt). Commands for any other endpoint are logged and dropped.
 
@@ -636,6 +640,18 @@ Values may be numbers or numeric strings.
 | `pump_operation_mode`, `pump_control_mode` | Write PumpConfigurationAndControl `512/32`, `512/33` |
 | `smoke_sensitivity` | Write SmokeCoAlarm `92/11` |
 | `self_test` (any value) | SmokeCoAlarm `selfTestRequest` |
+
+### Light options
+
+| Message | Matter |
+|---------|--------|
+| `on_time` (s), optionally `off_wait_time` (s), with `state: "ON"` or no state | OnOff `onWithTimedOff`, both times in 1/10 s; replaces the plain `on`, follows a brightness change; needs the OnOff Lighting feature |
+| `effect`: `blink`, `breathe`, `okay`, `channel_change`, `finish_effect`, `stop_effect` | Identify `triggerEffect` (variant 0), sent after the light commands of the same message |
+| `identify` (number of seconds, or anything else for 3 s) | Identify `identify` |
+| `power_on_behavior` | Write OnOff `6/16387`; `previous` writes null |
+| `color_temp_startup` (mireds, a `coolest`…`warmest` preset, `previous` or `65535`) | Write ColorControl `768/16400` within the physical range; previous writes null |
+| `level_config: {…}` with any of the fields above (`previous` and `minimum` accepted for the levels) | Write the matching LevelControl attributes; `execute_if_off` sets bit 0 of LevelControl Options, keeping the other bits |
+| `color_options: {"execute_if_off": …}` | Bit 0 of ColorControl Options, keeping the other bits |
 
 ### `<prefix>/<node>/get`
 
@@ -856,6 +872,9 @@ BasicInformation carries no product name.
 | Thermostat | `climate`: `modes` off plus heat/cool/auto per FeatureMap (fan only and dry for a RoomAirConditioner), Matter-only modes shown as the closest HA mode; one target temperature, or low (heating) / high (cooling) targets when both are supported; `min_temp`/`max_temp` from the absolute setpoint limits; current action from `running_state`. Outdoor temperature and PI demands as separate `sensor`s |
 | FanControl | `fan` with `{"fan_state":…}` payloads, percentage, an `auto` preset when the FanModeSequence has it, oscillation and direction when supported |
 | ValveConfigurationAndControl | `valve`, device class `water`, with position for the Level feature; remaining duration as a `sensor` |
+| Identify | `effect` and `effect_list` on the light; an `identify` `button`, config category |
+| OnOff StartUpOnOff | `power_on_behavior` `select`, config category |
+| ColorControl StartUpColorTemperatureMireds | `color_temp_startup` `number` (mireds within the physical range), config category |
 | Switch | One `event` entity for the device (event types: every action it can report, from the Switch features and MultiPressMax) and a `device_automation` trigger per action, both on `<prefix>/<node>/action` |
 | ModeSelect | `select` named after the cluster Description, options from SupportedModes |
 | Pump modes, smoke sensitivity | `select`, config category |

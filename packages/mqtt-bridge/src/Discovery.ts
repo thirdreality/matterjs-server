@@ -6,7 +6,7 @@
 
 import type { AttributesData } from "@matter-server/ws-controller";
 import { COMMISSION_MODE_NAMES } from "./BridgeCommands.js";
-import { controlsOf } from "./Controls.js";
+import { controlsOf, hasIdentify, IDENTIFY_EFFECTS } from "./Controls.js";
 import { endpointPropertyKeysOf, propertyNameResolver } from "./DeviceState.js";
 import { deviceActionsOf } from "./Events.js";
 import type { LightCapabilities } from "./LightCapabilities.js";
@@ -266,6 +266,9 @@ export function discoveryMessagesOf(
                     : `${topics.deviceState(info.device)}/set`,
                 brightness: true,
                 brightness_scale: 254,
+                ...(hasIdentify(attributes, endpoint)
+                    ? { effect: true, effect_list: Object.keys(IDENTIFY_EFFECTS) }
+                    : {}),
                 ...(colorModes.length > 0 ? { supported_color_modes: colorModes } : {}),
                 ...(caps.colorTemp
                     ? {

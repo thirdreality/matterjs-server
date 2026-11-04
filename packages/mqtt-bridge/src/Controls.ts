@@ -6,8 +6,12 @@
 
 import type { AttributesData } from "@matter-server/ws-controller";
 import {
+    ColorControl,
     DoorLock,
     FanControl,
+    Identify,
+    LevelControl,
+    OnOff,
     ModeSelect,
     PumpConfigurationAndControl,
     SmokeCoAlarm,
@@ -17,7 +21,7 @@ import {
 } from "@matter/main/clusters";
 import type { Expose } from "./Exposes.js";
 import { lightCapabilitiesOf, ONOFF_CLUSTER_ID } from "./LightCapabilities.js";
-import { parseSetObject, type DeviceCommand } from "./SetCommands.js";
+import { COLOR_TEMP_PRESETS, parseSetObject, type DeviceCommand } from "./SetCommands.js";
 
 /** An attribute write, for zigbee2mqtt properties that map onto a writable Matter attribute. */
 export interface DeviceWrite {
@@ -1243,7 +1247,7 @@ const valve: Control = {
 
 /**
  * A writable enum attribute as a zigbee2mqtt enum property and a Home Assistant select (pump modes,
- * smoke sensitivity, ...).
+ * smoke sensitivity, ...). `nullName` names the attribute's null value where it has a meaning.
  */
 function enumSetting(
     key: string,
@@ -1251,19 +1255,26 @@ function enumSetting(
     cluster: number,
     attribute: number,
     names: Readonly<Record<number, string>>,
+    nullName?: string,
 ): Control {
-    const values = Object.values(names);
+    const values = [...Object.values(names), ...(nullName === undefined ? [] : [nullName])];
     return {
         present: (attributes, endpoint) => present(attributes, endpoint, cluster, attribute),
         keys: () => [key],
         paths: [`${cluster}/${attribute}`],
         state: (attributes, endpoint) => {
+            if (nullName !== undefined && raw(attributes, endpoint, cluster, attribute) === null) {
+                return { [key]: nullName };
+            }
             const value = numberAt(attributes, endpoint, cluster, attribute);
             return value !== undefined && names[value] !== undefined ? { [key]: names[value] } : {};
         },
         setKeys: [key],
         parse: message => {
             const name = String(message[key]).toLowerCase();
+            if (nullName !== undefined && name === nullName) {
+                return { actions: [{ clusterId: cluster, attributeId: attribute, value: null }], warnings: [] };
+            }
             const entry = Object.entries(names).find(([, value]) => value === name);
             if (entry === undefined) {
                 return {
@@ -1427,6 +1438,337 @@ const modeSelect: Control = {
     ],
 };
 
+// Light configuration (zigbee2mqtt's generic light options). Where Zigbee marks "previous" or "use the
+// other attribute" with an all-ones value, Matter uses null; the published value follows zigbee2mqtt.
+
+const powerOnBehavior = enumSetting(
+    "power_on_behavior",
+    "Power-on behavior",
+    OnOff.Cluster.id,
+    16387,
+    { 0: "off", 1: "on", 2: "toggle" },
+    "previous",
+);
+
+const IDENTIFY = Identify.Cluster.id;
+
+/** zigbee2mqtt `effect` values and their Identify EffectIdentifier. */
+export const IDENTIFY_EFFECTS: Readonly<Record<string, number>> = {
+    blink: 0,
+    breathe: 1,
+    okay: 2,
+    channel_change: 11,
+    finish_effect: 254,
+    stop_effect: 255,
+};
+
+/** Seconds a bare identify request lasts, as zigbee2mqtt's default. */
+const IDENTIFY_SECONDS = 3;
+
+export function hasIdentify(attributes: AttributesData, endpoint: number): boolean {
+    return present(attributes, endpoint, IDENTIFY, 0);
+}
+
+const identify: Control = {
+    present: hasIdentify,
+    keys: () => [],
+    paths: [],
+    state: () => ({}),
+    setKeys: ["effect", "identify"],
+    parse: message => {
+        const actions: DeviceAction[] = [];
+        const warnings: string[] = [];
+        if (message.effect !== undefined) {
+            const effect = IDENTIFY_EFFECTS[String(message.effect).toLowerCase()];
+            if (effect === undefined) {
+                warnings.push(
+                    `invalid effect ${JSON.stringify(message.effect)}: expected one of ${Object.keys(IDENTIFY_EFFECTS).join(", ")}`,
+                );
+            } else {
+                actions.push({
+                    clusterId: IDENTIFY,
+                    commandName: "triggerEffect",
+                    data: { effectIdentifier: effect, effectVariant: 0 },
+                });
+            }
+        }
+        if (message.identify !== undefined) {
+            const seconds = typeof message.identify === "number" ? message.identify : IDENTIFY_SECONDS;
+            actions.push({
+                clusterId: IDENTIFY,
+                commandName: "identify",
+                data: { identifyTime: Math.max(0, Math.round(seconds)) },
+            });
+        }
+        return { actions, warnings };
+    },
+    primaryKey: "identify",
+    discovery: (_attributes, _endpoint, ctx) => [
+        {
+            component: "button",
+            objectId: "identify",
+            config: {
+                name: ctx.entityName("Identify"),
+                command_topic: ctx.commandTopic,
+                payload_press: '{"identify": "identify"}',
+                device_class: "identify",
+                entity_category: "config",
+            },
+        },
+    ],
+    exposes: (_attributes, _endpoint, property) => [
+        {
+            type: "enum",
+            name: "effect",
+            label: "Effect",
+            property: property("effect"),
+            access: 2,
+            values: Object.keys(IDENTIFY_EFFECTS),
+        },
+        {
+            type: "enum",
+            name: "identify",
+            label: "Identify",
+            property: property("identify"),
+            access: 2,
+            values: ["identify"],
+        },
+    ],
+};
+
+const COLOR = ColorControl.Cluster.id;
+const COLOR_OPTIONS = 15;
+const COLOR_TEMP_STARTUP = 16400;
+/** zigbee2mqtt's value for "restore the previous color temperature" (Zigbee's 0xFFFF). */
+const COLOR_TEMP_PREVIOUS = 65535;
+
+function miredsRange(attributes: AttributesData, endpoint: number) {
+    return {
+        min: numberAt(attributes, endpoint, COLOR, 16395) ?? 153,
+        max: numberAt(attributes, endpoint, COLOR, 16396) ?? 500,
+    };
+}
+
+function colorTempPresets(attributes: AttributesData, endpoint: number) {
+    const { min, max } = miredsRange(attributes, endpoint);
+    return Object.entries(COLOR_TEMP_PRESETS)
+        .map(([name, value]) => ({ name, value: value === "min" ? min : value === "max" ? max : value }))
+        .filter(({ value }) => value >= min && value <= max);
+}
+
+const colorTempStartup: Control = {
+    present: (attributes, endpoint) => present(attributes, endpoint, COLOR, COLOR_TEMP_STARTUP),
+    keys: () => ["color_temp_startup"],
+    paths: [`${COLOR}/${COLOR_TEMP_STARTUP}`],
+    state: (attributes, endpoint) => {
+        const value = raw(attributes, endpoint, COLOR, COLOR_TEMP_STARTUP);
+        if (value === null) {
+            return { color_temp_startup: COLOR_TEMP_PREVIOUS };
+        }
+        return typeof value === "number" ? { color_temp_startup: value } : {};
+    },
+    setKeys: ["color_temp_startup"],
+    parse: (message, attributes, endpoint) => {
+        const value = message.color_temp_startup;
+        const write = (mireds: number | null): ParsedActions => ({
+            actions: [{ clusterId: COLOR, attributeId: COLOR_TEMP_STARTUP, value: mireds }],
+            warnings: [],
+        });
+        if (value === "previous" || value === COLOR_TEMP_PREVIOUS) {
+            return write(null);
+        }
+        const preset = colorTempPresets(attributes, endpoint).find(({ name }) => name === value);
+        if (preset !== undefined) {
+            return write(preset.value);
+        }
+        const { min, max } = miredsRange(attributes, endpoint);
+        const warnings: string[] = [];
+        const mireds = boundedNumber(value, "color_temp_startup", min, max, warnings);
+        return mireds === undefined ? { actions: [], warnings } : write(mireds);
+    },
+    primaryKey: "color_temp_startup",
+    discovery: (attributes, endpoint, ctx) => {
+        const { min, max } = miredsRange(attributes, endpoint);
+        return [
+            {
+                component: "number",
+                objectId: "color_temp_startup",
+                config: {
+                    name: ctx.entityName("Color temp startup"),
+                    command_topic: ctx.commandTopic,
+                    command_template: '{"color_temp_startup": {{ value }}}',
+                    value_template: `{{ value_json.${ctx.nameOf("color_temp_startup")} }}`,
+                    min,
+                    max,
+                    unit_of_measurement: "mired",
+                    mode: "box",
+                    entity_category: "config",
+                },
+            },
+        ];
+    },
+    exposes: (attributes, endpoint, property) => {
+        const { min, max } = miredsRange(attributes, endpoint);
+        return [
+            {
+                type: "numeric",
+                name: "color_temp_startup",
+                label: "Color temp startup",
+                property: property("color_temp_startup"),
+                access: READ_WRITE,
+                unit: "mired",
+                value_min: min,
+                value_max: max,
+                presets: [...colorTempPresets(attributes, endpoint), { name: "previous", value: COLOR_TEMP_PREVIOUS }],
+            },
+        ];
+    },
+};
+
+/** Options bitmap with bit 0 (ExecuteIfOff) set or cleared and the other bits kept. */
+function withExecuteIfOff(current: unknown, on: boolean): number {
+    const bits = bitmapOf(current) ?? 0;
+    return on ? bits | 1 : bits & ~1;
+}
+
+const EXECUTE_IF_OFF_EXPOSE: Expose = {
+    type: "binary",
+    name: "execute_if_off",
+    label: "Execute if off",
+    property: "execute_if_off",
+    access: READ_WRITE,
+    value_on: true,
+    value_off: false,
+};
+
+const LEVEL = LevelControl.Cluster.id;
+const LEVEL_OPTIONS = 15;
+
+/** level_config fields: attribute, valid range, and the zigbee2mqtt value that stands for null. */
+const LEVEL_CONFIG_FIELDS = [
+    { key: "on_off_transition_time", attribute: 16, min: 0, max: 65535, nullValue: undefined },
+    { key: "on_transition_time", attribute: 18, min: 0, max: 65534, nullValue: 65535 },
+    { key: "off_transition_time", attribute: 19, min: 0, max: 65534, nullValue: 65535 },
+    { key: "on_level", attribute: 17, min: 1, max: 254, nullValue: 255 },
+    { key: "current_level_startup", attribute: 16384, min: 0, max: 254, nullValue: 255 },
+] as const;
+
+/** zigbee2mqtt's words for current_level_startup / on_level. */
+const LEVEL_CONFIG_WORDS: Readonly<Record<string, number>> = { previous: 255, minimum: 0 };
+
+const levelConfig: Control = {
+    present: (attributes, endpoint) =>
+        LEVEL_CONFIG_FIELDS.some(({ attribute }) => present(attributes, endpoint, LEVEL, attribute)),
+    keys: () => ["level_config"],
+    paths: [...LEVEL_CONFIG_FIELDS.map(({ attribute }) => `${LEVEL}/${attribute}`), `${LEVEL}/${LEVEL_OPTIONS}`],
+    state: (attributes, endpoint) => {
+        const config: Record<string, unknown> = {};
+        for (const { key, attribute, nullValue } of LEVEL_CONFIG_FIELDS) {
+            const value = raw(attributes, endpoint, LEVEL, attribute);
+            if (typeof value === "number") {
+                config[key] = value;
+            } else if (value === null && nullValue !== undefined) {
+                config[key] = nullValue;
+            }
+        }
+        const options = bitmapOf(raw(attributes, endpoint, LEVEL, LEVEL_OPTIONS));
+        if (options !== undefined) {
+            config.execute_if_off = (options & 1) !== 0;
+        }
+        return { level_config: config };
+    },
+    setKeys: ["level_config"],
+    parse: (message, attributes, endpoint) => {
+        const actions: DeviceAction[] = [];
+        const warnings: string[] = [];
+        const config = message.level_config;
+        if (typeof config !== "object" || config === null) {
+            return { actions, warnings: ["level_config must be an object"] };
+        }
+        for (const [key, value] of Object.entries(config as Record<string, unknown>)) {
+            if (key === "execute_if_off") {
+                const options = withExecuteIfOff(raw(attributes, endpoint, LEVEL, LEVEL_OPTIONS), value === true);
+                actions.push({ clusterId: LEVEL, attributeId: LEVEL_OPTIONS, value: options });
+                continue;
+            }
+            const field = LEVEL_CONFIG_FIELDS.find(candidate => candidate.key === key);
+            if (field === undefined || !present(attributes, endpoint, LEVEL, field.attribute)) {
+                warnings.push(`level_config.${key} not supported by this endpoint`);
+                continue;
+            }
+            const resolved =
+                typeof value === "string" && value in LEVEL_CONFIG_WORDS ? LEVEL_CONFIG_WORDS[value] : value;
+            if (field.nullValue !== undefined && resolved === field.nullValue) {
+                actions.push({ clusterId: LEVEL, attributeId: field.attribute, value: null });
+                continue;
+            }
+            const number = boundedNumber(resolved, `level_config.${key}`, field.min, field.max, warnings);
+            if (number !== undefined) {
+                actions.push({ clusterId: LEVEL, attributeId: field.attribute, value: number });
+            }
+        }
+        return { actions, warnings };
+    },
+    primaryKey: "level_config",
+    discovery: () => [],
+    exposes: (attributes, endpoint, property) => [
+        {
+            type: "composite",
+            name: "level_config",
+            label: "Level config",
+            property: property("level_config"),
+            access: READ_WRITE,
+            features: [
+                ...LEVEL_CONFIG_FIELDS.filter(({ attribute }) => present(attributes, endpoint, LEVEL, attribute)).map(
+                    ({ key, min, max, nullValue }) => ({
+                        type: "numeric",
+                        name: key,
+                        label: key.replace(/_/g, " ").replace(/^./, c => c.toUpperCase()),
+                        property: key,
+                        access: READ_WRITE,
+                        value_min: min,
+                        value_max: max,
+                        ...(nullValue === undefined ? {} : { presets: [{ name: "previous", value: nullValue }] }),
+                    }),
+                ),
+                EXECUTE_IF_OFF_EXPOSE,
+            ],
+        },
+    ],
+};
+
+const colorOptions: Control = {
+    present: (attributes, endpoint) => present(attributes, endpoint, COLOR, COLOR_OPTIONS),
+    keys: () => ["color_options"],
+    paths: [`${COLOR}/${COLOR_OPTIONS}`],
+    state: (attributes, endpoint) => {
+        const options = bitmapOf(raw(attributes, endpoint, COLOR, COLOR_OPTIONS));
+        return options === undefined ? {} : { color_options: { execute_if_off: (options & 1) !== 0 } };
+    },
+    setKeys: ["color_options"],
+    parse: (message, attributes, endpoint) => {
+        const options = message.color_options;
+        if (typeof options !== "object" || options === null || !("execute_if_off" in options)) {
+            return { actions: [], warnings: ['color_options must be an object with "execute_if_off"'] };
+        }
+        const on = options.execute_if_off === true;
+        const value = withExecuteIfOff(raw(attributes, endpoint, COLOR, COLOR_OPTIONS), on);
+        return { actions: [{ clusterId: COLOR, attributeId: COLOR_OPTIONS, value }], warnings: [] };
+    },
+    primaryKey: "color_options",
+    discovery: () => [],
+    exposes: (_attributes, _endpoint, property) => [
+        {
+            type: "composite",
+            name: "color_options",
+            label: "Color options",
+            property: property("color_options"),
+            access: READ_WRITE,
+            features: [EXECUTE_IF_OFF_EXPOSE],
+        },
+    ],
+};
+
 /** Controls in entity order. Each takes distinct `/set` properties, so several may share an endpoint. */
 export const CONTROLS: readonly Control[] = [
     cover,
@@ -1439,6 +1781,11 @@ export const CONTROLS: readonly Control[] = [
     pumpControlMode,
     smokeSensitivity,
     smokeSelfTest,
+    powerOnBehavior,
+    colorTempStartup,
+    levelConfig,
+    colorOptions,
+    identify,
 ];
 
 export function controlsOf(attributes: AttributesData, endpoint: number): Control[] {
@@ -1466,13 +1813,15 @@ export function controllableEndpointsOf(attributes: AttributesData): number[] {
 /**
  * Turn the `/set` message for one endpoint into Matter actions: each control takes its own properties,
  * the light parser (OnOff/LevelControl/ColorControl) what is left, and anything nobody takes is reported.
+ * Light commands go first, so a light being turned on already shows an effect sent with it.
  */
 export function parseEndpointSet(
     message: Record<string, unknown>,
     attributes: AttributesData,
     endpoint: number,
 ): ParsedActions | undefined {
-    const actions: DeviceAction[] = [];
+    const controlActions: DeviceAction[] = [];
+    const lightActions: DeviceAction[] = [];
     const warnings: string[] = [];
     let rest = { ...message };
     for (const control of controlsOf(attributes, endpoint)) {
@@ -1485,7 +1834,7 @@ export function parseEndpointSet(
         }
         if (Object.keys(claimed).length > 0) {
             const parsed = control.parse(claimed, attributes, endpoint);
-            actions.push(...parsed.actions);
+            controlActions.push(...parsed.actions);
             warnings.push(...parsed.warnings);
         }
     }
@@ -1493,13 +1842,14 @@ export function parseEndpointSet(
     if (Object.keys(rest).length > 0 && caps.onOff) {
         const on = raw(attributes, endpoint, ONOFF_CLUSTER_ID, 0);
         const parsed = parseSetObject(rest, caps, typeof on === "boolean" ? on : undefined);
-        actions.push(...(parsed?.commands ?? []));
+        lightActions.push(...(parsed?.commands ?? []));
         warnings.push(...(parsed?.warnings ?? []));
         rest = {};
     }
     for (const key of Object.keys(rest)) {
         warnings.push(`unsupported attribute "${key}"`);
     }
+    const actions = [...lightActions, ...controlActions];
     if (actions.length === 0 && warnings.length === 0) {
         return undefined;
     }

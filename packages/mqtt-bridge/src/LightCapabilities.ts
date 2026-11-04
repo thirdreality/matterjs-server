@@ -32,6 +32,8 @@ export interface LightCapabilities {
     /** ColorTempPhysicalMin/MaxMireds, for clamping color_temp (undefined: no clamping bound). */
     colorTempMinMireds?: number;
     colorTempMaxMireds?: number;
+    /** OnOff Lighting feature: OnWithTimedOff (`on_time` / `off_wait_time`) and the startup attributes. */
+    timedOnOff: boolean;
 }
 
 function numberAttribute(attributes: AttributesData, path: string): number | undefined {
@@ -57,5 +59,8 @@ export function lightCapabilitiesOf(attributes: AttributesData, endpoint: number
         colorTemp: (colorFeatures & COLOR_FEATURE_COLOR_TEMP) !== 0,
         colorTempMinMireds: numberAttribute(attributes, `${endpoint}/${COLOR_CLUSTER_ID}/16395`),
         colorTempMaxMireds: numberAttribute(attributes, `${endpoint}/${COLOR_CLUSTER_ID}/16396`),
+        timedOnOff:
+            ((numberAttribute(attributes, `${endpoint}/${ONOFF_CLUSTER_ID}/${FEATURE_MAP_ATTRIBUTE_ID}`) ?? 0) & 1) !==
+            0,
     };
 }
