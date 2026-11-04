@@ -105,7 +105,18 @@ Zigbee 用 0xFFFF / 0xFF 表示"沿用上次"或"使用另一个属性"（StartU
 Matter 对应的属性是 nullable，用 null 表达。对外按 z2m 的约定发布（65535 / 255 / `previous`），写入时再转换回 null。
 位图类属性（Options）只改需要的那一位，其余位必须保留。
 
-### 14. hub 资源极其有限（2 GB 内存，4 核 ARM）
+### 14. Matter 网桥是"一个节点、多个设备"
+
+Zigbee 转 Matter 这类网桥在 Matter 里只占一个 node id，背后的每个设备是一个带 BridgedDeviceBasicInformation（`57`）
+的 endpoint，可能还有子 endpoint（双路开关的两路）。按节点发布会把几十个设备挤成一个，丢掉各自的名字、型号和
+在线状态。要点：
+- 归属按 endpoint parents 往上找到带 `57` 的 endpoint，没有 parents 时用它的 PartsList。
+- 名字、型号取 `57` 的属性，不取 `0/40`（那是网桥自己的）。
+- 在线 = 网桥节点在线 **且** 子设备的 Reachable（`57/17`）为 true；Reachable 变化要单独处理，它不是普通状态属性。
+- 网桥增删子设备时同步清理 topic；网桥节点原来那份合并状态在拆分后要清空，否则 broker 上留着旧的大杂烩。
+- 实现上把节点属性按 endpoint 过滤后交给原有逻辑，所有设备能力自动适用于子设备，不必为网桥另写一套。
+
+### 15. hub 资源极其有限（2 GB 内存，4 核 ARM）
 
 - VS Code server 及扩展常驻约 1.2 GB；TypeScript 语言服务（tsserver）单独可涨到 ~580 MB。
 - `npm run lint` 的 type-aware 检查（tsgolint）峰值约 570 MB，**曾把整机拖到 OOM 崩溃重启**。
@@ -120,7 +131,7 @@ Matter 对应的属性是 nullable，用 null 表达。对外按 z2m 的约定�
   - 一次只跑一条重任务，不并发。
 - 原始日志一律写到磁盘，**不要写到 `/tmp`**（tmpfs，重启即丢）。
 
-### 15. 在 hub 上跑测试的已知坑
+### 16. 在 hub 上跑测试的已知坑
 
 - 起一个 matter-server 进程约需 32 s，其中仅 import ws-controller 就约 26 s（matter.js 0.18，模块初始化开销，
   与 source map 或编译缓存无关）。超时时间按 30 s 写死的测试在 hub 上会超时。
@@ -142,6 +153,7 @@ Matter 对应的属性是 nullable，用 null 表达。对外按 z2m 的约定�
 | `b956344` | B2 风扇、水阀、ModeSelect、水泵模式、烟雾报警器自检与灵敏度 |
 | `5963f04` | B3 按键 action（Switch 事件 → `<node>/action`，HA event 实体与 device trigger） |
 | `223e807` | B4 灯的通用参数：`power_on_behavior`、`color_temp_startup`、`level_config`、`color_options`、`on_time`、`effect` / `identify` |
+| `8a0aaca` | B7 Matter 网桥拆分：网桥后面的每个设备单独成为 `<node>_<endpoint>` 设备 |
 
 ## 问题
 
@@ -150,7 +162,7 @@ Matter 对应的属性是 nullable，用 null 表达。对外按 z2m 的约定�
 bridge 自身的 bug，不是 zigbee2mqtt 或 Home Assistant 的。原因和正确做法见踩坑记录第 1 条。升级后，旧的
 `.../contact/config` discovery topic 会被 bridge 的 retained 清理机制自动清掉（踩坑记录第 3 条）。
 
-### P2 · Matter 网桥后面的子设备没有拆成独立设备
+### P2 · Matter 网桥后面的子设备没有拆成独立设备 —— **已解决（B7）**
 
 Aggregator（如 Hue / Aqara 网关接入的设备）作为一个节点发布，子设备只靠 `_<endpoint>` 后缀区分。z2m 的语义是
 每个物理设备一个 topic、一个 HA 设备。需要设计：子设备的 topic 命名、`bridge/devices` 中的表示、可用性与改名。
@@ -168,7 +180,7 @@ z2m 在 `bridge/devices` 中为每个设备给出 `definition`（型号、厂商
 | 失败 | 判断 |
 |------|------|
 | ws-controller `WsBackpressureReproTest` 3 条超时（60 s） | 上游 1.5.3 新增的压力测试，单核跑不完 500 轮；干净的 v1.5.5 worktree 在同机复现，耗时与失败一致 |
-| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 15 条） |
+| matter-server `DclAttestationTest`、`DclOfflineTest`、`UnixSocketServerTest` 超时 | 起服务约 32 s，测试只等 30 s（踩坑记录第 16 条） |
 | matter-server `OtaUploadHandlerTest` 2 条 | root 运行 + 时序竞态 |
 | matter-server `IntegrationTest` | 未运行 |
 
@@ -217,7 +229,7 @@ bridge 自身只增加不到 1 s。
   - [x] 烟雾 / CO 报警的控制：自检（SelfTestRequest）、灵敏度（SmokeSensitivityLevel，可写）
 - [x] **B3 按键与事件**：GenericSwitch、Doorbell → `action`（`single` / `double` / `hold` / `release` 等），HA event / device_trigger
 - [x] **B4 灯与插座通用参数**：`power_on_behavior`、`effect`（identify）、`color_temp_startup`、上电亮度（`level_config`）、`color_options`、`on_time` / `off_wait_time`
-- [ ] **B7 Matter 网桥（P2）**：子设备拆成独立 z2m 设备
+- [x] **B7 Matter 网桥（P2）**：子设备拆成独立 z2m 设备（待用 ThirdReality Smart Bridge MZ1 等真机验证）
 - [ ] **B5 家电**：洗碗机、洗衣机、烘干机、冰箱 / 温控柜、烤箱、灶台、微波炉（OperationalState、各 Mode cluster、TemperatureControl）；扫地机 → HA `vacuum`
 - [ ] **B6 能源**：EnergyEvse、WaterHeater、HeatPump、SolarPower、BatteryStorage、DeviceEnergyManagement、电表 / 电价
 - [ ] **C 桥级功能（其余）**
@@ -230,6 +242,7 @@ bridge 自身只增加不到 1 s。
   - [ ] Matter groups（`bridge/groups`、`group/*`）
   - [ ] `networkmap`（复用上游 Thread 拓扑）
 - [ ] 厂商私有 cluster（Aqara、Eve、Heiman、IKEA、Yeelight 等，定义已在 custom-clusters 包）按需映射
+  - [ ] ThirdReality 计量 cluster（`0x130dfc02`：currentSummationDelivered、instantaneousDemand、multiplier、divisor）→ `energy` / `power`
 
 每批：单独提交、带测试、同步 `docs/mqtt_api.md` 与 `docs/mqtt_api.zh-CN.md`，构建与测试通过 `/root/lowmem-run.sh` 运行。
 
@@ -251,7 +264,7 @@ bridge 自身只增加不到 1 s。
 | 传感器 | PressureSensor、FlowSensor、SoilSensor、AirQualitySensor、SmokeCoAlarm、ElectricalMeter | 已支持（B1） |
 | 控制 | WindowCovering、DoorLock、Thermostat、RoomAirConditioner、Fan、AirPurifier、ExtractorHood、WaterValve、Pump、ModeSelect | 已支持（B2） |
 | 按键 / 事件 | GenericSwitch、Doorbell | 已支持（B3）；Chime 待做 |
-| 网桥 | Aggregator（及 BridgedNode） | B7 |
+| 网桥 | Aggregator（及 BridgedNode） | 已支持（B7） |
 | 家电 | Dishwasher、LaundryWasher、LaundryDryer、Refrigerator、TemperatureControlledCabinet、Oven、CookSurface、Cooktop、MicrowaveOven、RoboticVacuumCleaner | B5 |
 | 能源 | EnergyEvse、WaterHeater、HeatPump、SolarPower、BatteryStorage、ElectricalUtilityMeter、ElectricalEnergyTariff、MeterReferencePoint | B6 |
 | 其他 | IrrigationSystem、ClosureController、Closure、ClosurePanel | 待评估（Closure 为 Matter 1.5 新的窗帘/门模型，可并入 B2） |
