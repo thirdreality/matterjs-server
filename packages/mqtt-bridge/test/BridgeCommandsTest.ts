@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { UpdateSource, type MatterSoftwareVersion } from "@matter-server/ws-controller";
+import { ServerError, UpdateSource, type MatterSoftwareVersion } from "@matter-server/ws-controller";
+import { Seconds } from "@matter/main";
 import { executeBridgeCommand, type BridgeCommandContext } from "../src/BridgeCommands.js";
 import { OtaTracker } from "../src/OtaState.js";
 
@@ -40,7 +41,15 @@ function mockContext() {
             removeNode: record("removeNode"),
             interviewNode: record("interviewNode"),
             handleWriteAttribute: record("handleWriteAttribute", { status: 0 }),
-            openCommissioningWindow: record("openCommissioningWindow", { manualCode: "123", qrCode: "MT:X" }),
+            openCommissioningWindow: record("openCommissioningWindow", {
+                manualCode: "123",
+                qrCode: "MT:X",
+                passcode: 20202021,
+                discriminator: 3840,
+                vendorId: 4939,
+                productId: 1,
+                commissioningTimeout: 900,
+            }),
             checkNodeUpdate: record("checkNodeUpdate", UPDATE),
             updateNode: record("updateNode", UPDATE),
         },
@@ -147,6 +156,41 @@ describe("BridgeCommands", () => {
         expect(calls.some(c => c.method === "certificateService")).to.equal(true);
     });
 
+    it("passes the discovery timeout to commissioning", async () => {
+        const { ctx, calls } = mockContext();
+        const response = await executeBridgeCommand("commission", '{"code":"MT:ABC","discovery_timeout_s":90}', ctx);
+        expect(response.status).to.equal("ok");
+        const request = calls.find(c => c.method === "commissionNode")?.args[0] as Record<string, unknown>;
+        expect(request.discoveryTimeout).to.equal(Seconds(90));
+    });
+
+    it("rejects a discovery timeout out of range before commissioning", async () => {
+        const { ctx, calls } = mockContext();
+        for (const timeout of ["0", "-5", '"soon"', String(48 * 60 * 60 + 1)]) {
+            const response = await executeBridgeCommand(
+                "commission",
+                `{"code":"MT:ABC","discovery_timeout_s":${timeout}}`,
+                ctx,
+            );
+            expect(response.status).to.equal("error");
+            expect(response.error).to.contain("discovery_timeout_s");
+        }
+        expect(calls.some(c => c.method === "commissionNode")).to.equal(false);
+    });
+
+    it("reports why commissioning failed", async () => {
+        const { ctx } = mockContext();
+        (ctx.commandHandler as unknown as Record<string, unknown>).commissionNode = () =>
+            Promise.reject(ServerError.nodeCommissionFailed("Commission failed: wrong code", "passcode-mismatch"));
+        const response = await executeBridgeCommand("commission", '{"code":"MT:ABC","transaction":4}', ctx);
+        expect(response).to.deep.equal({
+            status: "error",
+            error: "Commission failed: wrong code",
+            reason: "passcode-mismatch",
+            transaction: 4,
+        });
+    });
+
     it("treats a bare payload as the pairing code (HA text entity)", async () => {
         const { ctx, calls } = mockContext();
         const response = await executeBridgeCommand("commission", "34970112332", ctx);
@@ -231,11 +275,69 @@ describe("BridgeCommands", () => {
         expect(write.value).to.equal("Bedroom light");
     });
 
-    it("answers share with the pairing codes", async () => {
-        const { ctx } = mockContext();
+    it("answers share with the pairing codes and the window details", async () => {
+        const { ctx, calls } = mockContext();
         const response = await executeBridgeCommand("device/share", '{"id":8}', ctx);
         expect(response.status).to.equal("ok");
-        expect(response.data).to.deep.equal({ id: 8, manual_code: "123", qr_code: "MT:X" });
+        expect(response.data).to.deep.equal({
+            id: 8,
+            manual_code: "123",
+            qr_code: "MT:X",
+            setup_pin_code: 20202021,
+            discriminator: 3840,
+            vendor_id: 4939,
+            product_id: 1,
+            commissioning_timeout: 900,
+        });
+        expect(calls[0].args[0]).to.deep.equal({ nodeId: 8n, timeout: undefined });
+    });
+
+    it("passes a share timeout through, also as a string", async () => {
+        const { ctx, calls } = mockContext();
+        await executeBridgeCommand("device/share", '{"id":8,"timeout":"300"}', ctx);
+        expect(calls[0].args[0]).to.deep.equal({ nodeId: 8n, timeout: 300 });
+        const response = await executeBridgeCommand("device/share", '{"id":8,"timeout":0}', ctx);
+        expect(response.status).to.equal("error");
+        expect(response.error).to.contain("timeout");
+    });
+
+    it("decodes a QR code without contacting a device", async () => {
+        const { ctx, calls } = mockContext();
+        const response = await executeBridgeCommand("parse_onboarding_payload", "MT:Y.K9042C00KA0648G00", ctx);
+        expect(response.status).to.equal("ok");
+        expect(response.data).to.deep.equal({
+            type: "qr",
+            payloads: [
+                {
+                    version: 0,
+                    vendor_id: 65521,
+                    product_id: 32768,
+                    flow_type: 0,
+                    discovery_capabilities: 2,
+                    discriminator: 3840,
+                    setup_pin_code: 20202021,
+                },
+            ],
+        });
+        expect(calls).to.be.empty;
+    });
+
+    it("decodes a manual pairing code", async () => {
+        const { ctx } = mockContext();
+        const response = await executeBridgeCommand("parse_onboarding_payload", '{"code":"34970112332"}', ctx);
+        expect(response.status).to.equal("ok");
+        const data = response.data as Record<string, unknown>;
+        expect(data.type).to.equal("manual");
+        expect(data.short_discriminator).to.equal(15);
+        expect(data.setup_pin_code).to.equal(20202021);
+        expect(data.vendor_id).to.be.undefined;
+    });
+
+    it("answers an undecodable pairing code with the invalid-payload reason", async () => {
+        const { ctx } = mockContext();
+        const response = await executeBridgeCommand("parse_onboarding_payload", "12345", ctx);
+        expect(response.status).to.equal("error");
+        expect(response.reason).to.equal("invalid-payload");
     });
 
     it("wraps handler failures as error responses", async () => {

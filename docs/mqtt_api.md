@@ -439,16 +439,21 @@ Bridge commands are a zigbee2mqtt-style request/response pair:
 - Request: `<prefix>/bridge/request/<command>` with a JSON object payload.
 - Response: `<prefix>/bridge/response/<command>` (not retained) with
   `{"status":"ok","data":{…}}` or `{"status":"error","error":"<message>"}`.
+- When the server knows why a command failed, the error response also carries a machine-readable
+  `reason`. `commission` reports the same values as the WebSocket API's commissioning errors:
+  `not-discovered`, `passcode-mismatch`, `invalid-payload`, `attestation-rejected`, `timeout` or `other`;
+  `parse_onboarding_payload` reports `invalid-payload` for a code it cannot decode.
 - A `transaction` property in the request is echoed back in the response for request/response matching.
 - An unknown command answers `{"status":"error","error":"unknown command \"…\""}`.
 - Commands never throw across the bridge: failures always come back as a `status: "error"` response.
 
-For the five single-value commands below, a bare (non-JSON) payload is accepted and mapped to the
+For the six single-value commands below, a bare (non-JSON) payload is accepted and mapped to the
 documented key, which is what Home Assistant text and select entities publish:
 
 | Command | Bare payload key |
 |---------|------------------|
 | `commission` | `code` |
+| `parse_onboarding_payload` | `code` |
 | `commission_mode` | `mode` |
 | `wifi_ssid` | `ssid` |
 | `wifi_password` | `password` |
@@ -461,7 +466,8 @@ numbers). For every other command a payload that is not a JSON object is rejecte
 
 | Command | Request | Response `data` |
 |---------|---------|-----------------|
-| `commission` | `{"code": "<QR or manual code>", "network": "wifi"\|"thread", "network_only": true}` | `{"node_id": 5}` |
+| `commission` | `{"code": "<QR or manual code>", "network": "wifi"\|"thread", "network_only": true, "discovery_timeout_s": 120}` | `{"node_id": 5}` |
+| `parse_onboarding_payload` | `{"code": "<QR or manual code>"}` | see below |
 | `commission_mode` | `{"mode": "Auto"\|"WiFi"\|"Thread"\|"Existing (IP)"}` | `{"mode": "…"}` |
 | `wifi_credentials` | `{"ssid": "…", "credentials": "…"}` | `{"ssid": "…"}` |
 | `wifi_ssid` | `{"ssid": "…"}` | `{"ssid": "…"}` or `{"pending": "password"}` |
@@ -471,7 +477,7 @@ numbers). For every other command a payload that is not a JSON object is rejecte
 | `device/remove` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/interview` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/rename` | `{"id": <node id>, "name": "…"}` | `{"id": <node id>, "name": "…"}` |
-| `device/share` | `{"id": <node id>}` | `{"id": <node id>, "manual_code": "…", "qr_code": "MT:…"}` |
+| `device/share` | `{"id": <node id>, "timeout": 900}` | `{"id": <node id>, "manual_code": "…", "qr_code": "MT:…", "setup_pin_code": 20202021, "discriminator": 3840, "vendor_id": 4939, "product_id": 1, "commissioning_timeout": 900}` |
 | `device/ota_update/check` | `{"id": <node id>}` | `{"id": …, "update_available": true, "latest_version": 16777236, "latest_version_string": "1.0.4", "latest_source": "main-net-dcl", "latest_release_notes": "…"}` |
 | `device/ota_update/update` | `{"id": <node id>, "software_version": 16777236}` | `{"id": …, "software_version": 16777236, "software_version_string": "1.0.4"}` |
 
@@ -486,6 +492,8 @@ numbers). For every other command a payload that is not a JSON object is rejecte
 - When neither `network` nor `network_only` is given (the bare-code case), the currently selected
   `commission_mode` decides: `Auto` offers all stored credentials, `WiFi`/`Thread` force one type,
   `Existing (IP)` maps to `network_only`.
+- `discovery_timeout_s` (optional, seconds, at most 172800) limits how long the device is searched for
+  before commissioning fails with `reason: "not-discovered"`; without it the matter.js default applies.
 - Node ids are allocated by the server. A node id that collides with an existing identity on the fabric is
   retried with the next id, up to 5 attempts.
 - Progress is mirrored on `bridge/commission_status`; the final result is on
@@ -498,6 +506,20 @@ Payload: {"code":"MT:Y.K9042C00KA0648G00","network":"thread","transaction":"abc"
 Topic:   matter2mqtt/bridge/response/commission
 Payload: {"status":"ok","data":{"node_id":7},"transaction":"abc"}
 ```
+
+A mistyped code fails with a reason the client can act on, e.g. by asking for the code again:
+
+```
+Topic:   matter2mqtt/bridge/response/commission
+Payload: {"status":"error","error":"…","reason":"passcode-mismatch","transaction":"abc"}
+```
+
+**parse_onboarding_payload** decodes a QR code or manual pairing code without contacting any device, with
+the same fields as the WebSocket command of the same name. A QR code answers
+`{"type":"qr","payloads":[{"version":0,"vendor_id":65521,"product_id":32768,"flow_type":0,"discovery_capabilities":2,"discriminator":3840,"setup_pin_code":20202021}]}`
+(one entry per device for a multi-device QR code); a manual code answers
+`{"type":"manual","short_discriminator":15,"setup_pin_code":20202021}`, plus `vendor_id` and `product_id`
+when the code carries them.
 
 **wifi_ssid / wifi_password** exist for the two single-value Home Assistant text entities. The two halves
 are combined in memory and persisted only once both are known; re-sending an unchanged SSID reuses the
@@ -513,7 +535,10 @@ All credential commands write the reserved `default` credential entry — the sa
 uses when no `id` is given. Named credential lists are WebSocket-only for now.
 
 **device/rename** writes BasicInformation `nodeLabel` (`0/40/5`). **device/share** opens a commissioning
-window and returns the pairing codes for multi-admin sharing.
+window and returns the pairing codes for multi-admin sharing, together with the setup PIN code,
+discriminator, vendor and product id and the window's `commissioning_timeout` in seconds, so another
+ecosystem can be handed the data without decoding the QR code. `timeout` (optional, seconds) sets how long
+the window stays open; without it the matter.js default applies.
 
 **device/ota_update/check** queries the DCL and the local image store for a newer firmware, and
 remembers the answer for the node's `update` property. **device/ota_update/update** starts the update;
@@ -640,7 +665,7 @@ only reachable through the [WebSocket API](websockets_api.md).
 |---------|------|-----------|
 | Device state | Retained per-node JSON, zigbee2mqtt property names | `attribute_updated` events, raw `endpoint/cluster/attribute` paths |
 | Device control | `<node>/set` with high-level properties | `device_command`, `write_attribute` (raw cluster commands) |
-| Commissioning | `bridge/request/commission` (`default` credentials) | `commission_with_code`, `commission_on_network`, named credential lists |
+| Commissioning | `bridge/request/commission` (`default` credentials), `bridge/request/parse_onboarding_payload` | `commission_with_code`, `commission_on_network`, named credential lists |
 | Node management | `bridge/request/device/{remove,interview,rename,share}` | `remove_node`, `interview_node`, `write_attribute`, `open_commissioning_window` |
 | Firmware updates | `bridge/request/device/ota_update/{check,update}` + the `update` state property | `check_node_update`, `update_node`, `initiate_ota_upload` (local image upload) |
 | Diagnostics, ACL, bindings, ICD, topology | not exposed | full command set |

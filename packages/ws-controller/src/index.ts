@@ -29,6 +29,7 @@ export * from "./controller/ControllerNode.js";
 export * from "./controller/LegacyDataInjector.js";
 export * from "./controller/MatterController.js";
 export * from "./controller/OtaUploadRegistry.js";
+export * from "./controller/onboardingPayload.js";
 export * from "./controller/ServerIdResolver.js";
 
 // Export model

@@ -6,11 +6,13 @@
 
 import {
     ConfigStorage,
+    decodeOnboardingPayload,
     registerThreadCredentialsFromHex,
+    ServerError,
     type ControllerCommandHandler,
     type MatterController,
 } from "@matter-server/ws-controller";
-import { Logger, MatterError, NodeId } from "@matter/main";
+import { Logger, MatterError, NodeId, Seconds, type Duration } from "@matter/main";
 import { AttributeId, ClusterId, EndpointNumber } from "@matter/main/types";
 import type { OtaTracker } from "./OtaState.js";
 
@@ -19,9 +21,13 @@ const logger = Logger.get("BridgeCommands");
 /** Maximum commissioning attempts when the chosen node id collides on the fabric. */
 const MAX_COMMISSION_NODE_ID_ATTEMPTS = 5;
 
+/** Same bound as the WebSocket API's `discovery_timeout_s`. */
+const MAX_DISCOVERY_TIMEOUT_S = 48 * 60 * 60;
+
 /** Commands whose single value may arrive as a bare (non-JSON) payload, e.g. from HA text entities. */
 const BARE_PAYLOAD_KEYS: Record<string, string> = {
     commission: "code",
+    parse_onboarding_payload: "code",
     commission_mode: "mode",
     wifi_ssid: "ssid",
     wifi_password: "password",
@@ -59,6 +65,8 @@ export interface BridgeCommandResponse {
     status: "ok" | "error";
     data?: unknown;
     error?: string;
+    /** Machine-readable failure cause, e.g. `passcode-mismatch` for a failed commission. */
+    reason?: string;
     transaction?: unknown;
 }
 
@@ -141,6 +149,7 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
         if (network !== undefined && network !== "wifi" && network !== "thread") {
             throw new Error('"network" must be "wifi" or "thread"');
         }
+        const discoveryTimeout = discoveryTimeoutOf(args.discovery_timeout_s);
         const { commandHandler, config, controller } = ctx;
         const isQrCode = code.startsWith("MT:");
 
@@ -174,6 +183,7 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
                 const { nodeId: committed } = await commandHandler.commissionNode({
                     nodeId,
                     onNetworkOnly: networkOnly,
+                    discoveryTimeout,
                     ...(isQrCode ? { qrCode: code } : { manualCode: code }),
                     wifiCredentials,
                     threadCredentials,
@@ -228,10 +238,53 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
         return { id: args.id, name };
     },
 
-    /** Open a commissioning window (multi-admin share); answers with the pairing codes. */
+    /**
+     * Open a commissioning window (multi-admin share). Besides the pairing codes, the answer carries
+     * what another ecosystem needs without decoding the QR code. `timeout` is in seconds.
+     */
     "device/share": async (args, { commandHandler }) => {
-        const { manualCode, qrCode } = await commandHandler.openCommissioningWindow({ nodeId: nodeIdOf(args) });
-        return { id: args.id, manual_code: manualCode, qr_code: qrCode };
+        const timeout = positiveNumberOf(args.timeout, "timeout");
+        const window = await commandHandler.openCommissioningWindow({ nodeId: nodeIdOf(args), timeout });
+        return {
+            id: args.id,
+            manual_code: window.manualCode,
+            qr_code: window.qrCode,
+            setup_pin_code: window.passcode,
+            discriminator: window.discriminator,
+            vendor_id: window.vendorId,
+            product_id: window.productId,
+            commissioning_timeout: window.commissioningTimeout,
+        };
+    },
+
+    /** Decode a QR or manual pairing code without contacting a device (WebSocket `parse_onboarding_payload`). */
+    parse_onboarding_payload: async ({ code }) => {
+        if (typeof code !== "string" || code.length === 0) {
+            throw new Error('expected {"code": "<QR or manual pairing code>"}');
+        }
+        const decoded = decodeOnboardingPayload(code);
+        if (decoded.type === "manual") {
+            const { shortDiscriminator, passcode, vendorId, productId } = decoded.payload;
+            return {
+                type: "manual",
+                short_discriminator: shortDiscriminator,
+                setup_pin_code: passcode,
+                vendor_id: vendorId,
+                product_id: productId,
+            };
+        }
+        return {
+            type: "qr",
+            payloads: decoded.payloads.map(payload => ({
+                version: payload.version,
+                vendor_id: payload.vendorId,
+                product_id: payload.productId,
+                flow_type: payload.flowType,
+                discovery_capabilities: payload.discoveryCapabilities,
+                discriminator: payload.discriminator,
+                setup_pin_code: payload.passcode,
+            })),
+        };
     },
 
     /**
@@ -352,6 +405,29 @@ function softwareVersionOf(value: unknown): number | undefined {
     return version;
 }
 
+/** Optional positive number of seconds; Home Assistant templates deliver numbers as strings. */
+function positiveNumberOf(value: unknown, name: string): number | undefined {
+    if (value === undefined || value === null || value === "") {
+        return undefined;
+    }
+    const number = typeof value === "string" ? Number(value) : value;
+    if (typeof number !== "number" || !Number.isFinite(number) || number <= 0) {
+        throw new Error(`"${name}" must be a positive number of seconds, got ${JSON.stringify(value)}`);
+    }
+    return number;
+}
+
+function discoveryTimeoutOf(value: unknown): Duration | undefined {
+    const seconds = positiveNumberOf(value, "discovery_timeout_s");
+    if (seconds === undefined) {
+        return undefined;
+    }
+    if (seconds > MAX_DISCOVERY_TIMEOUT_S) {
+        throw new Error(`"discovery_timeout_s" must be at most ${MAX_DISCOVERY_TIMEOUT_S}, got ${seconds}`);
+    }
+    return Seconds(seconds);
+}
+
 function nodeIdOf(args: Record<string, unknown>): NodeId {
     const id = args.id;
     if (typeof id !== "number" && typeof id !== "string" && typeof id !== "bigint") {
@@ -415,7 +491,11 @@ export async function executeBridgeCommand(
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.warn(`Bridge command "${command}" failed: ${message}`);
-        return withTransaction({ status: "error", error: message }, transaction);
+        const response: BridgeCommandResponse = { status: "error", error: message };
+        if (error instanceof ServerError && error.reason !== undefined) {
+            response.reason = error.reason;
+        }
+        return withTransaction(response, transaction);
     }
 }
 

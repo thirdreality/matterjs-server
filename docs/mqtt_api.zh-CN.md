@@ -403,15 +403,19 @@ LevelControl 与 ColorControl 命令均带 `optionsMask: 0, optionsOverride: 0` 
 - 请求：`<prefix>/bridge/request/<command>`，JSON 对象载荷。
 - 响应：`<prefix>/bridge/response/<command>`（非 retained），内容为
   `{"status":"ok","data":{…}}` 或 `{"status":"error","error":"<message>"}`。
+- server 能判断失败原因时，错误响应还会带一个机器可读的 `reason`。`commission` 的取值与 WebSocket API 的配网错误
+  一致：`not-discovered`、`passcode-mismatch`、`invalid-payload`、`attestation-rejected`、`timeout` 或 `other`；
+  `parse_onboarding_payload` 遇到无法解码的码时返回 `invalid-payload`。
 - 请求里的 `transaction` 字段会原样回传到响应里，便于请求/响应配对。
 - 未知命令返回 `{"status":"error","error":"unknown command \"…\""}`。
 - 桥命令不会向外抛异常：失败一律以 `status: "error"` 响应返回。
 
-下面 5 个单值命令接受裸（非 JSON）载荷，并映射到对应的键 —— Home Assistant 的 text / select 实体发的就是裸载荷：
+下面 6 个单值命令接受裸（非 JSON）载荷，并映射到对应的键 —— Home Assistant 的 text / select 实体发的就是裸载荷：
 
 | 命令 | 裸载荷对应的键 |
 |------|--------------|
 | `commission` | `code` |
+| `parse_onboarding_payload` | `code` |
 | `commission_mode` | `mode` |
 | `wifi_ssid` | `ssid` |
 | `wifi_password` | `password` |
@@ -424,7 +428,8 @@ LevelControl 与 ColorControl 命令均带 `optionsMask: 0, optionsOverride: 0` 
 
 | 命令 | 请求 | 响应 `data` |
 |------|------|------------|
-| `commission` | `{"code": "<二维码或手动配对码>", "network": "wifi"\|"thread", "network_only": true}` | `{"node_id": 5}` |
+| `commission` | `{"code": "<二维码或手动配对码>", "network": "wifi"\|"thread", "network_only": true, "discovery_timeout_s": 120}` | `{"node_id": 5}` |
+| `parse_onboarding_payload` | `{"code": "<二维码或手动配对码>"}` | 见下文 |
 | `commission_mode` | `{"mode": "Auto"\|"WiFi"\|"Thread"\|"Existing (IP)"}` | `{"mode": "…"}` |
 | `wifi_credentials` | `{"ssid": "…", "credentials": "…"}` | `{"ssid": "…"}` |
 | `wifi_ssid` | `{"ssid": "…"}` | `{"ssid": "…"}` 或 `{"pending": "password"}` |
@@ -434,7 +439,7 @@ LevelControl 与 ColorControl 命令均带 `optionsMask: 0, optionsOverride: 0` 
 | `device/remove` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/interview` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/rename` | `{"id": <node id>, "name": "…"}` | `{"id": <node id>, "name": "…"}` |
-| `device/share` | `{"id": <node id>}` | `{"id": <node id>, "manual_code": "…", "qr_code": "MT:…"}` |
+| `device/share` | `{"id": <node id>, "timeout": 900}` | `{"id": <node id>, "manual_code": "…", "qr_code": "MT:…", "setup_pin_code": 20202021, "discriminator": 3840, "vendor_id": 4939, "product_id": 1, "commissioning_timeout": 900}` |
 | `device/ota_update/check` | `{"id": <node id>}` | `{"id": …, "update_available": true, "latest_version": 16777236, "latest_version_string": "1.0.4", "latest_source": "main-net-dcl", "latest_release_notes": "…"}` |
 | `device/ota_update/update` | `{"id": <node id>, "software_version": 16777236}` | `{"id": …, "software_version": 16777236, "software_version_string": "1.0.4"}` |
 
@@ -447,6 +452,8 @@ LevelControl 与 ColorControl 命令均带 `optionsMask: 0, optionsOverride: 0` 
 - `network_only: true` 只走 IP 配网（"添加已在网设备"），不下发凭据。
 - 既没给 `network` 也没给 `network_only` 时（裸配网码的场景），由当前选择的 `commission_mode` 决定：`Auto` 提供
   所有已存凭据，`WiFi`/`Thread` 强制单一类型，`Existing (IP)` 等价于 `network_only`。
+- `discovery_timeout_s`（可选，单位秒，最大 172800）限制搜索设备的时长，超时后配网失败并返回
+  `reason: "not-discovered"`；不传时使用 matter.js 的默认值。
 - node id 由 server 分配。若分配到的 id 与 fabric 上已有身份冲突，则换下一个 id 重试，最多 5 次。
 - 进度同步到 `bridge/commission_status`，最终结果在 `bridge/response/commission`。
 
@@ -457,6 +464,18 @@ Payload: {"code":"MT:Y.K9042C00KA0648G00","network":"thread","transaction":"abc"
 Topic:   matter2mqtt/bridge/response/commission
 Payload: {"status":"ok","data":{"node_id":7},"transaction":"abc"}
 ```
+
+配网码输错时会带上客户端可据以处理的原因，例如提示用户重新输入：
+
+```
+Topic:   matter2mqtt/bridge/response/commission
+Payload: {"status":"error","error":"…","reason":"passcode-mismatch","transaction":"abc"}
+```
+
+**parse_onboarding_payload** 只解码二维码或手动配对码，不连接任何设备，字段与同名 WebSocket 命令一致。二维码返回
+`{"type":"qr","payloads":[{"version":0,"vendor_id":65521,"product_id":32768,"flow_type":0,"discovery_capabilities":2,"discriminator":3840,"setup_pin_code":20202021}]}`
+（多设备二维码每台设备一项）；手动配对码返回 `{"type":"manual","short_discriminator":15,"setup_pin_code":20202021}`，
+码里带有厂商与产品 id 时另含 `vendor_id`、`product_id`。
 
 **wifi_ssid / wifi_password** 是为 Home Assistant 两个单值 text 实体准备的。两半在内存中合并，只有都拿到时才落盘；
 重新提交未变更的 SSID 时会复用已存的（只写）密码。在此之前响应会告知还缺哪一半（`pending`）。`wifi_credentials`
@@ -470,7 +489,8 @@ MeshCoP 诊断（见 [Thread Network Diagnostics](websockets_api.md#thread-netwo
 列表目前只有 WebSocket API 支持。
 
 **device/rename** 写 BasicInformation 的 `nodeLabel`（`0/40/5`）。**device/share** 打开配网窗口并返回配对码，用于
-多管理员共享。
+多管理员共享；同时返回 setup PIN、discriminator、厂商与产品 id 以及窗口的 `commissioning_timeout`（秒），方便直接
+交给其他生态而无需解码二维码。`timeout`（可选，单位秒）设置窗口打开多久，不传时使用 matter.js 的默认值。
 
 **device/ota_update/check** 向 DCL 与本地镜像库查询是否有更新的固件，并把结果记下来供该节点的 `update` 属性
 使用。**device/ota_update/update** 启动更新；`software_version` 可省略，省略时取上次检查的目标版本（或当场跑一次
@@ -582,7 +602,7 @@ BasicInformation（40，设备元信息与固件版本）。
 |-------|------|-----------|
 | 设备状态 | 按节点的 retained JSON，zigbee2mqtt 属性名 | `attribute_updated` 事件，原始 `endpoint/cluster/attribute` 路径 |
 | 设备控制 | `<node>/set`，高层属性 | `device_command`、`write_attribute`（原始 cluster 命令） |
-| 配网 | `bridge/request/commission`（`default` 凭据） | `commission_with_code`、`commission_on_network`，支持命名凭据列表 |
+| 配网 | `bridge/request/commission`（`default` 凭据）、`bridge/request/parse_onboarding_payload` | `commission_with_code`、`commission_on_network`，支持命名凭据列表 |
 | 节点管理 | `bridge/request/device/{remove,interview,rename,share}` | `remove_node`、`interview_node`、`write_attribute`、`open_commissioning_window` |
 | 固件更新 | `bridge/request/device/ota_update/{check,update}` + `update` 状态属性 | `check_node_update`、`update_node`、`initiate_ota_upload`（本地镜像上传） |
 | 诊断、ACL、binding、ICD、拓扑 | 未暴露 | 完整命令集 |
