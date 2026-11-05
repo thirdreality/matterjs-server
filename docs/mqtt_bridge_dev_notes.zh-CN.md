@@ -59,6 +59,17 @@ bridge 每次连接都会把 broker 回放的 retained topic 和自己"应该发
 - **FixedLabel 是 SDK 示例默认值**（room: bedroom 2 / orientation: North / floor: 2 / direction: up），dashboard 会显示
   出来。属于固件问题，已转固件团队；bridge 不读 FixedLabel，不受影响。
 
+### 3c. 关着的灯会"成功"地忽略颜色命令；一次命令的效果分多条上报
+
+真机控制测试（2026-11-05，Wi-Fi 与 Thread 夜灯各一盏）发现：
+- **颜色命令在关灯状态下被静默忽略**：`{"state":"ON","color_temp":250}` 按 z2m 顺序先发色温、后开灯，但灯关着时，
+  除非 ColorControl 的 Options 有 ExecuteIfOff，设备回 Success 却不执行，开灯后仍是旧颜色。消息包含开灯动作时，
+  颜色命令带上 `optionsMask/optionsOverride = ExecuteIfOff`（Matter 为此设计的逐命令覆盖）。不开灯的消息仍由设备自己的设置决定。
+- **一次命令的效果分 2–4 条属性上报，间隔约 1 ms**（先 x 后 y、先模式后数值）。逐条发布会让平台看到从未存在过的
+  颜色。属性变化先收集 20 ms 再合并发布；与上次完全相同的状态不再发布（`/get`、重连、改选项除外）。
+- 固件观察：Wi-Fi 夜灯开灯时先报亮度 1、约 50 ms 后报目标亮度；Thread 夜灯开灯会把颜色复位成白色。
+- 延迟参考：从发布 `/set` 到收到状态，Wi-Fi 约 110–260 ms，Thread 约 180–420 ms。
+
 ### 4. 多 endpoint 的属性冲突才加后缀
 
 同一个属性只出现在一个 endpoint 上时保持原名；多个 endpoint 都提供时，按 zigbee2mqtt 的 multiEndpoint 规则加
@@ -189,6 +200,7 @@ Matter 的 AccessControl ACL 与 Binding 都只能整张表写入，没有"追�
 | `189d66a` | C `networkmap`（raw、graphviz） |
 | `9d71a65` | C groups（软件组，z2m 组接口） |
 | `81ef559` | 真机实测修复（3 盏 ThirdReality 夜灯）：identify 每个设备只出一份、启动色温超范围视为未知、照度 0 发布为 0 lx |
+| `3ad445c` | 真机控制测试修复：开灯同时带颜色/色温时颜色不丢（ExecuteIfOff）；同一批属性上报合并为一次发布，重复状态不再发布 |
 
 ## 问题
 
