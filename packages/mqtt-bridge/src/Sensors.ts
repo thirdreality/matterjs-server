@@ -366,10 +366,13 @@ export const ENDPOINT_SENSORS: readonly SensorProperty[] = [
         key: "illuminance",
         paths: [`${IlluminanceMeasurement.Cluster.id}/0`],
         present: (attributes, endpoint) => hasAttribute(attributes, endpoint, IlluminanceMeasurement.Cluster.id, 0),
-        // Matter and Zigbee share the encoding: MeasuredValue = 10000*log10(lux) + 1, 0 = too dark to measure
+        // Matter and Zigbee share the encoding: MeasuredValue = 10000*log10(lux) + 1; 0 means too dark to measure
         read: (attributes, endpoint) => {
             const value = numberAt(attributes, endpoint, IlluminanceMeasurement.Cluster.id, 0);
-            return value === undefined || value <= 0 ? undefined : Math.round(10 ** ((value - 1) / 10000));
+            if (value === undefined) {
+                return undefined;
+            }
+            return value <= 0 ? 0 : Math.round(10 ** ((value - 1) / 10000));
         },
         entity: () => ({
             component: "sensor",

@@ -194,4 +194,70 @@ describe("Light configuration", () => {
         const startup = exposes.find(e => e.name === "color_temp_startup") as Expose;
         expect((startup.presets as Expose[]).at(-1)).to.deep.equal({ name: "previous", value: 65535 });
     });
+
+    describe("on a ThirdReality night light", () => {
+        // Identify on all three endpoints (light, light sensor, occupancy), StartUpColorTemperatureMireds 0
+        const NIGHT_LIGHT = {
+            "1/3/0": 0,
+            "1/6/0": true,
+            "1/8/0": 128,
+            "1/768/65532": 31,
+            "1/768/16395": 153,
+            "1/768/16396": 370,
+            "1/768/16400": 0,
+            "2/3/0": 0,
+            "2/1024/0": 0,
+            "3/3/0": 0,
+            "3/1030/0": 0,
+        };
+
+        it("offers effect and identify once, on the light", () => {
+            const exposes = exposesOf(NIGHT_LIGHT, relevantEndpointsOf(NIGHT_LIGHT), capsOf(NIGHT_LIGHT));
+            expect(
+                exposes
+                    .filter(e => e.name === "effect" || e.name === "identify")
+                    .map(e => [e.name, e.property, e.endpoint]),
+            ).to.deep.equal([
+                ["effect", "effect", undefined],
+                ["identify", "identify", undefined],
+            ]);
+            const buttons = discoveryMessagesOf(
+                { device: "1" },
+                NIGHT_LIGHT,
+                relevantEndpointsOf(NIGHT_LIGHT),
+                capsOf(NIGHT_LIGHT),
+                new Topics("matter2mqtt"),
+            )
+                .filter(m => m.topic.includes("/button/"))
+                .map(m => [m.topic, JSON.parse(m.payload).unique_id]);
+            expect(buttons).to.deep.equal([
+                ["homeassistant/button/matter2mqtt_1/identify/config", "matter2mqtt_1_identify_1"],
+            ]);
+        });
+
+        it("leaves an out-of-range startup color temperature out, and reports darkness as 0 lx", () => {
+            const state = stateOf(NIGHT_LIGHT);
+            expect(state.color_temp_startup).to.equal(undefined);
+            expect(state.illuminance).to.equal(0);
+        });
+
+        it("identifies a sensor-only device once, on its lowest endpoint", () => {
+            const sensor = { "1/3/0": 0, "1/1026/0": 2000, "2/3/0": 0, "2/1029/0": 4000 };
+            const exposes = exposesOf(sensor, relevantEndpointsOf(sensor), capsOf(sensor));
+            expect(exposes.filter(e => e.name === "identify").map(e => e.property)).to.deep.equal(["identify"]);
+        });
+
+        it("suffixes effect and identify of a device with two lights", () => {
+            const dual = { "1/3/0": 0, "1/6/0": true, "1/8/0": 1, "2/3/0": 0, "2/6/0": true, "2/8/0": 1 };
+            const exposes = exposesOf(dual, relevantEndpointsOf(dual), capsOf(dual));
+            expect(exposes.filter(e => e.name === "identify").map(e => [e.property, e.endpoint])).to.deep.equal([
+                ["identify_1", "1"],
+                ["identify_2", "2"],
+            ]);
+            expect(parseEndpointSet({ identify: "identify" }, dual, 2)?.actions[0]).to.deep.include({
+                clusterId: 3,
+                commandName: "identify",
+            });
+        });
+    });
 });

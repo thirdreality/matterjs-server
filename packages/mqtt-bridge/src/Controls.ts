@@ -1469,9 +1469,30 @@ export function hasIdentify(attributes: AttributesData, endpoint: number): boole
     return present(attributes, endpoint, IDENTIFY, 0);
 }
 
+/**
+ * Where a device's effect and identify belong. Devices often carry Identify on every endpoint (a night light
+ * on its light, light sensor and occupancy endpoints), which must not multiply them: each light endpoint gets
+ * its own, and a device without lights gets one, on its lowest application endpoint with Identify.
+ */
+function identifiesOn(attributes: AttributesData, endpoint: number): boolean {
+    if (endpoint === 0 || !hasIdentify(attributes, endpoint)) {
+        return false;
+    }
+    const identifying = new Set<number>();
+    for (const path of Object.keys(attributes)) {
+        const [candidate, cluster, attribute] = path.split("/").map(Number);
+        if (cluster === IDENTIFY && attribute === 0 && candidate !== undefined && candidate !== 0) {
+            identifying.add(candidate);
+        }
+    }
+    const lights = [...identifying].filter(candidate => present(attributes, candidate, ONOFF_CLUSTER_ID, 0));
+    return lights.length > 0 ? lights.includes(endpoint) : endpoint === Math.min(...identifying);
+}
+
 const identify: Control = {
-    present: hasIdentify,
-    keys: () => [],
+    present: identifiesOn,
+    // Write-only, but named like state properties so that several lights get suffixed ones
+    keys: () => ["effect", "identify"],
     paths: [],
     state: () => ({}),
     setKeys: ["effect", "identify"],
@@ -1565,7 +1586,8 @@ const colorTempStartup: Control = {
         if (value === null) {
             return { color_temp_startup: COLOR_TEMP_PREVIOUS };
         }
-        return typeof value === "number" ? { color_temp_startup: value } : {};
+        // Out of the specified 1..65279 (some firmware reports 0): unknown, rather than a value no UI accepts
+        return typeof value === "number" && value >= 1 && value <= 0xfeff ? { color_temp_startup: value } : {};
     },
     setKeys: ["color_temp_startup"],
     parse: (message, attributes, endpoint) => {
