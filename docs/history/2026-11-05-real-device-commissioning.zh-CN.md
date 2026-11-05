@@ -87,12 +87,28 @@ Matter 的 C++ SDK 在 Linux 上是先停止扫描再连接的。
 
 ### 改动
 
-installer 新增 `matter_ble_proxy_connect_retry.patch`（LinuxBox-Installer `d090c17`）：
-用缓存对象连接失败时，在同一个 30 s 预算内按纯地址重试一次，此时 bleak 会先扫描到设备再连。
-补丁与 MTU 补丁互不依赖，先后顺序均可；在 site-packages 目录下 `patch -p1` 也能打，buildroot 可直接用。
+第一版是 `matter_ble_proxy_connect_retry.patch`（LinuxBox-Installer `d090c17`）：
+用缓存对象连接失败时，按纯地址重试一次，由 bleak 先扫描到设备再连。它的重试分支在真机上没有触发过
+（07:13 那次代理刚重启，缓存为空，第一次就连上了）。
 
-**重试分支还没有在真机上触发过**：灯带 07:13 那次成功时，代理刚重启、缓存为空，第一次连接就成功了。
-下次遇到缓存过期时，看代理日志里有没有 `Connect … failed (…); retrying by address`。
+之后对照了 Home Assistant 的接法（第 6 节），发现两点，于是换成了第二版：
+
+1. **旧地址是 matter.js 自己记住的。** 它的 `BleScanner` 把发现的设备保留 15 分钟，只有客户端报告
+   "实际扫描了多长时间"（`listeningTime`）时才会把不再广播的记录判为过期，而 `ProxyBleClient` 没有实现这一项。
+   所以新的配网请求一开始，matter.js 就拿上一轮的记录去连：开关 06:31 连 `C2:55`，灯带 06:54、07:07 连
+   `F0:82`，都在开始扫描约 100 ms 后。
+2. **代理串行处理命令**，消息循环处理完一条才接下一条。按地址重试遇到已经轮换作废的地址时，bleak 会一直扫描到
+   30 s 超时，期间整个代理被卡住，包括 matter.js 对设备新地址发起的并行连接。
+
+第二版 `matter_ble_proxy_fresh_advertisement.patch`（`3fade17`，改的是 `bleak_backend.py`）：
+只连接最近 3 s 内广播过的地址；否则在当前扫描中最多等 3 s，等到了就用新的设备对象连接，等不到就报 not found。
+因为串行处理，等待必须短；配网模式的设备至少约 1.2 s 广播一次。
+
+用模拟的设备和广播离线验证过 7 种情况：刚广播过、过时后重新广播、一直不广播、地址不存在、两个连接同时等同一台设备、
+没有扫描、没有扫描来源。**还没有在真机上验证。** 真机上看代理日志：
+`Waiting up to 3 s for … to advertise before connecting`，以及等不到时的 `… did not advertise within 3 s; not connecting`。
+
+两个补丁都与 MTU 补丁互不依赖；在 site-packages 目录下 `patch -p1` 也能打，buildroot 可直接用。
 
 ### 控制测试（`full-strip-20261105-072126.log`）
 
@@ -152,9 +168,26 @@ MultiPressOngoing(2) → ShortRelease → MultiPressComplete(2)。这说明双�
 
 1. 连接前停止扫描，消除最长 10 s 的连接推迟（第 2 节）。
 2. MTU 按设备回退（第 1 节）。
-3. matter.js 把 `not found` 算作该设备唯一一次尝试；有了连接重试补丁后影响变小，但根源在 matter.js 的发现流程。
+3. 根源修法：`ProxyBleClient` 实现 `listeningTime`，让 matter.js 自己淘汰不再广播的记录。这是上游 OHF 的代码，
+   按约定等上游处理，可以把本记录整理成材料报给他们。
+4. 连接时设置连接参数（第 6 节），尤其是建立阶段的监督超时，需要真机验证。
 
-## 6. 过程中的教训
+## 6. 与 Home Assistant 内置 BLE 代理的对比
+
+HA 和我们用的是同一个库 matter-ble-proxy 0.7.1，协议处理相同；区别在库外面接的扫描、设备解析和连接。
+依据是 `/srv/homeassistant` 里的代码（HA 当天未运行，没有实测）。
+
+| 方面 | Home Assistant 内置 | 我们（独立的 matter-ble-proxy） |
+|---|---|---|
+| 扫描 | HA 蓝牙组件一直在扫描，代理只注册回调；可用 ESPHome 蓝牙代理 | 按 matter.js 的 `start_scan` / `stop_scan` 自己启停 |
+| 旧广播 | 丢弃 30 s 以前的历史广播，防止轮换地址的旧 MAC 成为连接候选 | 原本不过滤；现由 fresh advertisement 补丁处理 |
+| 设备解析 | 从 HA 设备表取，一直在扫描所以不会过期 | 扫描缓存，会过期 |
+| 连接参数 | 连接前经 BlueZ 管理接口设为 7.5 ms 间隔、10 s 监督超时，连上后改为 8.75–11.25 ms、8 s | BlueZ 默认：30–50 ms，建立阶段监督超时 420 ms |
+| 适配器 | 多适配器或代理时选信号最好的，有连接槽管理 | 本机一个适配器 |
+| 重试 | 无（HA 还会为此打警告） | 无 |
+| BTP 分段 | 无 MTU 补丁，20 字节：慢但兼容那款开关 | MTU 补丁，244 字节：快，但那款开关失败 |
+
+## 7. 过程中的教训
 
 - **不要用命令行工具碰正在配网的设备。** `bluetoothctl connect/disconnect` 作用于同一个 BlueZ 设备对象，会直接断开 matter.js 的连接。
   要测链路，就先确认没有配网请求在进行。
