@@ -262,7 +262,10 @@ bridge 自身只增加不到 1 s。
   - [x] `device/options`（retain、debounce、transition、invert_cover，存于 `mqtt-bridge-device-options.json`）
   - [x] `device/bind` / `unbind`（Matter Binding，开关类设备控灯依赖它；绑定到组待 groups 完成后再做）
   - [x] groups（`bridge/groups`、`group/*`）：软件组，bridge 依次单播给成员
-  - [ ] 原生 Matter 组播（组密钥、GroupKeyMap、组 ACL、AddGroup；上游只为认证提供控制器组密钥）——需真机验证，开关绑定到组依赖它
+  - [ ] 原生 Matter 组播：**暂不自研，等上游**。需要组密钥集、GroupKeyMap、组 ACL、AddGroup，以及控制器自己持有组密钥；
+    截至 2026-11 上游 matterjs-server 已能发送组播，但还没有面向用户的组密钥配置命令（只为认证测试塞过固定密钥），
+    Python Matter Server 已停止开发且从未支持。决定：组播普及、上游提供组密钥配置后，合并上游，把软件组的底层换成
+    原生组播，MQTT 接口不变。开关直接绑定到组（hub 离线也能控一组灯）依赖它。
   - [x] `networkmap`（复用上游 Thread / Wi-Fi 拓扑，raw 与 graphviz）
 - [ ] 厂商私有 cluster（Aqara、Eve、Heiman、IKEA、Yeelight 等，定义已在 custom-clusters 包）按需映射
   - [ ] ThirdReality 计量 cluster（`0x130dfc02`：currentSummationDelivered、instantaneousDemand、multiplier、divisor）→ `energy` / `power`
