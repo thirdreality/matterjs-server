@@ -58,6 +58,9 @@ URL 协议不支持时，桥在启动阶段直接构造失败。
 | `<prefix>/bridge/devices` | 发布 | 是 | 已知设备的 JSON 数组 |
 | `<prefix>/bridge/event` | 发布 | 否 | 设备加入 / interview / 离开，见 [bridge/event](#bridgeevent) |
 | `<prefix>/bridge/logging` | 发布 | 否 | server 日志，见 [bridge/logging](#bridgelogging) |
+| `<prefix>/bridge/groups` | 发布 | 是 | 组列表，见[组](#组) |
+| `<prefix>/<group>` | 发布 | 是 | 组状态，见[组](#组) |
+| `<prefix>/<group>/set`、`<prefix>/<group>/get` | 订阅 | — | 组命令（发给每个成员）；重发组状态 |
 | `<prefix>/bridge/commission_status` | 发布 | 是 | 人类可读的配网进度 |
 | `<prefix>/bridge/commission_code` | 发布 | 是 | HA 配网码输入框的状态（每次请求后清空） |
 | `<prefix>/bridge/commission_mode` | 发布 | 是 | 当前选择的配网模式 |
@@ -726,6 +729,12 @@ zigbee2mqtt 的 `position`、`tilt` 从关（0）数到开（100）；Matter 从
 | `device/bind` | `{"from": <device>, "to": <device>, "from_endpoint": 1, "to_endpoint": 1, "clusters": ["OnOff"]}`（endpoint 与 clusters 可省略） | `{"from": …, "from_endpoint": 1, "to": …, "to_endpoint": 1, "clusters": ["OnOff", "LevelControl"], "failed": []}` |
 | `device/unbind` | 同 `device/bind` | 同 `device/bind` |
 | `device/options` | `{"id": <device>, "options": {"retain": false, "debounce": 1, "transition": 0.5, "invert_cover": true}}`（`null` 删除选项） | `{"id": …, "from": {…}, "to": {…}, "restart_required": false}` |
+| `group/add` | `{"friendly_name": "living", "id": 3}`（`id` 可省略；也可直接发组名） | `{"friendly_name": "living", "id": 3}` |
+| `group/remove` | `{"id": <组名或 id>}` | `{"id": 3, "friendly_name": "living"}` |
+| `group/rename` | `{"from": <组名或 id>, "to": "lounge"}` | `{"from": …, "to": "lounge"}` |
+| `group/members/add` | `{"group": <组>, "device": <device>, "endpoint": 1}`（`endpoint` 可省略） | `{"group": "living", "device": …, "endpoint": 1}` |
+| `group/members/remove` | `{"group": <组>, "device": <device>, "endpoint": 1}`（不给 `endpoint` 则移除该设备的全部 endpoint） | `{"group": …, "device": …}` |
+| `group/members/remove_all` | `{"device": <device>}` | `{"device": …, "groups": ["living", …]}` |
 | `device/ota_update/check` | `{"id": <node id>}` | `{"id": …, "update_available": true, "latest_version": 16777236, "latest_version_string": "1.0.4", "latest_source": "main-net-dcl", "latest_release_notes": "…"}` |
 | `device/ota_update/update` | `{"id": <node id>, "software_version": 16777236}` | `{"id": …, "software_version": 16777236, "software_version_string": "1.0.4"}` |
 
@@ -800,6 +809,22 @@ Thread 路由器与 Wi-Fi 接入点为 `Router`，其余为 `EndDevice`）、`ne
 `matter` 对象；链路带 `source` / `target`（`ieeeAddr`）、`linkquality` / `lqi`（实测 LQI，没有则强 / 中 / 弱分别记为
 255 / 170 / 85）、`network`、`strength` 与 `routes`。`routes: true` 时一并包含只在路由表中出现的链路。`graphviz`
 返回 DOT 有向图字符串。不支持 PlantUML。
+
+#### 组
+
+以 **软件组** 实现 zigbee2mqtt 的组接口：组命令由 bridge 依次发给每个成员 endpoint，解析方式与发给该设备完全相同，
+所以设备支持的属性对组同样有效。设备上不会配置 Matter 组、组密钥或 ACL，因此安全，Thread 与 Wi-Fi 设备都能用；
+代价是成员依次响应而非同一时刻，也不能把开关绑定到组。将来若加入原生 Matter 组播，topic 与请求保持不变。
+
+- `<prefix>/bridge/groups`（retained）列出 `{"id", "friendly_name", "members": [{"device", "endpoint"}]}`。
+- `<prefix>/<group>`（retained）为组状态：任一成员为开时 `state` 为 `ON`，其余属性取第一个具备该属性的成员。成员
+  状态发布时组状态随之重发。
+- 所有成员都是可调光的灯时，Home Assistant 得到一个 JSON 灯（颜色模式与 mireds 范围取所有成员共有的部分）；所有
+  成员都能开关时得到一个开关；否则不建实体。
+- 组名会成为 topic 的一段，所以不能是 `bridge`、不能形如设备键（`5`、`12_3`）、不能与现有设备同名，也不能包含
+  `/`、`+`、`#`。id 范围 1–65527，不指定时自动分配。
+- 设备被删除、或被其 Matter 网桥移除时，自动退出所有组。
+- 组保存在 server 存储目录下的 `mqtt-bridge-groups.json`。
 
 #### 设备选项
 

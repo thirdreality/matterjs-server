@@ -30,10 +30,17 @@ import {
 } from "./BridgedDevices.js";
 import { controllableEndpointsOf, isDeviceWrite, parseEndpointSet, type DeviceAction } from "./Controls.js";
 import { DeviceOptionsStore, mergeOptions, optionExposesOf, type DeviceOptions } from "./DeviceOptions.js";
-import { deviceStateOf, isDeviceLevelStateAttribute, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
+import {
+    deviceStateOf,
+    endpointStateOf,
+    isDeviceLevelStateAttribute,
+    isStateAttribute,
+    relevantEndpointsOf,
+} from "./DeviceState.js";
 import { bridgeDiscoveryMessagesOf, discoveryMessagesOf } from "./Discovery.js";
 import { SWITCH_CLUSTER_ID, switchActionOf } from "./Events.js";
 import { deviceDescriptionOf } from "./Exposes.js";
+import { groupDiscoveryOf, groupStateOf, GroupStore, type Group } from "./Groups.js";
 import { lightCapabilitiesOf } from "./LightCapabilities.js";
 import { forwardLogs } from "./Logging.js";
 import { MqttConnection, type BridgeConnection } from "./MqttConnection.js";
@@ -75,6 +82,8 @@ export interface MqttBridgeOptions {
     lastSeen?: boolean;
     /** File keeping the device options; default next to the server storage, none (in memory) without it. */
     deviceOptionsFile?: string;
+    /** File keeping the groups; default next to the server storage, none (in memory) without it. */
+    groupsFile?: string;
     /** Broker connection to use instead of one to `url`, for tests. */
     connection?: BridgeConnection;
 }
@@ -110,6 +119,9 @@ export class MqttBridge {
     readonly #logLevel: string;
     #stopLogForwarding?: () => void;
     #deviceOptions: DeviceOptionsStore;
+    readonly #groups: GroupStore;
+    /** The retained discovery topic published for each group, by group id. */
+    readonly #groupDiscovery = new Map<number, string>();
     /** Pending debounced state publishes, by device key. */
     readonly #debounced = new Map<string, ReturnType<typeof setTimeout>>();
     /** When each device was last heard from (any attribute report or event), by device key. */
@@ -142,11 +154,22 @@ export class MqttBridge {
                       ota: this.#ota,
                       resolveDevice: device => this.#resolveDevice(device),
                       updateDeviceOptions: (device, update) => this.#updateDeviceOptions(device, update),
+                      groups: {
+                          add: (name, id) => this.#addGroup(name, id),
+                          remove: nameOrId => this.#removeGroup(nameOrId),
+                          rename: (from, to) => this.#renameGroup(from, to),
+                          addMember: (group, device, endpoint) => this.#addGroupMember(group, device, endpoint),
+                          removeMember: (group, device, endpoint) => this.#removeGroupMember(group, device, endpoint),
+                          removeDevice: device => this.#removeDeviceFromGroups(device),
+                      },
                   };
         this.#serverVersion = options.serverVersion;
         this.#lastSeenEnabled = options.lastSeen === true;
         this.#logLevel = options.logLevel ?? "info";
-        this.#deviceOptions = new DeviceOptionsStore(options.deviceOptionsFile ?? defaultOptionsFile(commandContext));
+        this.#deviceOptions = new DeviceOptionsStore(
+            options.deviceOptionsFile ?? storageFile(commandContext, "mqtt-bridge-device-options.json"),
+        );
+        this.#groups = new GroupStore(options.groupsFile ?? storageFile(commandContext, "mqtt-bridge-groups.json"));
         this.#topics = new Topics(options.prefix ?? "matter2mqtt");
         this.#connection =
             options.connection ??
@@ -177,6 +200,7 @@ export class MqttBridge {
         this.#connection.subscribe(this.#topics.commandFilters);
 
         await this.#deviceOptions.load();
+        await this.#groups.load();
 
         // The Matter stack is otherwise only started once a WebSocket client connects
         await this.#commandHandler.start();
@@ -348,13 +372,32 @@ export class MqttBridge {
         }
         const entry = this.#devices.get(parsed.device);
         if (entry === undefined) {
-            logger.warn(`Ignoring command for unknown device "${parsed.device}"`);
+            const group = this.#groups.find(parsed.device);
+            if (group === undefined) {
+                logger.warn(`Ignoring command for unknown device "${parsed.device}"`);
+            } else if (parsed.kind === "get") {
+                this.#publishGroupState(group);
+            } else {
+                // A software group: the command goes to each member's endpoint in turn
+                for (const member of group.members) {
+                    const memberEntry = this.#devices.get(member.device);
+                    if (memberEntry !== undefined) {
+                        this.#setDevice(memberEntry, member.endpoint, payload, parsed.attribute);
+                    }
+                }
+            }
             return;
         }
         if (parsed.kind === "get") {
             void this.#handleGet(entry);
             return;
         }
+        this.#setDevice(entry, parsed.endpoint, payload, parsed.attribute);
+    }
+
+    /** Route a `/set` payload to the device, on `endpoint` or its first controllable one. */
+    #setDevice(entry: DeviceEntry, requestedEndpoint: number | undefined, payload: string, attribute?: string): void {
+        const parsed = { device: entry.key };
         let attributes;
         try {
             attributes = this.#attributesOf(entry, this.#commandHandler.getNodeDetails(entry.nodeId).attributes);
@@ -363,12 +406,12 @@ export class MqttBridge {
             return;
         }
         const controllable = controllableEndpointsOf(attributes);
-        const endpoint = parsed.endpoint ?? controllable[0];
+        const endpoint = requestedEndpoint ?? controllable[0];
         if (endpoint === undefined || !controllable.includes(endpoint)) {
             logger.warn(`Device "${parsed.device}" has nothing to control on endpoint ${endpoint ?? "(none)"}`);
             return;
         }
-        const parsedMessage = messageOf(payload, parsed.attribute);
+        const parsedMessage = messageOf(payload, attribute);
         if (parsedMessage === undefined) {
             logger.warn(`Ignoring unsupported set payload for "${parsed.device}": ${payload}`);
             return;
@@ -584,6 +627,7 @@ export class MqttBridge {
             }
         }
         this.#publishDevices();
+        this.#publishGroups();
         this.#publishBridgeInfo();
         this.#publishCredentialState();
         this.#publishCommissionMode();
@@ -601,8 +645,9 @@ export class MqttBridge {
             expectedDiscovery: new Set([
                 ...this.#bridgeDiscoveryTopics,
                 ...[...this.#devices.values()].flatMap(entry => entry.discoveryTopics),
+                ...this.#groupDiscovery.values(),
             ]),
-            knownDevices: new Set(this.#devices.keys()),
+            knownDevices: new Set([...this.#devices.keys(), ...this.#groups.list().map(group => group.friendly_name)]),
         });
         if (reason !== undefined) {
             logger.notice(`Clearing stale retained topic ${topic}: ${reason}`);
@@ -693,6 +738,156 @@ export class MqttBridge {
             JSON.stringify(published),
             options.retain !== false,
         );
+        for (const group of this.#groups.list()) {
+            if (group.members.some(member => member.device === entry.key)) {
+                this.#publishGroupState(group);
+            }
+        }
+    }
+
+    #publishGroups(): void {
+        this.#connection.publish(this.#topics.bridgeGroups, JSON.stringify(this.#groups.list()), true);
+        for (const group of this.#groups.list()) {
+            this.#publishGroupDiscovery(group);
+            this.#publishGroupState(group);
+        }
+    }
+
+    /** A member's own endpoint state and capabilities, or undefined while the device is unknown. */
+    #memberOf(device: string, endpoint: number) {
+        const entry = this.#devices.get(device);
+        if (entry === undefined) {
+            return undefined;
+        }
+        try {
+            const attributes = this.#attributesOf(entry, this.#commandHandler.getNodeDetails(entry.nodeId).attributes);
+            const caps = lightCapabilitiesOf(attributes, endpoint);
+            return { caps, state: endpointStateOf(attributes, endpoint, caps) };
+        } catch {
+            return undefined;
+        }
+    }
+
+    #publishGroupState(group: Group): void {
+        const states = group.members
+            .map(({ device, endpoint }) => this.#memberOf(device, endpoint)?.state)
+            .filter(state => state !== undefined);
+        const state = groupStateOf(states);
+        const topic = this.#topics.deviceState(group.friendly_name);
+        if (Object.keys(state).length === 0) {
+            this.#connection.clearRetained(topic);
+        } else {
+            this.#connection.publish(topic, JSON.stringify(state), true);
+        }
+    }
+
+    #publishGroupDiscovery(group: Group): void {
+        const caps = group.members
+            .map(({ device, endpoint }) => this.#memberOf(device, endpoint)?.caps)
+            .filter(caps => caps !== undefined);
+        const message = groupDiscoveryOf(group, caps, this.#topics, this.#serverVersion);
+        const previous = this.#groupDiscovery.get(group.id);
+        if (previous !== undefined && previous !== message?.topic) {
+            this.#connection.clearRetained(previous);
+        }
+        if (message === undefined) {
+            this.#groupDiscovery.delete(group.id);
+            return;
+        }
+        this.#groupDiscovery.set(group.id, message.topic);
+        this.#connection.publish(message.topic, message.payload, true);
+    }
+
+    /** Clear what a group published, before it is renamed or removed. */
+    #clearGroup(group: Group): void {
+        this.#connection.clearRetained(this.#topics.deviceState(group.friendly_name));
+        const discovery = this.#groupDiscovery.get(group.id);
+        if (discovery !== undefined) {
+            this.#connection.clearRetained(discovery);
+            this.#groupDiscovery.delete(group.id);
+        }
+    }
+
+    #findGroup(nameOrId: unknown): Group {
+        const group = this.#groups.find(nameOrId);
+        if (group === undefined) {
+            throw new Error(`unknown group ${JSON.stringify(nameOrId)}`);
+        }
+        return group;
+    }
+
+    #groupChanged(group: Group): void {
+        this.#publishGroupDiscovery(group);
+        this.#publishGroupState(group);
+        this.#connection.publish(this.#topics.bridgeGroups, JSON.stringify(this.#groups.list()), true);
+    }
+
+    async #addGroup(name: unknown, id: unknown): Promise<Group> {
+        if (typeof name === "string" && this.#devices.has(name)) {
+            throw new Error(`"${name}" is the name of a device`);
+        }
+        const group = await this.#groups.add(name, id);
+        this.#groupChanged(group);
+        return group;
+    }
+
+    async #removeGroup(nameOrId: unknown): Promise<Group> {
+        const group = this.#findGroup(nameOrId);
+        this.#clearGroup(group);
+        await this.#groups.remove(group);
+        this.#connection.publish(this.#topics.bridgeGroups, JSON.stringify(this.#groups.list()), true);
+        return group;
+    }
+
+    async #renameGroup(from: unknown, to: unknown): Promise<Group> {
+        const group = this.#findGroup(from);
+        if (typeof to === "string" && this.#devices.has(to)) {
+            throw new Error(`"${to}" is the name of a device`);
+        }
+        const before = { ...group };
+        await this.#groups.rename(group, to);
+        this.#clearGroup(before);
+        this.#groupChanged(group);
+        return group;
+    }
+
+    async #addGroupMember(
+        nameOrId: unknown,
+        device: string,
+        endpoint?: number,
+    ): Promise<{ group: Group; endpoint: number }> {
+        const group = this.#findGroup(nameOrId);
+        const entry = this.#devices.get(device);
+        if (entry === undefined) {
+            throw new Error(`unknown device "${device}"`);
+        }
+        const controllable = controllableEndpointsOf(
+            this.#attributesOf(entry, this.#commandHandler.getNodeDetails(entry.nodeId).attributes),
+        );
+        const member = endpoint ?? controllable[0];
+        if (member === undefined || !controllable.includes(member)) {
+            throw new Error(`device "${device}" has nothing to control on endpoint ${member ?? "(none)"}`);
+        }
+        await this.#groups.addMember(group, { device, endpoint: member });
+        this.#groupChanged(group);
+        return { group, endpoint: member };
+    }
+
+    async #removeGroupMember(nameOrId: unknown, device: string, endpoint?: number): Promise<Group> {
+        const group = this.#findGroup(nameOrId);
+        if (!(await this.#groups.removeMember(group, device, endpoint))) {
+            throw new Error(`device "${device}" is not a member of group "${group.friendly_name}"`);
+        }
+        this.#groupChanged(group);
+        return group;
+    }
+
+    async #removeDeviceFromGroups(device: string): Promise<Group[]> {
+        const groups = await this.#groups.removeDevice(device);
+        for (const group of groups) {
+            this.#groupChanged(group);
+        }
+        return groups;
     }
 
     /** Apply a `device/options` update, persist it, and re-publish the device under its new options. */
@@ -945,6 +1140,9 @@ export class MqttBridge {
             return;
         }
         this.#devices.delete(device);
+        void this.#removeDeviceFromGroups(device).catch(error =>
+            logger.warn(`Failed to remove device ${device} from its groups:`, error),
+        );
         this.#ota.forget(device);
         this.#lastSeen.delete(device);
         for (const topic of entry.discoveryTopics) {
@@ -1057,11 +1255,14 @@ function invertCover(values: Record<string, unknown>): Record<string, unknown> {
     return inverted;
 }
 
-/** The device options file next to the server storage, when the storage has a location on disk. */
-function defaultOptionsFile(context: Omit<BridgeCommandContext, "commandHandler"> | undefined): string | undefined {
+/** A file next to the server storage, when the storage has a location on disk. */
+function storageFile(
+    context: Omit<BridgeCommandContext, "commandHandler"> | undefined,
+    name: string,
+): string | undefined {
     try {
         const location = context?.config.service.location;
-        return typeof location === "string" ? `${location}/mqtt-bridge-device-options.json` : undefined;
+        return typeof location === "string" ? `${location}/${name}` : undefined;
     } catch {
         return undefined;
     }

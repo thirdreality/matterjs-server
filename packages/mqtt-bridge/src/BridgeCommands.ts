@@ -33,6 +33,7 @@ import {
     withoutBinding,
     type BindingRequest,
 } from "./Binding.js";
+import type { Group } from "./Groups.js";
 import { graphvizNetworkMapOf, rawNetworkMapOf } from "./NetworkMap.js";
 import type { OtaTracker } from "./OtaState.js";
 
@@ -49,6 +50,8 @@ const BARE_PAYLOAD_KEYS: Record<string, string> = {
     commission: "code",
     parse_onboarding_payload: "code",
     networkmap: "type",
+    "group/add": "friendly_name",
+    "group/remove": "id",
     commission_mode: "mode",
     wifi_ssid: "ssid",
     wifi_password: "password",
@@ -84,6 +87,17 @@ export interface BridgeCommandContext {
     resolveDevice?: (device: string) => ResolvedDevice | undefined;
     /** Applies and persists a `device/options` update, answering with the options before and after. */
     updateDeviceOptions?: (device: string, update: unknown) => Promise<{ from: unknown; to: unknown }>;
+    /** The bridge's software groups; groups and members are given by name or id. */
+    groups?: GroupOperations;
+}
+
+export interface GroupOperations {
+    add(name: unknown, id: unknown): Promise<Group>;
+    remove(nameOrId: unknown): Promise<Group>;
+    rename(from: unknown, to: unknown): Promise<Group>;
+    addMember(group: unknown, device: string, endpoint?: number): Promise<{ group: Group; endpoint: number }>;
+    removeMember(group: unknown, device: string, endpoint?: number): Promise<Group>;
+    removeDevice(device: string): Promise<Group[]>;
 }
 
 export interface ResolvedDevice {
@@ -372,6 +386,44 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
         return { id: String(device), from, to, restart_required: false };
     },
 
+    /** zigbee2mqtt `group/add`: a new (software) group; the id is chosen when none is given. */
+    "group/add": async (args, ctx) => {
+        const group = await groupsOf(ctx).add(args.friendly_name, args.id);
+        return { friendly_name: group.friendly_name, id: group.id };
+    },
+
+    "group/remove": async (args, ctx) => {
+        const group = await groupsOf(ctx).remove(args.id);
+        return { id: group.id, friendly_name: group.friendly_name };
+    },
+
+    "group/rename": async (args, ctx) => {
+        const from = await groupsOf(ctx).rename(args.from, args.to);
+        return { from: args.from, to: from.friendly_name };
+    },
+
+    /** zigbee2mqtt `group/members/add`: `endpoint` defaults to the device's first controllable one. */
+    "group/members/add": async (args, ctx) => {
+        const { group, endpoint } = await groupsOf(ctx).addMember(
+            args.group,
+            deviceArg(args),
+            endpointArg(args.endpoint),
+        );
+        return { group: group.friendly_name, device: deviceArg(args), endpoint };
+    },
+
+    /** zigbee2mqtt `group/members/remove`: without `endpoint`, every endpoint of the device. */
+    "group/members/remove": async (args, ctx) => {
+        const endpoint = endpointArg(args.endpoint);
+        const group = await groupsOf(ctx).removeMember(args.group, deviceArg(args), endpoint);
+        return { group: group.friendly_name, device: deviceArg(args), ...(endpoint === undefined ? {} : { endpoint }) };
+    },
+
+    "group/members/remove_all": async (args, ctx) => {
+        const groups = await groupsOf(ctx).removeDevice(deviceArg(args));
+        return { device: deviceArg(args), groups: groups.map(group => group.friendly_name) };
+    },
+
     "device/share": async (args, { commandHandler }) => {
         const timeout = positiveNumberOf(args.timeout, "timeout");
         const window = await commandHandler.openCommissioningWindow({ nodeId: nodeIdOf(args), timeout });
@@ -635,6 +687,20 @@ function bindingPlanOf(args: Record<string, unknown>, ctx: BridgeCommandContext)
             failed: [],
         },
     };
+}
+
+function groupsOf(ctx: BridgeCommandContext): GroupOperations {
+    if (ctx.groups === undefined) {
+        throw new Error("groups are not available");
+    }
+    return ctx.groups;
+}
+
+function deviceArg(args: Record<string, unknown>): string {
+    if (typeof args.device !== "string" && typeof args.device !== "number") {
+        throw new Error('expected {"device": <device>}');
+    }
+    return String(args.device);
 }
 
 function targetEndpointsOf(attributes: AttributesData): number[] {

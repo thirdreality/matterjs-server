@@ -4,11 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Logger } from "@matter/main";
-import { readFile, rename, writeFile } from "node:fs/promises";
 import type { Expose } from "./Exposes.js";
-
-const logger = Logger.get("DeviceOptions");
+import { readJsonFile, writeJsonFile } from "./JsonFile.js";
 
 /** Bridge-side settings of one device, zigbee2mqtt's device options. */
 export interface DeviceOptions {
@@ -127,15 +124,9 @@ export class DeviceOptionsStore {
         if (this.#path === undefined) {
             return;
         }
-        try {
-            const parsed: unknown = JSON.parse(await readFile(this.#path, "utf8"));
-            if (typeof parsed === "object" && parsed !== null) {
-                this.#options = parsed as Record<string, DeviceOptions>;
-            }
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-                logger.warn(`Cannot read device options from ${this.#path}, starting without:`, error);
-            }
+        const stored = await readJsonFile(this.#path);
+        if (typeof stored === "object" && stored !== null) {
+            this.#options = stored as Record<string, DeviceOptions>;
         }
     }
 
@@ -153,12 +144,8 @@ export class DeviceOptionsStore {
     }
 
     async #save(): Promise<void> {
-        if (this.#path === undefined) {
-            return;
+        if (this.#path !== undefined) {
+            await writeJsonFile(this.#path, this.#options);
         }
-        // Write then rename, so a power cut leaves the old file or the new one, never half of one
-        const temporary = `${this.#path}.tmp`;
-        await writeFile(temporary, JSON.stringify(this.#options, null, 2));
-        await rename(temporary, this.#path);
     }
 }

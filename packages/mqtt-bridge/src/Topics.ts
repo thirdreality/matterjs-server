@@ -53,6 +53,11 @@ export class Topics {
         return `${this.#prefix}/bridge/devices`;
     }
 
+    /** The groups, zigbee2mqtt-style; retained. */
+    get bridgeGroups(): string {
+        return `${this.#prefix}/bridge/groups`;
+    }
+
     /** Server log messages, zigbee2mqtt-style; not retained. */
     get bridgeLogging(): string {
         return `${this.#prefix}/bridge/logging`;

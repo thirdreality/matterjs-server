@@ -64,6 +64,9 @@ decimal string — or `<node id>_<endpoint>` for a device behind a Matter bridge
 | `<prefix>/bridge/devices` | publish | yes | JSON array of known devices |
 | `<prefix>/bridge/event` | publish | no | Device joined / interviewed / left, see [bridge/event](#bridgeevent) |
 | `<prefix>/bridge/logging` | publish | no | Server log messages, see [bridge/logging](#bridgelogging) |
+| `<prefix>/bridge/groups` | publish | yes | The groups, see [Groups](#groups) |
+| `<prefix>/<group>` | publish | yes | Group state, see [Groups](#groups) |
+| `<prefix>/<group>/set`, `<prefix>/<group>/get` | subscribe | — | Group command, sent to every member; group state re-publish |
 | `<prefix>/bridge/commission_status` | publish | yes | Human-readable commissioning progress |
 | `<prefix>/bridge/commission_code` | publish | yes | State of the HA commission-code input (cleared after each request) |
 | `<prefix>/bridge/commission_mode` | publish | yes | Selected commission mode |
@@ -783,6 +786,12 @@ numbers). For every other command a payload that is not a JSON object is rejecte
 | `device/bind` | `{"from": <device>, "to": <device>, "from_endpoint": 1, "to_endpoint": 1, "clusters": ["OnOff"]}` (endpoints and clusters optional) | `{"from": …, "from_endpoint": 1, "to": …, "to_endpoint": 1, "clusters": ["OnOff", "LevelControl"], "failed": []}` |
 | `device/unbind` | as `device/bind` | as `device/bind` |
 | `device/options` | `{"id": <device>, "options": {"retain": false, "debounce": 1, "transition": 0.5, "invert_cover": true}}` (`null` removes an option) | `{"id": …, "from": {…}, "to": {…}, "restart_required": false}` |
+| `group/add` | `{"friendly_name": "living", "id": 3}` (`id` optional; a bare name works) | `{"friendly_name": "living", "id": 3}` |
+| `group/remove` | `{"id": <group name or id>}` | `{"id": 3, "friendly_name": "living"}` |
+| `group/rename` | `{"from": <group name or id>, "to": "lounge"}` | `{"from": …, "to": "lounge"}` |
+| `group/members/add` | `{"group": <group>, "device": <device>, "endpoint": 1}` (`endpoint` optional) | `{"group": "living", "device": …, "endpoint": 1}` |
+| `group/members/remove` | `{"group": <group>, "device": <device>, "endpoint": 1}` (without `endpoint`: every endpoint of the device) | `{"group": …, "device": …}` |
+| `group/members/remove_all` | `{"device": <device>}` | `{"device": …, "groups": ["living", …]}` |
 | `device/ota_update/check` | `{"id": <node id>}` | `{"id": …, "update_available": true, "latest_version": 16777236, "latest_version_string": "1.0.4", "latest_source": "main-net-dcl", "latest_release_notes": "…"}` |
 | `device/ota_update/update` | `{"id": <node id>, "software_version": 16777236}` | `{"id": …, "software_version": 16777236, "software_version_string": "1.0.4"}` |
 
@@ -871,6 +880,24 @@ address, else the topology id), `friendlyName` (the `<node>` segment, or the Bor
 `source` / `target` (`ieeeAddr`), `linkquality` / `lqi` (the measured LQI, else 255 / 170 / 85 for a
 strong / medium / weak link), `network`, `strength` and `routes`. Links known only from a route table are
 included with `routes: true`. `graphviz` answers a DOT digraph as a string. PlantUML is not supported.
+
+#### Groups
+
+zigbee2mqtt's group API on **software groups**: a group command is sent by the bridge to each member endpoint
+in turn, parsed exactly like a command to that device, so every property a device takes works for groups too.
+No Matter group, group key or ACL entry is set up on the devices, which keeps it safe and working over Thread
+and Wi-Fi alike; members therefore react one after the other rather than at the same instant, and a switch
+cannot be bound to a group. The topics and requests stay the same should native Matter groupcast be added.
+
+- `<prefix>/bridge/groups` (retained) lists `{"id", "friendly_name", "members": [{"device", "endpoint"}]}`.
+- `<prefix>/<group>` (retained) is the group state: `state` is `ON` while any member is on, every other property
+  comes from the first member that has it. It is re-published whenever a member's state is.
+- Home Assistant gets a JSON light when every member is a dimmable light (with the color modes and the mireds
+  range all members share), a switch when every member switches, else no entity.
+- A group name becomes a topic segment, so it cannot be `bridge`, look like a device key (`5`, `12_3`), name an
+  existing device, or contain `/`, `+` or `#`. Ids are 1–65527, chosen when not given.
+- A device that is removed, or that its Matter bridge drops, leaves all its groups.
+- Groups are kept in `mqtt-bridge-groups.json` in the server's storage directory.
 
 #### Device options
 

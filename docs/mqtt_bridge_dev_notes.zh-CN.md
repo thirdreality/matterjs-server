@@ -251,7 +251,8 @@ bridge 自身只增加不到 1 s。
   - [x] `last_seen`（默认关闭，`--mqtt-last-seen` 开启）
   - [x] `device/options`（retain、debounce、transition、invert_cover，存于 `mqtt-bridge-device-options.json`）
   - [x] `device/bind` / `unbind`（Matter Binding，开关类设备控灯依赖它；绑定到组待 groups 完成后再做）
-  - [ ] Matter groups（`bridge/groups`、`group/*`）
+  - [x] groups（`bridge/groups`、`group/*`）：软件组，bridge 依次单播给成员
+  - [ ] 原生 Matter 组播（组密钥、GroupKeyMap、组 ACL、AddGroup；上游只为认证提供控制器组密钥）——需真机验证，开关绑定到组依赖它
   - [x] `networkmap`（复用上游 Thread / Wi-Fi 拓扑，raw 与 graphviz）
 - [ ] 厂商私有 cluster（Aqara、Eve、Heiman、IKEA、Yeelight 等，定义已在 custom-clusters 包）按需映射
   - [ ] ThirdReality 计量 cluster（`0x130dfc02`：currentSummationDelivered、instantaneousDemand、multiplier、divisor）→ `energy` / `power`
