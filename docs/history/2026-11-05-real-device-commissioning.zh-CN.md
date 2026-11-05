@@ -78,10 +78,15 @@ PASE 用 5 s，整个配网 67 s。两次的链路层参数完全一样。
 ### 扫描期间连接被推迟
 
 07:13 那次，代理 07:13:26.4 收到连接命令，HCI 的 `LE Create Connection` 却到 07:13:35.9 才发出。
-中间 BlueZ 一直在扫描，matter.js 大约每 10 s 重启一次扫描，连接请求恰好在一次重启时才发出。
 开关那次的抓包也一样：`Discovering: Disabled` 之后立刻发出连接请求。
-两次抓包都支持"扫描期间 BlueZ 把 LE 连接压到扫描间隙才发"，而 bleak 的超时是 10 s，所以只要间隙晚一点就会失败。
-Matter 的 C++ SDK 在 Linux 上是先停止扫描再连接的。
+
+08:54 灯带重新配网时（`hci-20261105-085256.snoop`）看得最清楚：代理只收到一次 `start_scan`（08:54:28.5），
+BlueZ 随后**自己**每约 10.4 s 开始新一轮 LE 发现（`Start Service Discovery`）。连接命令 08:54:29.46 到达，
+设备的广播是新的，但 `LE Create Connection` 直到这一轮发现结束（`Discovering: Disabled`，约 9.5 s 后）才发出。
+（之前把这个 10 s 周期写成"matter.js 重启扫描"，是错的。）
+
+三次抓包一致：**发现进行中，LE 连接请求要等当前这一轮发现结束才发出**，最长约 10 s；而 bleak 的连接超时也是 10 s，
+晚一点就会失败（06:50 那次很可能就是这样，但没有抓包）。Matter 的 C++ SDK 在 Linux 上是先停止扫描再连接的。
 
 另外，链路建立偶尔失败：06:55–06:57 直接连接 6 次，有 2 次是 `Connection Failed to be Established (0x3E)`。
 
@@ -109,6 +114,10 @@ Matter 的 C++ SDK 在 Linux 上是先停止扫描再连接的。
 `Waiting up to 3 s for … to advertise before connecting`，以及等不到时的 `… did not advertise within 3 s; not connecting`。
 
 两个补丁都与 MTU 补丁互不依赖；在 site-packages 目录下 `patch -p1` 也能打，buildroot 可直接用。
+
+08:54 装上第二版后，灯带移除、恢复出厂、重新配网，一次成功（node 14）。但这次走的是普通路径：连接命令到达时
+设备 0.1 s 前刚广播过，日志里没有 `Waiting…`，所以只说明新补丁没有破坏正常配网，**它要处理的旧记录情况仍未在真机上验证**。
+要验证，需先让 matter.js 扫到设备但不连接（例如用鉴别码不匹配的配网码发起一次短发现），等 1–2 分钟后再正式配网。
 
 ### 控制测试（`full-strip-20261105-072126.log`）
 
