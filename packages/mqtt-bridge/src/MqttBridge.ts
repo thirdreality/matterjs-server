@@ -76,6 +76,11 @@ export interface MqttBridgeOptions {
     clientId?: string;
     /** Server version, published in `bridge/info`. */
     serverVersion?: string;
+    /**
+     * Publish Home Assistant MQTT discovery (default true). Off, nothing is announced and the retained
+     * discovery of earlier runs is cleared by the stale-topic reconciliation, as it is no longer expected.
+     */
+    homeAssistantDiscovery?: boolean;
     /** Lowest log level forwarded to `bridge/logging` (`debug`, `info`, `warning`, `error`, `none`). Default `info`. */
     logLevel?: string;
     /** Add a `last_seen` timestamp to device states (zigbee2mqtt's `advanced.last_seen`, off by default). */
@@ -116,6 +121,7 @@ export class MqttBridge {
     readonly #connection: BridgeConnection;
     readonly #serverVersion?: string;
     readonly #lastSeenEnabled: boolean;
+    readonly #discoveryEnabled: boolean;
     readonly #logLevel: string;
     #stopLogForwarding?: () => void;
     #deviceOptions: DeviceOptionsStore;
@@ -165,6 +171,7 @@ export class MqttBridge {
                   };
         this.#serverVersion = options.serverVersion;
         this.#lastSeenEnabled = options.lastSeen === true;
+        this.#discoveryEnabled = options.homeAssistantDiscovery !== false;
         this.#logLevel = options.logLevel ?? "info";
         this.#deviceOptions = new DeviceOptionsStore(
             options.deviceOptionsFile ?? storageFile(commandContext, "mqtt-bridge-device-options.json"),
@@ -615,7 +622,10 @@ export class MqttBridge {
     /** Publish the complete retained picture: all devices, device list, info and online state. */
     #publishAll(): void {
         this.#bridgeDiscoveryTopics = [];
-        for (const message of bridgeDiscoveryMessagesOf(this.#serverVersion, this.#topics)) {
+        const bridgeDiscovery = this.#discoveryEnabled
+            ? bridgeDiscoveryMessagesOf(this.#serverVersion, this.#topics)
+            : [];
+        for (const message of bridgeDiscovery) {
             this.#bridgeDiscoveryTopics.push(message.topic);
             this.#connection.publish(message.topic, message.payload, true);
         }
@@ -782,6 +792,9 @@ export class MqttBridge {
     }
 
     #publishGroupDiscovery(group: Group): void {
+        if (!this.#discoveryEnabled) {
+            return;
+        }
         const caps = group.members
             .map(({ device, endpoint }) => this.#memberOf(device, endpoint)?.caps)
             .filter(caps => caps !== undefined);
@@ -1094,6 +1107,13 @@ export class MqttBridge {
 
     /** Publish retained HA discovery for the device; clear topics that disappeared. */
     #publishDiscovery(entry: DeviceEntry, attributes: AttributesData, previousTopics: string[]): void {
+        if (!this.#discoveryEnabled) {
+            entry.discoveryTopics = [];
+            for (const topic of previousTopics) {
+                this.#connection.clearRetained(topic);
+            }
+            return;
+        }
         const basic = this.#basicInformationOf(entry);
         const messages = discoveryMessagesOf(
             {

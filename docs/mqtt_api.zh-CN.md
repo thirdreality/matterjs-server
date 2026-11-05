@@ -23,6 +23,7 @@ matter-server --mqtt-url mqtt://user:password@localhost:1883 --mqtt-prefix matte
 | `--mqtt-client-id <id>` | `MQTT_CLIENT_ID` | `matter2mqtt` | MQTT client id |
 | `--mqtt-last-seen` | `MQTT_LAST_SEEN` | 关闭 | 在每个设备状态里加 `last_seen`，见 [last_seen](#last_seen) |
 | `--mqtt-log-level <level>` | `MQTT_LOG_LEVEL` | `info` | 推送到 `bridge/logging` 的最低级别：`debug`、`info`、`warning`、`error` 或 `none` |
+| `--mqtt-ha-discovery [value]` | `MQTT_HA_DISCOVERY` | 开启 | Home Assistant discovery；`false` 关闭，见 [Home Assistant Discovery](#home-assistant-discovery) |
 
 前缀可以包含斜杠（如 `home/matter`），但不能为空、不能以 `/` 开头或结尾、不能包含 `+`、`#` 或空白字符。前缀非法或
 URL 协议不支持时，桥在启动阶段直接构造失败。
@@ -863,7 +864,9 @@ Thread 路由器与 Wi-Fi 接入点为 `Router`，其余为 `EndDevice`）、`ne
 ## Home Assistant Discovery
 
 桥在固定的 `homeassistant/` 前缀下（不可配置）发布 retained 的
-[MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery) 配置：
+[MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery) 配置。不使用 Home Assistant 时可用
+`--mqtt-ha-discovery false` 关闭：桥本身、设备与组都不再发布 discovery，之前运行留在 broker 上的 discovery 会在下次连接时
+被清除，仍在监听的 Home Assistant 里对应实体随之消失。状态、命令与所有 `bridge/*` topic 不受影响。
 
 ```
 homeassistant/<component>/matter2mqtt_bridge/<object_id>/config

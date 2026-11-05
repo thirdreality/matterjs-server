@@ -266,6 +266,7 @@ async function start() {
                 clientId: cliOptions.mqttClientId,
                 lastSeen: cliOptions.mqttLastSeen,
                 logLevel: cliOptions.mqttLogLevel,
+                homeAssistantDiscovery: cliOptions.mqttHaDiscovery,
                 serverVersion: MATTER_SERVER_VERSION,
             },
             { config, controller },

@@ -102,6 +102,7 @@ export interface CliOptions {
     mqttClientId: string;
     mqttLastSeen: boolean;
     mqttLogLevel: string;
+    mqttHaDiscovery: boolean;
 }
 
 function parseIntOption(value: string): number {
@@ -443,6 +444,16 @@ export function parseCliArgs(argv?: string[]): CliOptions {
                 .default("info")
                 .env("MQTT_LOG_LEVEL"),
         )
+        .addOption(
+            new Option(
+                "--mqtt-ha-discovery [value]",
+                "Publish Home Assistant MQTT discovery for the bridge, its devices and groups; with false, discovery published before is cleared",
+            )
+                .argParser(parseBooleanEnv)
+                .preset(true)
+                .default(true)
+                .env("MQTT_HA_DISCOVERY"),
+        )
         // Deprecated options - still accepted for backwards compatibility
         .addOption(
             new Option("--log-level-sdk <level>", "Matter SDK logging level (deprecated, no longer used)")
@@ -541,6 +552,7 @@ export function parseCliArgs(argv?: string[]): CliOptions {
         mqttClientId: opts.mqttClientId,
         mqttLastSeen: opts.mqttLastSeen,
         mqttLogLevel: opts.mqttLogLevel,
+        mqttHaDiscovery: opts.mqttHaDiscovery,
     };
 }
 

@@ -20,6 +20,7 @@ export interface HarnessOptions {
     withCommands?: boolean;
     endpointParents?: Record<string, number>;
     isBridge?: boolean;
+    homeAssistantDiscovery?: boolean;
 }
 
 /**
@@ -80,7 +81,12 @@ export function harness(initial: Record<string, unknown>, options: HarnessOption
         : undefined;
     const bridge = new MqttBridge(
         commandHandler,
-        { url: "mqtt://test", connection, lastSeen: options.lastSeen },
+        {
+            url: "mqtt://test",
+            connection,
+            lastSeen: options.lastSeen,
+            homeAssistantDiscovery: options.homeAssistantDiscovery,
+        },
         commandContext as never,
     );
     const last = (topic: string) => published.filter(p => p.topic === topic).at(-1)?.payload;

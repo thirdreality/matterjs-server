@@ -26,6 +26,7 @@ matter-server --mqtt-url mqtt://user:password@localhost:1883 --mqtt-prefix matte
 | `--mqtt-client-id <id>` | `MQTT_CLIENT_ID` | `matter2mqtt` | MQTT client id |
 | `--mqtt-last-seen` | `MQTT_LAST_SEEN` | off | Add `last_seen` to every device state, see [last_seen](#last_seen) |
 | `--mqtt-log-level <level>` | `MQTT_LOG_LEVEL` | `info` | Lowest level forwarded to `bridge/logging`: `debug`, `info`, `warning`, `error`, or `none` |
+| `--mqtt-ha-discovery [value]` | `MQTT_HA_DISCOVERY` | on | Home Assistant discovery; `false` turns it off, see [Home Assistant Discovery](#home-assistant-discovery) |
 
 The prefix may contain slashes (`home/matter`) but must not be empty, start or end with `/`, or contain
 `+`, `#` or whitespace. An invalid prefix or an unsupported URL scheme fails bridge construction at startup.
@@ -947,7 +948,10 @@ server stays down.
 ## Home Assistant Discovery
 
 The bridge publishes retained [MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery)
-configuration under the fixed `homeassistant/` prefix (not configurable):
+configuration under the fixed `homeassistant/` prefix (not configurable). `--mqtt-ha-discovery false` turns
+it off for setups without Home Assistant: nothing is announced — not the bridge, its devices or groups — and the
+discovery an earlier run left on the broker is cleared on the next connect, so the entities disappear from a
+Home Assistant that still listens. State, commands and every `bridge/*` topic are unaffected.
 
 ```
 homeassistant/<component>/matter2mqtt_bridge/<object_id>/config
