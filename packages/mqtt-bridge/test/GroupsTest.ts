@@ -161,6 +161,7 @@ describe("Groups", () => {
                 path: { endpointId: 3, clusterId: 6, attributeId: 0 },
                 value: false,
             });
+            await h.settle();
             expect(JSON.parse(h.last("matter2mqtt/living") ?? "{}").state).to.equal("OFF");
             await h.bridge.stop();
         });

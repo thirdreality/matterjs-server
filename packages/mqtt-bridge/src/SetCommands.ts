@@ -113,8 +113,22 @@ export function parseSetObject(
 
     // zigbee2mqtt ordering: turning off comes first (some bulbs reject color changes while off),
     // anything else last (set color/color_temp before turning on)
-    const colorCommands = [colorTempCommand, ...colorSetCommands, ...moveStepCommands].filter(c => c !== undefined);
     const turningOff = stateCommand?.commandName === "off" || (stateCommand?.data.level as number | undefined) === 0;
+    const turningOn =
+        timedCommand !== undefined ||
+        (!turningOff &&
+            (stateCommand?.commandName === "on" ||
+                stateCommand?.commandName === "moveToLevelWithOnOff" ||
+                (stateCommand?.commandName === "toggle" && currentOn === false)));
+    // A light that is still off ignores color commands unless told to execute them anyway (Options
+    // ExecuteIfOff), so color sent ahead of turning on would be lost and the light come on in its old color
+    const colorCommands = [colorTempCommand, ...colorSetCommands, ...moveStepCommands]
+        .filter(c => c !== undefined)
+        .map(command =>
+            turningOn && command.clusterId === COLOR_CLUSTER_ID
+                ? { ...command, data: { ...command.data, optionsMask: 1, optionsOverride: 1 } }
+                : command,
+        );
     const commands = turningOff
         ? [stateCommand as DeviceCommand, ...colorCommands]
         : [

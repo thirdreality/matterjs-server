@@ -67,6 +67,9 @@ const OTA_CHECK_START_DELAY_MS = 30 * 1000;
 /** Gap between nodes, so a pass does not burst DCL queries. */
 const OTA_CHECK_NODE_GAP_MS = 5 * 1000;
 
+/** How long attribute reports of one device are collected into one state publish. */
+const STATE_COALESCE_MS = 20;
+
 export interface MqttBridgeOptions {
     /** Broker URL, e.g. `mqtt://user:password@localhost:1883`. */
     url: string;
@@ -128,8 +131,10 @@ export class MqttBridge {
     readonly #groups: GroupStore;
     /** The retained discovery topic published for each group, by group id. */
     readonly #groupDiscovery = new Map<number, string>();
-    /** Pending debounced state publishes, by device key. */
+    /** Pending state publishes, by device key. */
     readonly #debounced = new Map<string, ReturnType<typeof setTimeout>>();
+    /** The state payload last published per device, so an unchanged state is not published again. */
+    readonly #lastStates = new Map<string, string>();
     /** When each device was last heard from (any attribute report or event), by device key. */
     readonly #lastSeen = new Map<string, number>();
     readonly #observers = new ObserverGroup();
@@ -335,7 +340,7 @@ export class MqttBridge {
         if (entry === undefined) {
             return;
         }
-        this.#publishDeviceState(entry);
+        this.#scheduleStatePublish(entry);
     }
 
     /** zigbee2mqtt-style `action` for button events, on the non-retained `<node>/action` topic. */
@@ -552,6 +557,8 @@ export class MqttBridge {
                 logger.info(`Read for "${device}" failed, publishing the cached state:`, error);
             }
         }
+        // Answered even when nothing changed or the read failed, as zigbee2mqtt does
+        this.#lastStates.delete(entry.key);
         this.#publishDeviceState(entry, fresh);
     }
 
@@ -621,6 +628,8 @@ export class MqttBridge {
 
     /** Publish the complete retained picture: all devices, device list, info and online state. */
     #publishAll(): void {
+        // After a reconnect the broker may have lost the retained states: publish all of them again
+        this.#lastStates.clear();
         this.#bridgeDiscoveryTopics = [];
         const bridgeDiscovery = this.#discoveryEnabled
             ? bridgeDiscoveryMessagesOf(this.#serverVersion, this.#topics)
@@ -693,23 +702,31 @@ export class MqttBridge {
      * Publish the merged zigbee2mqtt-style device state to the device's single topic. `fresh` carries
      * values read directly from the device, which take precedence over the subscription cache.
      */
-    #publishDeviceState(entry: DeviceEntry, fresh?: AttributesData): void {
-        const debounce = this.#deviceOptions.get(entry.key).debounce ?? 0;
-        // A /get answer is published at once; changes within the debounce window go out together
-        if (debounce > 0 && fresh === undefined) {
-            if (!this.#debounced.has(entry.key)) {
-                const timer = setTimeout(() => {
-                    this.#debounced.delete(entry.key);
-                    const current = this.#devices.get(entry.key);
-                    if (current !== undefined) {
-                        this.#publishStateNow(current);
-                    }
-                }, debounce * 1000);
-                timer.unref?.();
-                this.#debounced.set(entry.key, timer);
-            }
+    /**
+     * Publish an attribute change after a short window, together with whatever else changes within it: a
+     * device reports one command's effect as several attributes a millisecond apart (x, then y), and
+     * publishing each would show states that never existed. The device's `debounce` option widens the window.
+     */
+    #scheduleStatePublish(entry: DeviceEntry): void {
+        if (this.#debounced.has(entry.key)) {
             return;
         }
+        const debounce = this.#deviceOptions.get(entry.key).debounce ?? 0;
+        const timer = setTimeout(
+            () => {
+                this.#debounced.delete(entry.key);
+                const current = this.#devices.get(entry.key);
+                if (current !== undefined) {
+                    this.#publishDeviceState(current);
+                }
+            },
+            Math.max(debounce * 1000, STATE_COALESCE_MS),
+        );
+        timer.unref?.();
+        this.#debounced.set(entry.key, timer);
+    }
+
+    #publishDeviceState(entry: DeviceEntry, fresh?: AttributesData): void {
         this.#publishStateNow(entry, fresh);
     }
 
@@ -739,15 +756,16 @@ export class MqttBridge {
         if (Object.keys(state).length === 0) {
             // Also clears what this topic held before, e.g. a bridge's state from before its devices were split off
             this.#connection.clearRetained(this.#topics.deviceState(entry.key));
+            this.#lastStates.delete(entry.key);
             return;
         }
         const options = this.#deviceOptions.get(entry.key);
-        const published = options.invert_cover ? invertCover(state) : state;
-        this.#connection.publish(
-            this.#topics.deviceState(entry.key),
-            JSON.stringify(published),
-            options.retain !== false,
-        );
+        const payload = JSON.stringify(options.invert_cover ? invertCover(state) : state);
+        if (this.#lastStates.get(entry.key) === payload) {
+            return;
+        }
+        this.#lastStates.set(entry.key, payload);
+        this.#connection.publish(this.#topics.deviceState(entry.key), payload, options.retain !== false);
         for (const group of this.#groups.list()) {
             if (group.members.some(member => member.device === entry.key)) {
                 this.#publishGroupState(group);
@@ -924,6 +942,8 @@ export class MqttBridge {
             clearTimeout(timer);
             this.#debounced.delete(device);
         }
+        // Published again under the new options, even when the state itself is unchanged
+        this.#lastStates.delete(device);
         this.#publishStateNow(entry);
         this.#publishDevices();
         return { from, to };
@@ -1160,6 +1180,7 @@ export class MqttBridge {
             return;
         }
         this.#devices.delete(device);
+        this.#lastStates.delete(device);
         void this.#removeDeviceFromGroups(device).catch(error =>
             logger.warn(`Failed to remove device ${device} from its groups:`, error),
         );

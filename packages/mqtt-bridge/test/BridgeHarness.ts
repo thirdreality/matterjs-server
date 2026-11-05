@@ -103,6 +103,8 @@ export function harness(initial: Record<string, unknown>, options: HarnessOption
         last,
         bridgeEvents,
         send: (topic: string, payload: string) => onMessage(topic, payload),
+        /** Waits out the bridge's window for collecting attribute reports into one state publish. */
+        settle: () => new Promise(resolve => setTimeout(resolve, 40)),
         setAttributes: (next: Record<string, unknown>) => {
             attributes = next;
         },

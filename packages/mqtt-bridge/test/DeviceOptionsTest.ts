@@ -115,16 +115,19 @@ describe("DeviceOptions", () => {
             const h = harness(BULB, { withCommands: true, isBridge: false });
             await h.bridge.start();
             await setOptions(h, { debounce: 0.05 });
-            const before = h.published.filter(p => p.topic === "matter2mqtt/12").length;
-            for (let i = 0; i < 3; i++) {
+            const states = () => h.published.filter(p => p.topic === "matter2mqtt/12");
+            const before = states().length;
+            for (const level of [10, 20, 30]) {
+                h.setAttributes({ ...BULB, "1/8/0": level });
                 h.events.attributeChanged.emit(h.nodeId, {
                     path: { endpointId: 1, clusterId: 8, attributeId: 0 },
-                    value: i,
+                    value: level,
                 });
             }
-            expect(h.published.filter(p => p.topic === "matter2mqtt/12").length).to.equal(before);
+            expect(states().length).to.equal(before);
             await new Promise(resolve => setTimeout(resolve, 120));
-            expect(h.published.filter(p => p.topic === "matter2mqtt/12").length).to.equal(before + 1);
+            expect(states().length).to.equal(before + 1);
+            expect(JSON.parse(states().at(-1)?.payload ?? "{}").brightness).to.equal(30);
             await h.bridge.stop();
         });
 

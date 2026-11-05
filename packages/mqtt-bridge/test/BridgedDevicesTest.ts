@@ -135,6 +135,7 @@ describe("MqttBridge with a Matter bridge", () => {
             path: { endpointId: 5, clusterId: 6, attributeId: 0 },
             value: true,
         });
+        await h.settle();
         expect(JSON.parse(h.last("matter2mqtt/12_4") ?? "{}")).to.deep.equal({ state_5: "ON", state_6: "ON" });
         await h.bridge.stop();
     });
@@ -223,6 +224,7 @@ describe("MqttBridge with a Matter bridge", () => {
                 path: { endpointId: 3, clusterId: 6, attributeId: 0 },
                 value: true,
             });
+            await h.settle();
             const seen = Date.parse(JSON.parse(h.last("matter2mqtt/12_3") ?? "{}").last_seen);
             expect(seen).to.be.at.least(before - 1000);
             expect(JSON.parse(h.last("matter2mqtt/12_4") ?? "{}").last_seen).to.equal(undefined);
