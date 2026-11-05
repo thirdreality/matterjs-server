@@ -718,6 +718,7 @@ zigbee2mqtt 的 `position`、`tilt` 从关（0）数到开（100）；Matter 从
 | `thread_dataset` | `{"dataset": "<hex TLV>"}` | `{}` |
 | `restart` | `{}` | `{}` |
 | `health_check` | `{}` | `{"healthy": true, "process": {"uptime_sec": …, "memory_usage_mb": …}, "os": {"load_average": […], "memory_percent": …}, "devices": {"count": …}}` |
+| `networkmap` | `{"type": "raw"\|"graphviz", "routes": false, "refresh": true}`（也可直接发裸载荷 `raw` / `graphviz`） | `{"type": …, "routes": …, "value": <拓扑图>}` |
 | `device/remove` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/interview` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/rename` | `{"id": <node id>, "name": "…"}` | `{"id": <node id>, "name": "…"}` |
@@ -790,6 +791,15 @@ LevelControl、ColorControl、WindowCovering、DoorLock、Thermostat、FanContro
 
 **device/unbind** 移除这些 Binding 目标，再从形如 `device/bind` 所加的 ACL 条目（Operate、CASE、源节点是唯一主体）
 中移除对应 cluster，其他条目保持不变。
+
+**networkmap** 返回 zigbee2mqtt 工具读取的网络拓扑图，由 server 的 Thread 与 Wi-Fi 拓扑生成（与 dashboard 网络视图
+是同一张图）。除非 `refresh` 为 `false`，bridge 会先读取各节点的邻居表与路由表，类似 zigbee2mqtt 的扫描；这会产生
+无线流量，Mesh 较大时需要一些时间。`raw` 返回 `{"nodes": […], "links": […]}`：节点带 `ieeeAddr`（Thread 扩展地址，
+没有则为拓扑 id）、`friendlyName`（`<node>` 段，或 Border Router 的主机名）、`type`（Border Router 为 `Coordinator`，
+Thread 路由器与 Wi-Fi 接入点为 `Router`，其余为 `EndDevice`）、`networkAddress`（RLOC16），以及含角色、网络与可用性的
+`matter` 对象；链路带 `source` / `target`（`ieeeAddr`）、`linkquality` / `lqi`（实测 LQI，没有则强 / 中 / 弱分别记为
+255 / 170 / 85）、`network`、`strength` 与 `routes`。`routes: true` 时一并包含只在路由表中出现的链路。`graphviz`
+返回 DOT 有向图字符串。不支持 PlantUML。
 
 #### 设备选项
 

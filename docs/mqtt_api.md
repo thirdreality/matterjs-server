@@ -775,6 +775,7 @@ numbers). For every other command a payload that is not a JSON object is rejecte
 | `thread_dataset` | `{"dataset": "<hex TLV>"}` | `{}` |
 | `restart` | `{}` | `{}` |
 | `health_check` | `{}` | `{"healthy": true, "process": {"uptime_sec": …, "memory_usage_mb": …}, "os": {"load_average": […], "memory_percent": …}, "devices": {"count": …}}` |
+| `networkmap` | `{"type": "raw"\|"graphviz", "routes": false, "refresh": true}` (a bare `raw` / `graphviz` works too) | `{"type": …, "routes": …, "value": <map>}` |
 | `device/remove` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/interview` | `{"id": <node id>}` | `{"id": <node id>}` |
 | `device/rename` | `{"id": <node id>, "name": "…"}` | `{"id": <node id>, "name": "…"}` |
@@ -859,6 +860,17 @@ yet.
 
 **device/unbind** removes those binding targets, then removes the clusters from ACL entries shaped like the ones
 `device/bind` adds (Operate, CASE, the source as the only subject). Other entries are left alone.
+
+**networkmap** answers with the network map zigbee2mqtt tools read, built from the server's Thread and Wi-Fi
+topology (the same graph as the dashboard's network view). Unless `refresh` is `false` the bridge first reads
+the nodes' neighbor and route tables, as zigbee2mqtt scans the network; this costs radio traffic and can take a
+while on a large mesh. `raw` answers `{"nodes": […], "links": […]}`: a node has `ieeeAddr` (the Thread extended
+address, else the topology id), `friendlyName` (the `<node>` segment, or the Border Router's host name),
+`type` (`Coordinator` for a Border Router, `Router` for Thread routers and Wi-Fi access points, else
+`EndDevice`), `networkAddress` (RLOC16) and a `matter` object with the role, network and availability; a link has
+`source` / `target` (`ieeeAddr`), `linkquality` / `lqi` (the measured LQI, else 255 / 170 / 85 for a
+strong / medium / weak link), `network`, `strength` and `routes`. Links known only from a route table are
+included with `routes: true`. `graphviz` answers a DOT digraph as a string. PlantUML is not supported.
 
 #### Device options
 

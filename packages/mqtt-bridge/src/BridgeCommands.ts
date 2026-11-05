@@ -33,6 +33,7 @@ import {
     withoutBinding,
     type BindingRequest,
 } from "./Binding.js";
+import { graphvizNetworkMapOf, rawNetworkMapOf } from "./NetworkMap.js";
 import type { OtaTracker } from "./OtaState.js";
 
 const logger = Logger.get("BridgeCommands");
@@ -47,6 +48,7 @@ const MAX_DISCOVERY_TIMEOUT_S = 48 * 60 * 60;
 const BARE_PAYLOAD_KEYS: Record<string, string> = {
     commission: "code",
     parse_onboarding_payload: "code",
+    networkmap: "type",
     commission_mode: "mode",
     wifi_ssid: "ssid",
     wifi_password: "password",
@@ -252,6 +254,27 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
                 memory_percent: Math.round((1 - freemem() / totalmem()) * 10000) / 100,
             },
             devices: { count: commandHandler.getNodeIds().length },
+        };
+    },
+
+    /**
+     * zigbee2mqtt `networkmap` (`raw` or `graphviz`) from the controller's Thread / Wi-Fi topology. Reads the
+     * nodes' neighbor tables first, as zigbee2mqtt scans, unless `refresh` is false.
+     */
+    networkmap: async (args, { controller }) => {
+        const type = args.type ?? "raw";
+        if (type !== "raw" && type !== "graphviz") {
+            throw new Error(`"type" must be "raw" or "graphviz"`);
+        }
+        const routes = args.routes === true;
+        const topology =
+            args.refresh === false
+                ? controller.networkTopology.getTopology()
+                : await controller.networkTopology.refresh();
+        return {
+            type,
+            routes,
+            value: type === "raw" ? rawNetworkMapOf(topology, routes) : graphvizNetworkMapOf(topology, routes),
         };
     },
 
