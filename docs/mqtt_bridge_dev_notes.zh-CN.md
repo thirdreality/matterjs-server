@@ -3,7 +3,7 @@
 记录 `tr/feature/mqtt-bridge` 在合并上游 1.5.5、对齐 zigbee2mqtt 过程中遇到的问题，以及留给后来者的教训。
 其中「踩坑记录」一节与实现语言无关，C++ 版 matter2mqtt 同样适用。
 
-最后更新：2026-11-04。
+最后更新：2026-11-05。按时间记录的真机测试见 [history/](history/)。
 
 ## 目标
 
@@ -178,6 +178,19 @@ Matter 的 AccessControl ACL 与 Binding 都只能整张表写入，没有"追�
 - `IntegrationTest` 会发真实的 mDNS 广播、起真实的 Matter 节点，会干扰同机或同网段的其他测试，跑之前先确认。
 - 部分 matter-server 测试（DCL、unix socket 等）会 spawn 真实服务进程，同样会发 mDNS。
 
+### 18. BLE 配网：问题多在 BLE 这一层，而不在 Matter 协议栈
+
+详见 [2026-11-05 真机测试记录](history/2026-11-05-real-device-commissioning.zh-CN.md)。
+
+- **BTP 分段不是越大越好。** 有的设备每个链路层包只收 27 字节，ATT 写入一旦需要链路层分片，链路就断
+  （ThirdReality Thread 开关）。而 WiFi 夜灯又靠大分段才配得上。分段大小要按设备的链路层接收能力来定，
+  不能全局写死。
+- **设备地址不能当长期标识。** 用随机静态地址的设备每次进入配网模式都会换地址；按设备记住的东西要用 VID/PID。
+- **BlueZ 会删除不再扫描到的设备对象。** 缓存的设备句柄会过期，连接失败时要按地址重新找一次，不能直接判失败。
+- **扫描期间，BlueZ 会把 LE 连接请求推迟到扫描间隙才发。** 连接前应先停止扫描，否则 10 s 左右的连接超时很容易被耗光。
+- **排查要以 HCI 抓包为主证据**（`btmon -w` 写文件）。BLE 代理的 DEBUG 日志会把 journald 刷爆，轮转掉要看的部分。
+- **不要用 `bluetoothctl` 碰正在配网的设备**，它操作的是同一个 BlueZ 设备对象，会直接断开配网连接。
+
 ## 已完成
 
 | 提交 | 内容 |
@@ -276,7 +289,7 @@ bridge 自身只增加不到 1 s。
   - [x] 烟雾 / CO 报警的控制：自检（SelfTestRequest）、灵敏度（SmokeSensitivityLevel，可写）
 - [x] **B3 按键与事件**：GenericSwitch、Doorbell → `action`（`single` / `double` / `hold` / `release` 等），HA event / device_trigger
 - [x] **B4 灯与插座通用参数**：`power_on_behavior`、`effect`（identify）、`color_temp_startup`、上电亮度（`level_config`）、`color_options`、`on_time` / `off_wait_time`
-- [x] **B7 Matter 网桥（P2）**：子设备拆成独立 z2m 设备（待用 ThirdReality Smart Bridge MZ1 等真机验证）
+- [x] **B7 Matter 网桥（P2）**：子设备拆成独立 z2m 设备（2026-11-05 已用 ThirdReality Smart Bridge MZ1 + 4 个 zigbee 子设备真机验证）
 - [ ] **B5 家电**：洗碗机、洗衣机、烘干机、冰箱 / 温控柜、烤箱、灶台、微波炉（OperationalState、各 Mode cluster、TemperatureControl）；扫地机 → HA `vacuum`
 - [ ] **B6 能源**：EnergyEvse、WaterHeater、HeatPump、SolarPower、BatteryStorage、DeviceEnergyManagement、电表 / 电价
 - [ ] **C 桥级功能（其余）**
@@ -294,6 +307,11 @@ bridge 自身只增加不到 1 s。
   - [x] `networkmap`（复用上游 Thread / Wi-Fi 拓扑，raw 与 graphviz）
 - [ ] 厂商私有 cluster（Aqara、Eve、Heiman、IKEA、Yeelight 等，定义已在 custom-clusters 包）按需映射
   - [ ] ThirdReality 计量 cluster（`0x130dfc02`：currentSummationDelivered、instantaneousDemand、multiplier、divisor）→ `energy` / `power`
+  - [ ] ThirdReality 人体传感器厂商 cluster（`0x130dfc04`，MZ1 下的 3RMS16BZ）
+- [ ] **真机测试发现**（[2026-11-05 记录](history/2026-11-05-real-device-commissioning.zh-CN.md) 第 4、5 节）
+  - [ ] `/set` 成功但状态没变时也发布一次状态（对齐 z2m）
+  - [ ] `color_temp_startup` 以 ColorControl 的 CT 特性为准
+  - [ ] BLE 代理：连接前停止扫描；BTP 分段按设备回退（installer 补丁）
 
 每批：单独提交、带测试、同步 `docs/mqtt_api.md` 与 `docs/mqtt_api.zh-CN.md`，构建与测试通过 `/root/lowmem-run.sh` 运行。
 
