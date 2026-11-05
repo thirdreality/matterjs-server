@@ -101,6 +101,7 @@ export interface CliOptions {
     mqttPrefix: string;
     mqttClientId: string;
     mqttLastSeen: boolean;
+    mqttLogLevel: string;
 }
 
 function parseIntOption(value: string): number {
@@ -433,6 +434,15 @@ export function parseCliArgs(argv?: string[]): CliOptions {
                 .default(false)
                 .env("MQTT_LAST_SEEN"),
         )
+        .addOption(
+            new Option(
+                "--mqtt-log-level <level>",
+                "Lowest level of server log messages published on <prefix>/bridge/logging, or none",
+            )
+                .choices(["debug", "info", "warning", "error", "none"])
+                .default("info")
+                .env("MQTT_LOG_LEVEL"),
+        )
         // Deprecated options - still accepted for backwards compatibility
         .addOption(
             new Option("--log-level-sdk <level>", "Matter SDK logging level (deprecated, no longer used)")
@@ -530,6 +540,7 @@ export function parseCliArgs(argv?: string[]): CliOptions {
         mqttPrefix: opts.mqttPrefix,
         mqttClientId: opts.mqttClientId,
         mqttLastSeen: opts.mqttLastSeen,
+        mqttLogLevel: opts.mqttLogLevel,
     };
 }
 

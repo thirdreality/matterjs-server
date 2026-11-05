@@ -25,6 +25,7 @@ matter-server --mqtt-url mqtt://user:password@localhost:1883 --mqtt-prefix matte
 | `--mqtt-prefix <prefix>` | `MQTT_PREFIX` | `matter2mqtt` | Topic prefix for all bridge topics |
 | `--mqtt-client-id <id>` | `MQTT_CLIENT_ID` | `matter2mqtt` | MQTT client id |
 | `--mqtt-last-seen` | `MQTT_LAST_SEEN` | off | Add `last_seen` to every device state, see [last_seen](#last_seen) |
+| `--mqtt-log-level <level>` | `MQTT_LOG_LEVEL` | `info` | Lowest level forwarded to `bridge/logging`: `debug`, `info`, `warning`, `error`, or `none` |
 
 The prefix may contain slashes (`home/matter`) but must not be empty, start or end with `/`, or contain
 `+`, `#` or whitespace. An invalid prefix or an unsupported URL scheme fails bridge construction at startup.
@@ -62,6 +63,7 @@ decimal string — or `<node id>_<endpoint>` for a device behind a Matter bridge
 | `<prefix>/bridge/info` | publish | yes | Server version, BLE flags, prefix |
 | `<prefix>/bridge/devices` | publish | yes | JSON array of known devices |
 | `<prefix>/bridge/event` | publish | no | Device joined / interviewed / left, see [bridge/event](#bridgeevent) |
+| `<prefix>/bridge/logging` | publish | no | Server log messages, see [bridge/logging](#bridgelogging) |
 | `<prefix>/bridge/commission_status` | publish | yes | Human-readable commissioning progress |
 | `<prefix>/bridge/commission_code` | publish | yes | State of the HA commission-code input (cleared after each request) |
 | `<prefix>/bridge/commission_mode` | publish | yes | Selected commission mode |
@@ -127,6 +129,20 @@ zigbee2mqtt-style lifecycle events, not retained, as `{"type": …, "data": {…
 | `device_leave` | A node was removed, or a Matter bridge dropped a device | `friendly_name`, `id` |
 
 Devices already known when the bridge starts or reconnects are not announced again.
+
+### bridge/logging
+
+The server's log messages at `--mqtt-log-level` and above, one per message, zigbee2mqtt-style and not
+retained, so the log can be followed remotely without access to the hub:
+
+```json
+{ "level": "warning", "message": "Command \"off\" failed for node 5: …", "namespace": "MqttBridge" }
+```
+
+`level` is `debug`, `info` (matter.js INFO and NOTICE), `warning` or `error`; `namespace` is the matter.js
+log facility. The MQTT link's own messages are never forwarded — a failing publish would be published over
+that same link and fail again. Forwarding starts once the bridge has published its initial state. On a busy
+fabric `info` is chatty; `warning` keeps the topic for problems only.
 
 ### bridge/devices
 

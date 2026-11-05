@@ -53,6 +53,11 @@ export class Topics {
         return `${this.#prefix}/bridge/devices`;
     }
 
+    /** Server log messages, zigbee2mqtt-style; not retained. */
+    get bridgeLogging(): string {
+        return `${this.#prefix}/bridge/logging`;
+    }
+
     /** zigbee2mqtt-style device lifecycle events (joined, interview, leave); not retained. */
     get bridgeEvent(): string {
         return `${this.#prefix}/bridge/event`;

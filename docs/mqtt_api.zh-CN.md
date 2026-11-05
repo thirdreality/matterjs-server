@@ -22,6 +22,7 @@ matter-server --mqtt-url mqtt://user:password@localhost:1883 --mqtt-prefix matte
 | `--mqtt-prefix <prefix>` | `MQTT_PREFIX` | `matter2mqtt` | 所有桥 topic 的前缀 |
 | `--mqtt-client-id <id>` | `MQTT_CLIENT_ID` | `matter2mqtt` | MQTT client id |
 | `--mqtt-last-seen` | `MQTT_LAST_SEEN` | 关闭 | 在每个设备状态里加 `last_seen`，见 [last_seen](#last_seen) |
+| `--mqtt-log-level <level>` | `MQTT_LOG_LEVEL` | `info` | 推送到 `bridge/logging` 的最低级别：`debug`、`info`、`warning`、`error` 或 `none` |
 
 前缀可以包含斜杠（如 `home/matter`），但不能为空、不能以 `/` 开头或结尾、不能包含 `+`、`#` 或空白字符。前缀非法或
 URL 协议不支持时，桥在启动阶段直接构造失败。
@@ -56,6 +57,7 @@ URL 协议不支持时，桥在启动阶段直接构造失败。
 | `<prefix>/bridge/info` | 发布 | 是 | server 版本、BLE 开关、前缀 |
 | `<prefix>/bridge/devices` | 发布 | 是 | 已知设备的 JSON 数组 |
 | `<prefix>/bridge/event` | 发布 | 否 | 设备加入 / interview / 离开，见 [bridge/event](#bridgeevent) |
+| `<prefix>/bridge/logging` | 发布 | 否 | server 日志，见 [bridge/logging](#bridgelogging) |
 | `<prefix>/bridge/commission_status` | 发布 | 是 | 人类可读的配网进度 |
 | `<prefix>/bridge/commission_code` | 发布 | 是 | HA 配网码输入框的状态（每次请求后清空） |
 | `<prefix>/bridge/commission_mode` | 发布 | 是 | 当前选择的配网模式 |
@@ -120,6 +122,19 @@ zigbee2mqtt 风格的设备生命周期事件，非 retained，格式为 `{"type
 | `device_leave` | 节点被删除，或 Matter 网桥移除了一个设备 | `friendly_name`、`id` |
 
 bridge 启动或重连时已知的设备不会再次发事件。
+
+### bridge/logging
+
+server 在 `--mqtt-log-level` 及以上级别的日志，每条一个消息，zigbee2mqtt 风格、非 retained，无需登录 hub 即可远程
+跟踪日志：
+
+```json
+{ "level": "warning", "message": "Command \"off\" failed for node 5: …", "namespace": "MqttBridge" }
+```
+
+`level` 为 `debug`、`info`（matter.js 的 INFO 与 NOTICE）、`warning` 或 `error`；`namespace` 是 matter.js 的日志
+facility。MQTT 连接自身的日志从不推送——发布失败的日志再经同一连接发布只会再次失败。bridge 发布完初始状态后才开始
+推送。设备多时 `info` 级别会比较多，设为 `warning` 则只推送问题。
 
 ### bridge/devices
 

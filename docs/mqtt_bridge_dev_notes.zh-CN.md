@@ -246,7 +246,7 @@ bridge 自身只增加不到 1 s。
 - [ ] **B6 能源**：EnergyEvse、WaterHeater、HeatPump、SolarPower、BatteryStorage、DeviceEnergyManagement、电表 / 电价
 - [ ] **C 桥级功能（其余）**
   - [x] `bridge/event`（设备加入 / interview / 离开）
-  - [ ] `bridge/logging`
+  - [x] `bridge/logging`（`--mqtt-log-level`，默认 info）
   - [x] `bridge/request/health_check`
   - [x] `last_seen`（默认关闭，`--mqtt-last-seen` 开启）
   - [ ] `device/options`

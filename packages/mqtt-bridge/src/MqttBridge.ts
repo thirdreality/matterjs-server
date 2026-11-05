@@ -34,6 +34,7 @@ import { bridgeDiscoveryMessagesOf, discoveryMessagesOf } from "./Discovery.js";
 import { SWITCH_CLUSTER_ID, switchActionOf } from "./Events.js";
 import { deviceDescriptionOf } from "./Exposes.js";
 import { lightCapabilitiesOf } from "./LightCapabilities.js";
+import { forwardLogs } from "./Logging.js";
 import { MqttConnection, type BridgeConnection } from "./MqttConnection.js";
 import { onOffEndpointsOf } from "./OnOffState.js";
 import { OtaTracker, supportsOta } from "./OtaState.js";
@@ -67,6 +68,8 @@ export interface MqttBridgeOptions {
     clientId?: string;
     /** Server version, published in `bridge/info`. */
     serverVersion?: string;
+    /** Lowest log level forwarded to `bridge/logging` (`debug`, `info`, `warning`, `error`, `none`). Default `info`. */
+    logLevel?: string;
     /** Add a `last_seen` timestamp to device states (zigbee2mqtt's `advanced.last_seen`, off by default). */
     lastSeen?: boolean;
     /** Broker connection to use instead of one to `url`, for tests. */
@@ -101,6 +104,8 @@ export class MqttBridge {
     readonly #connection: BridgeConnection;
     readonly #serverVersion?: string;
     readonly #lastSeenEnabled: boolean;
+    readonly #logLevel: string;
+    #stopLogForwarding?: () => void;
     /** When each device was last heard from (any attribute report or event), by device key. */
     readonly #lastSeen = new Map<string, number>();
     readonly #observers = new ObserverGroup();
@@ -133,6 +138,7 @@ export class MqttBridge {
                   };
         this.#serverVersion = options.serverVersion;
         this.#lastSeenEnabled = options.lastSeen === true;
+        this.#logLevel = options.logLevel ?? "info";
         this.#topics = new Topics(options.prefix ?? "matter2mqtt");
         this.#connection =
             options.connection ??
@@ -223,6 +229,9 @@ export class MqttBridge {
 
         this.#ready = true;
         this.#publishAll();
+        this.#stopLogForwarding = forwardLogs(this.#logLevel, payload =>
+            this.#connection.publish(this.#topics.bridgeLogging, payload),
+        );
         this.#scheduleOtaCheck(OTA_CHECK_START_DELAY_MS);
         // Fresh process: reset the commissioning feedback of the HA bridge card.
         // The cleared code is a space: an empty retained payload would be dropped.
@@ -242,6 +251,8 @@ export class MqttBridge {
             clearTimeout(this.#otaCheckTimer);
             this.#otaCheckTimer = undefined;
         }
+        this.#stopLogForwarding?.();
+        this.#stopLogForwarding = undefined;
         this.#observers.close();
         await this.#connection.close({ topic: this.#topics.bridgeState, payload: bridgeStatePayload("offline") });
     }

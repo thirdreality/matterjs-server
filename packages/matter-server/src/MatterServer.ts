@@ -265,6 +265,7 @@ async function start() {
                 prefix: cliOptions.mqttPrefix,
                 clientId: cliOptions.mqttClientId,
                 lastSeen: cliOptions.mqttLastSeen,
+                logLevel: cliOptions.mqttLogLevel,
                 serverVersion: MATTER_SERVER_VERSION,
             },
             { config, controller },
