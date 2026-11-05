@@ -41,6 +41,12 @@ MQTT 的 retained 消息会一直留在 broker 上。实体改名（例如 `cont
 config 不会自己消失，HA 里会留下一个"幽灵实体"。bridge 每次连接都会订阅自己的 retained 命名空间，把不再发布的
 topic 清空（`StaleTopics.ts`）。C++ 版需要同样的机制，否则每次改实体都要手工清 broker。
 
+### 3a. 新增 retained topic，必须登记到清理机制的"已知"集合
+
+bridge 每次连接都会把 broker 回放的 retained topic 和自己"应该发布的"集合比对，不在集合里的当残留清空（第 3 条）。
+所以每新增一类 retained 内容——网桥子设备的 `<node>_<ep>`、组的 `<prefix>/<组名>` 与组的 discovery——都要同时加入
+`knownDevices` / `expectedDiscovery`，否则下一次重连就会把它清掉。组的这个问题是测试先抓到的。
+
 ### 4. 多 endpoint 的属性冲突才加后缀
 
 同一个属性只出现在一个 endpoint 上时保持原名；多个 endpoint 都提供时，按 zigbee2mqtt 的 multiEndpoint 规则加
@@ -166,6 +172,10 @@ Matter 的 AccessControl ACL 与 Binding 都只能整张表写入，没有"追�
 | `8a0aaca` | B7 Matter 网桥拆分：网桥后面的每个设备单独成为 `<node>_<endpoint>` 设备 |
 | `666bbca` | C `bridge/event`、`last_seen`（`--mqtt-last-seen`）、`health_check` |
 | `eb381ed` | C `device/bind` / `device/unbind`（Binding + 目标 ACL） |
+| `e590d87` | C `bridge/logging`（`--mqtt-log-level`） |
+| `2f62e9b` | C `device/options`：retain、debounce、transition、invert_cover |
+| `442a741` | C `networkmap`（raw、graphviz） |
+| `93742a3` | C groups（软件组，z2m 组接口） |
 
 ## 问题
 
