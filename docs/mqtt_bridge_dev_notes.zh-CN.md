@@ -249,7 +249,7 @@ bridge 自身只增加不到 1 s。
   - [x] `bridge/logging`（`--mqtt-log-level`，默认 info）
   - [x] `bridge/request/health_check`
   - [x] `last_seen`（默认关闭，`--mqtt-last-seen` 开启）
-  - [ ] `device/options`
+  - [x] `device/options`（retain、debounce、transition、invert_cover，存于 `mqtt-bridge-device-options.json`）
   - [x] `device/bind` / `unbind`（Matter Binding，开关类设备控灯依赖它；绑定到组待 groups 完成后再做）
   - [ ] Matter groups（`bridge/groups`、`group/*`）
   - [ ] `networkmap`（复用上游 Thread 拓扑）

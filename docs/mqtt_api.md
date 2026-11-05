@@ -206,7 +206,8 @@ The remaining fields follow zigbee2mqtt's `bridge/devices` so that tools written
 | `power_source` | From the primary PowerSource (lowest Order): `Mains (single phase)` or `DC Source` for a wired source, `Battery` for a battery; omitted when the node reports none |
 | `definition.model`, `vendor`, `description` | ProductName, VendorName, ProductName |
 | `definition.exposes` | What the device offers, see below |
-| `definition.options` | Always empty for now |
+| `definition.options` | The [device options](#device-options) that apply to the device, as exposes with access 2 |
+| `options` | The device's current options |
 | `definition.supports_ota` | The node has the OTA Software Update Requestor cluster |
 
 `exposes` uses zigbee2mqtt's format. Each OnOff endpoint contributes a `light` (with LevelControl) or
@@ -780,6 +781,7 @@ numbers). For every other command a payload that is not a JSON object is rejecte
 | `device/share` | `{"id": <node id>, "timeout": 900}` | `{"id": <node id>, "manual_code": "…", "qr_code": "MT:…", "setup_pin_code": 20202021, "discriminator": 3840, "vendor_id": 4939, "product_id": 1, "commissioning_timeout": 900}` |
 | `device/bind` | `{"from": <device>, "to": <device>, "from_endpoint": 1, "to_endpoint": 1, "clusters": ["OnOff"]}` (endpoints and clusters optional) | `{"from": …, "from_endpoint": 1, "to": …, "to_endpoint": 1, "clusters": ["OnOff", "LevelControl"], "failed": []}` |
 | `device/unbind` | as `device/bind` | as `device/bind` |
+| `device/options` | `{"id": <device>, "options": {"retain": false, "debounce": 1, "transition": 0.5, "invert_cover": true}}` (`null` removes an option) | `{"id": …, "from": {…}, "to": {…}, "restart_required": false}` |
 | `device/ota_update/check` | `{"id": <node id>}` | `{"id": …, "update_available": true, "latest_version": 16777236, "latest_version_string": "1.0.4", "latest_source": "main-net-dcl", "latest_release_notes": "…"}` |
 | `device/ota_update/update` | `{"id": <node id>, "software_version": 16777236}` | `{"id": …, "software_version": 16777236, "software_version_string": "1.0.4"}` |
 
@@ -857,6 +859,19 @@ yet.
 
 **device/unbind** removes those binding targets, then removes the clusters from ACL entries shaped like the ones
 `device/bind` adds (Operate, CASE, the source as the only subject). Other entries are left alone.
+
+#### Device options
+
+**device/options** sets bridge-side settings of one device, as zigbee2mqtt's device options. They are kept in
+`mqtt-bridge-device-options.json` in the server's storage directory (written to a temporary file and renamed,
+so a power cut never leaves half a file) and apply at once, without a restart.
+
+| Option | Applies to | Effect |
+|--------|-----------|--------|
+| `retain` (boolean, default true) | every device | `false` publishes the state not retained; the retained copy the broker holds is cleared when switching |
+| `debounce` (seconds, 0–3600) | every device | State changes within this window go out as one publish, at most one per window; a `/get` answer is published at once. Useful for chatty energy meters |
+| `transition` (seconds, 0–6553) | lights | Added to light commands that carry no `transition` |
+| `invert_cover` (boolean) | covers | `position` and `tilt` count from open (0) to closed (100), in the state and in `/set`; `state` OPEN/CLOSE is unchanged |
 
 **device/rename** writes BasicInformation `nodeLabel` (`0/40/5`). **device/share** opens a commissioning
 window and returns the pairing codes for multi-admin sharing, together with the setup PIN code,

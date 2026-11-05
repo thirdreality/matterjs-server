@@ -29,6 +29,7 @@ import {
     scopedAttributes,
 } from "./BridgedDevices.js";
 import { controllableEndpointsOf, isDeviceWrite, parseEndpointSet, type DeviceAction } from "./Controls.js";
+import { DeviceOptionsStore, mergeOptions, optionExposesOf, type DeviceOptions } from "./DeviceOptions.js";
 import { deviceStateOf, isDeviceLevelStateAttribute, isStateAttribute, relevantEndpointsOf } from "./DeviceState.js";
 import { bridgeDiscoveryMessagesOf, discoveryMessagesOf } from "./Discovery.js";
 import { SWITCH_CLUSTER_ID, switchActionOf } from "./Events.js";
@@ -72,6 +73,8 @@ export interface MqttBridgeOptions {
     logLevel?: string;
     /** Add a `last_seen` timestamp to device states (zigbee2mqtt's `advanced.last_seen`, off by default). */
     lastSeen?: boolean;
+    /** File keeping the device options; default next to the server storage, none (in memory) without it. */
+    deviceOptionsFile?: string;
     /** Broker connection to use instead of one to `url`, for tests. */
     connection?: BridgeConnection;
 }
@@ -106,6 +109,9 @@ export class MqttBridge {
     readonly #lastSeenEnabled: boolean;
     readonly #logLevel: string;
     #stopLogForwarding?: () => void;
+    #deviceOptions: DeviceOptionsStore;
+    /** Pending debounced state publishes, by device key. */
+    readonly #debounced = new Map<string, ReturnType<typeof setTimeout>>();
     /** When each device was last heard from (any attribute report or event), by device key. */
     readonly #lastSeen = new Map<string, number>();
     readonly #observers = new ObserverGroup();
@@ -135,10 +141,12 @@ export class MqttBridge {
                       commandHandler,
                       ota: this.#ota,
                       resolveDevice: device => this.#resolveDevice(device),
+                      updateDeviceOptions: (device, update) => this.#updateDeviceOptions(device, update),
                   };
         this.#serverVersion = options.serverVersion;
         this.#lastSeenEnabled = options.lastSeen === true;
         this.#logLevel = options.logLevel ?? "info";
+        this.#deviceOptions = new DeviceOptionsStore(options.deviceOptionsFile ?? defaultOptionsFile(commandContext));
         this.#topics = new Topics(options.prefix ?? "matter2mqtt");
         this.#connection =
             options.connection ??
@@ -167,6 +175,8 @@ export class MqttBridge {
             },
         );
         this.#connection.subscribe(this.#topics.commandFilters);
+
+        await this.#deviceOptions.load();
 
         // The Matter stack is otherwise only started once a WebSocket client connects
         await this.#commandHandler.start();
@@ -253,6 +263,10 @@ export class MqttBridge {
         }
         this.#stopLogForwarding?.();
         this.#stopLogForwarding = undefined;
+        for (const timer of this.#debounced.values()) {
+            clearTimeout(timer);
+        }
+        this.#debounced.clear();
         this.#observers.close();
         await this.#connection.close({ topic: this.#topics.bridgeState, payload: bridgeStatePayload("offline") });
     }
@@ -354,12 +368,18 @@ export class MqttBridge {
             logger.warn(`Device "${parsed.device}" has nothing to control on endpoint ${endpoint ?? "(none)"}`);
             return;
         }
-        const message = messageOf(payload, parsed.attribute);
-        if (message === undefined) {
+        const parsedMessage = messageOf(payload, parsed.attribute);
+        if (parsedMessage === undefined) {
             logger.warn(`Ignoring unsupported set payload for "${parsed.device}": ${payload}`);
             return;
         }
+        const options = this.#deviceOptions.get(entry.key);
+        const message = options.invert_cover ? invertCover(parsedMessage) : parsedMessage;
         for (const [targetEndpoint, subMessage] of splitByEndpointSuffix(message, controllable, endpoint)) {
+            const caps = lightCapabilitiesOf(attributes, targetEndpoint);
+            if (options.transition !== undefined && subMessage.transition === undefined && caps.brightness) {
+                subMessage.transition = options.transition;
+            }
             const result = parseEndpointSet(subMessage, attributes, targetEndpoint);
             if (result === undefined) {
                 continue;
@@ -619,6 +639,26 @@ export class MqttBridge {
      * values read directly from the device, which take precedence over the subscription cache.
      */
     #publishDeviceState(entry: DeviceEntry, fresh?: AttributesData): void {
+        const debounce = this.#deviceOptions.get(entry.key).debounce ?? 0;
+        // A /get answer is published at once; changes within the debounce window go out together
+        if (debounce > 0 && fresh === undefined) {
+            if (!this.#debounced.has(entry.key)) {
+                const timer = setTimeout(() => {
+                    this.#debounced.delete(entry.key);
+                    const current = this.#devices.get(entry.key);
+                    if (current !== undefined) {
+                        this.#publishStateNow(current);
+                    }
+                }, debounce * 1000);
+                timer.unref?.();
+                this.#debounced.set(entry.key, timer);
+            }
+            return;
+        }
+        this.#publishStateNow(entry, fresh);
+    }
+
+    #publishStateNow(entry: DeviceEntry, fresh?: AttributesData): void {
         let details: MatterNodeData;
         try {
             details = this.#commandHandler.getNodeDetails(entry.nodeId);
@@ -646,7 +686,39 @@ export class MqttBridge {
             this.#connection.clearRetained(this.#topics.deviceState(entry.key));
             return;
         }
-        this.#connection.publish(this.#topics.deviceState(entry.key), JSON.stringify(state), true);
+        const options = this.#deviceOptions.get(entry.key);
+        const published = options.invert_cover ? invertCover(state) : state;
+        this.#connection.publish(
+            this.#topics.deviceState(entry.key),
+            JSON.stringify(published),
+            options.retain !== false,
+        );
+    }
+
+    /** Apply a `device/options` update, persist it, and re-publish the device under its new options. */
+    async #updateDeviceOptions(device: string, update: unknown): Promise<{ from: DeviceOptions; to: DeviceOptions }> {
+        const entry = this.#devices.get(device);
+        if (entry === undefined) {
+            throw new Error(`unknown device "${device}"`);
+        }
+        const from = this.#deviceOptions.get(device);
+        const { options: to, errors } = mergeOptions(from, update);
+        if (errors.length > 0) {
+            throw new Error(errors.join("; "));
+        }
+        await this.#deviceOptions.set(device, to);
+        if (from.retain !== false && to.retain === false) {
+            // Not retained from now on: what the broker kept would otherwise be replayed forever
+            this.#connection.clearRetained(this.#topics.deviceState(device));
+        }
+        const timer = this.#debounced.get(device);
+        if (timer !== undefined) {
+            clearTimeout(timer);
+            this.#debounced.delete(device);
+        }
+        this.#publishStateNow(entry);
+        this.#publishDevices();
+        return { from, to };
     }
 
     #resolveDevice(device: string): ResolvedDevice | undefined {
@@ -918,14 +990,19 @@ export class MqttBridge {
             serial_number: stringAttribute(attributes, `${basic}/15`),
             unique_id: stringAttribute(attributes, `${basic}/18`),
             onoff_endpoints: entry.onOffEndpoints,
-            ...deviceDescriptionOf(
-                entry.key,
+            ...withOptionExposes(
+                deviceDescriptionOf(
+                    entry.key,
+                    attributes,
+                    entry.relevantEndpoints,
+                    endpoint => lightCapabilitiesOf(attributes, endpoint),
+                    supportsOta(attributes),
+                    basic,
+                ),
                 attributes,
                 entry.relevantEndpoints,
-                endpoint => lightCapabilitiesOf(attributes, endpoint),
-                supportsOta(attributes),
-                basic,
             ),
+            options: this.#deviceOptions.get(entry.key),
         };
     }
 
@@ -968,4 +1045,36 @@ function argsOf(payload: string): Record<string, unknown> {
     } catch {
         return {};
     }
+}
+
+/** zigbee2mqtt `invert_cover`: position and tilt (also suffixed) counted from the other end. */
+function invertCover(values: Record<string, unknown>): Record<string, unknown> {
+    const inverted: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(values)) {
+        const number = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+        inverted[key] = /^(position|tilt)(_\d+)?$/.test(key) && typeof number === "number" ? 100 - number : value;
+    }
+    return inverted;
+}
+
+/** The device options file next to the server storage, when the storage has a location on disk. */
+function defaultOptionsFile(context: Omit<BridgeCommandContext, "commandHandler"> | undefined): string | undefined {
+    try {
+        const location = context?.config.service.location;
+        return typeof location === "string" ? `${location}/mqtt-bridge-device-options.json` : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/** The device description with zigbee2mqtt's `definition.options`: the options that apply to the device. */
+function withOptionExposes(
+    description: Record<string, unknown>,
+    attributes: AttributesData,
+    endpoints: number[],
+): Record<string, unknown> {
+    const light = endpoints.some(endpoint => lightCapabilitiesOf(attributes, endpoint).brightness);
+    const cover = endpoints.some(endpoint => attributes[`${endpoint}/258/65532`] !== undefined);
+    const definition = description.definition as Record<string, unknown>;
+    return { ...description, definition: { ...definition, options: optionExposesOf({ light, cover }) } };
 }

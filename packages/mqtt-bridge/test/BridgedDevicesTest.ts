@@ -4,11 +4,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { ControllerCommandHandler } from "@matter-server/ws-controller";
-import { NodeId, Observable } from "@matter/main";
+import { NodeId } from "@matter/main";
 import { bridgedDevicesOf, scopedAttributes } from "../src/BridgedDevices.js";
-import { MqttBridge } from "../src/MqttBridge.js";
-import type { BridgeConnection } from "../src/MqttConnection.js";
+import { harness as bridgeHarness, type HarnessOptions } from "./BridgeHarness.js";
+
+const harness = (attributes: Record<string, unknown>, options: HarnessOptions = {}) =>
+    bridgeHarness(attributes, { endpointParents: PARENTS, ...options });
 
 // A Zigbee-to-Matter bridge: aggregator on ep1; a bulb on ep3; a dual switch on ep4 with its two relays
 // on ep5/ep6; an unreachable contact sensor on ep7 with a battery
@@ -66,84 +67,6 @@ describe("BridgedDevices", () => {
         expect(Object.keys(scopedAttributes(BRIDGE, ep => ep === 5))).to.deep.equal(["5/6/0"]);
     });
 });
-
-interface Published {
-    topic: string;
-    payload: string;
-    retain: boolean;
-}
-
-function harness(initial: Record<string, unknown>, options: { lastSeen?: boolean; withCommands?: boolean } = {}) {
-    let attributes = { ...initial };
-    const published: Published[] = [];
-    const invoked: unknown[] = [];
-    let onMessage: (topic: string, payload: string) => void = () => {};
-    const connection: BridgeConnection = {
-        connect: handler => {
-            onMessage = handler;
-        },
-        subscribe: () => {},
-        publish: (topic, payload, retain = false) => published.push({ topic, payload, retain }),
-        clearRetained: topic => published.push({ topic, payload: "", retain: true }),
-        close: () => Promise.resolve(),
-    };
-    const events = {
-        attributeChanged: new Observable<[NodeId, { path: Record<string, number>; value: unknown }]>(),
-        eventChanged: new Observable<[NodeId, { path: Record<string, number>; events: { data: unknown }[] }]>(),
-        nodeAdded: new Observable<[NodeId]>(),
-        nodeStructureChanged: new Observable<[NodeId]>(),
-        nodeAvailabilityChanged: new Observable<[NodeId, boolean]>(),
-        nodeDecommissioned: new Observable<[NodeId]>(),
-    };
-    const commandHandler = {
-        start: () => Promise.resolve(),
-        events,
-        bleEnabled: false,
-        bleProxyEnabled: false,
-        getNodeIds: () => [NodeId(12)],
-        getNodeDetails: () => ({
-            node_id: 12,
-            available: true,
-            is_bridge: true,
-            attributes,
-            endpoint_parents: PARENTS,
-        }),
-        formatNode: (nodeId: NodeId) => String(nodeId),
-        handleInvoke: (request: unknown) => {
-            invoked.push(request);
-            return Promise.resolve();
-        },
-        interviewNode: () => Promise.resolve(),
-    } as unknown as ControllerCommandHandler;
-    const commandContext = options.withCommands
-        ? {
-              config: { getWifiCredentials: () => undefined, getThreadCredentials: () => undefined },
-              controller: {},
-          }
-        : undefined;
-    const bridge = new MqttBridge(
-        commandHandler,
-        { url: "mqtt://test", connection, lastSeen: options.lastSeen },
-        commandContext as never,
-    );
-    const last = (topic: string) => published.filter(p => p.topic === topic).at(-1)?.payload;
-    const bridgeEvents = () =>
-        published
-            .filter(p => p.topic === "matter2mqtt/bridge/event")
-            .map(p => JSON.parse(p.payload) as Record<string, unknown>);
-    return {
-        bridge,
-        events,
-        published,
-        invoked,
-        last,
-        bridgeEvents,
-        send: (topic: string, payload: string) => onMessage(topic, payload),
-        setAttributes: (next: Record<string, unknown>) => {
-            attributes = next;
-        },
-    };
-}
 
 describe("MqttBridge with a Matter bridge", () => {
     it("publishes each bridged device on its own topic", async () => {

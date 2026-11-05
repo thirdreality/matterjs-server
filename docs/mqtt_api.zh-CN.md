@@ -197,7 +197,8 @@ node id 以不带引号的 JSON 数字序列化，可能超过 `Number.MAX_SAFE_
 | `power_source` | 取主电源（Order 最小的 PowerSource）：有线为 `Mains (single phase)` 或 `DC Source`，电池为 `Battery`；节点没有上报时省略 |
 | `definition.model`、`vendor`、`description` | ProductName、VendorName、ProductName |
 | `definition.exposes` | 设备提供的能力，见下文 |
-| `definition.options` | 目前恒为空 |
+| `definition.options` | 适用于该设备的[设备选项](#设备选项)，以 access 为 2 的 expose 列出 |
+| `options` | 设备当前的选项 |
 | `definition.supports_ota` | 节点带有 OTA Software Update Requestor cluster |
 
 `exposes` 采用 zigbee2mqtt 的格式。每个 OnOff endpoint 贡献一个 `light`（带 LevelControl 时）或 `switch`，其
@@ -723,6 +724,7 @@ zigbee2mqtt 的 `position`、`tilt` 从关（0）数到开（100）；Matter 从
 | `device/share` | `{"id": <node id>, "timeout": 900}` | `{"id": <node id>, "manual_code": "…", "qr_code": "MT:…", "setup_pin_code": 20202021, "discriminator": 3840, "vendor_id": 4939, "product_id": 1, "commissioning_timeout": 900}` |
 | `device/bind` | `{"from": <device>, "to": <device>, "from_endpoint": 1, "to_endpoint": 1, "clusters": ["OnOff"]}`（endpoint 与 clusters 可省略） | `{"from": …, "from_endpoint": 1, "to": …, "to_endpoint": 1, "clusters": ["OnOff", "LevelControl"], "failed": []}` |
 | `device/unbind` | 同 `device/bind` | 同 `device/bind` |
+| `device/options` | `{"id": <device>, "options": {"retain": false, "debounce": 1, "transition": 0.5, "invert_cover": true}}`（`null` 删除选项） | `{"id": …, "from": {…}, "to": {…}, "restart_required": false}` |
 | `device/ota_update/check` | `{"id": <node id>}` | `{"id": …, "update_available": true, "latest_version": 16777236, "latest_version_string": "1.0.4", "latest_source": "main-net-dcl", "latest_release_notes": "…"}` |
 | `device/ota_update/update` | `{"id": <node id>, "software_version": 16777236}` | `{"id": …, "software_version": 16777236, "software_version_string": "1.0.4"}` |
 
@@ -788,6 +790,18 @@ LevelControl、ColorControl、WindowCovering、DoorLock、Thermostat、FanContro
 
 **device/unbind** 移除这些 Binding 目标，再从形如 `device/bind` 所加的 ACL 条目（Operate、CASE、源节点是唯一主体）
 中移除对应 cluster，其他条目保持不变。
+
+#### 设备选项
+
+**device/options** 设置单个设备在 bridge 侧的选项，对应 zigbee2mqtt 的设备选项。选项保存在 server 存储目录下的
+`mqtt-bridge-device-options.json`（先写临时文件再改名，断电不会留下半个文件），立即生效，无需重启。
+
+| 选项 | 适用于 | 作用 |
+|------|--------|------|
+| `retain`（布尔，默认 true） | 所有设备 | `false` 时状态不以 retained 发布；切换时清除 broker 上保留的旧状态 |
+| `debounce`（秒，0–3600） | 所有设备 | 窗口内的状态变化合并为一次发布，每个窗口最多一次；`/get` 的应答立即发布。适合上报频繁的电量计 |
+| `transition`（秒，0–6553） | 灯 | 灯命令未带 `transition` 时补上 |
+| `invert_cover`（布尔） | 窗帘 | 状态与 `/set` 中的 `position`、`tilt` 改为从开（0）数到关（100）；`state` OPEN/CLOSE 不变 |
 
 **device/rename** 写 BasicInformation 的 `nodeLabel`（`0/40/5`）。**device/share** 打开配网窗口并返回配对码，用于
 多管理员共享；同时返回 setup PIN、discriminator、厂商与产品 id 以及窗口的 `commissioning_timeout`（秒），方便直接

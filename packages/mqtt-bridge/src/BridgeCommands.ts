@@ -80,6 +80,8 @@ export interface BridgeCommandContext {
     ota?: OtaTracker;
     /** Resolves a `<device>` topic segment, which for a device behind a Matter bridge is not a node id. */
     resolveDevice?: (device: string) => ResolvedDevice | undefined;
+    /** Applies and persists a `device/options` update, answering with the options before and after. */
+    updateDeviceOptions?: (device: string, update: unknown) => Promise<{ from: unknown; to: unknown }>;
 }
 
 export interface ResolvedDevice {
@@ -332,6 +334,19 @@ const COMMANDS: Record<string, CommandHandlerFn> = {
             }
         }
         return plan.response;
+    },
+
+    /** zigbee2mqtt `device/options`: bridge-side settings of one device; `null` removes an option. */
+    "device/options": async (args, ctx) => {
+        const device = args.id;
+        if (typeof device !== "string" && typeof device !== "number") {
+            throw new Error('expected {"id": <device>, "options": {...}}');
+        }
+        if (ctx.updateDeviceOptions === undefined) {
+            throw new Error("device options are not available");
+        }
+        const { from, to } = await ctx.updateDeviceOptions(String(device), args.options);
+        return { id: String(device), from, to, restart_required: false };
     },
 
     "device/share": async (args, { commandHandler }) => {
