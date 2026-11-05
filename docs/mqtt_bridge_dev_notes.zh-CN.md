@@ -47,6 +47,18 @@ bridge 每次连接都会把 broker 回放的 retained topic 和自己"应该发
 所以每新增一类 retained 内容——网桥子设备的 `<node>_<ep>`、组的 `<prefix>/<组名>` 与组的 discovery——都要同时加入
 `knownDevices` / `expectedDiscovery`，否则下一次重连就会把它清掉。组的这个问题是测试先抓到的。
 
+### 3b. 真实固件会上报规范之外的数据，按规范兜底
+
+在 3 盏 ThirdReality 夜灯上实测发现（2026-11-05）：
+- **每个 endpoint 都带 Identify cluster**（灯、光照、人体三个都有）。按 endpoint 机械生成控制会得到三份 effect/identify，
+  HA 里三个按钮写进同一个 discovery topic 互相覆盖。规则：effect/identify 只挂在灯 endpoint 上；没有灯时只挂在编号
+  最小的那个带 Identify 的 endpoint 上。
+- **StartUpColorTemperatureMireds 上报 0**，规范范围是 1–65279 或 null。原样发布会让 HA 的数值实体（153–500）拒收。
+  超范围一律当"未知"不发布。
+- **照度 MeasuredValue 为 0**，规范含义是"太暗测不到"，不是"未知"，应发布 0 lx，否则界面一直显示未知。
+- **FixedLabel 是 SDK 示例默认值**（room: bedroom 2 / orientation: North / floor: 2 / direction: up），dashboard 会显示
+  出来。属于固件问题，已转固件团队；bridge 不读 FixedLabel，不受影响。
+
 ### 4. 多 endpoint 的属性冲突才加后缀
 
 同一个属性只出现在一个 endpoint 上时保持原名；多个 endpoint 都提供时，按 zigbee2mqtt 的 multiEndpoint 规则加
@@ -159,23 +171,24 @@ Matter 的 AccessControl ACL 与 Binding 都只能整张表写入，没有"追�
 
 | 提交 | 内容 |
 |------|------|
-| `11735ed` | Merge upstream v1.5.5（matter.js 0.18.0） |
-| `58d4cdf` | 1.5 新增配网能力接入 MQTT：`discovery_timeout_s`、错误 `reason`、`parse_onboarding_payload`、`device/share` 补全字段 |
-| `994b8cc` | 修复 P1：BooleanState 按设备类型发布为 `contact` / `water_leak` / `rain` / `water_freeze` |
-| `756c77e` | 只读传感器：气压、流量、土壤湿度、空气质量与 10 种浓度、烟雾 / CO 报警、电量计、电池详情；传感器改为表驱动（`Sensors.ts`） |
-| `8135894` | C-exposes：`bridge/devices` 增加 z2m 的 `definition.exposes`、`power_source` 等字段 |
-| `3ec0b17` | B2 窗帘；`/set` 改为按 endpoint 能力分派，支持写属性 |
-| `c13f321` | B2 门锁、温控（climate） |
-| `b956344` | B2 风扇、水阀、ModeSelect、水泵模式、烟雾报警器自检与灵敏度 |
-| `5963f04` | B3 按键 action（Switch 事件 → `<node>/action`，HA event 实体与 device trigger） |
-| `223e807` | B4 灯的通用参数：`power_on_behavior`、`color_temp_startup`、`level_config`、`color_options`、`on_time`、`effect` / `identify` |
-| `8a0aaca` | B7 Matter 网桥拆分：网桥后面的每个设备单独成为 `<node>_<endpoint>` 设备 |
-| `666bbca` | C `bridge/event`、`last_seen`（`--mqtt-last-seen`）、`health_check` |
-| `eb381ed` | C `device/bind` / `device/unbind`（Binding + 目标 ACL） |
-| `e590d87` | C `bridge/logging`（`--mqtt-log-level`） |
-| `2f62e9b` | C `device/options`：retain、debounce、transition、invert_cover |
-| `442a741` | C `networkmap`（raw、graphviz） |
-| `93742a3` | C groups（软件组，z2m 组接口） |
+| `e5ba1fa` | Merge upstream v1.5.5（matter.js 0.18.0） |
+| `b83664a` | 1.5 新增配网能力接入 MQTT：`discovery_timeout_s`、错误 `reason`、`parse_onboarding_payload`、`device/share` 补全字段 |
+| `e5fdb22` | 修复 P1：BooleanState 按设备类型发布为 `contact` / `water_leak` / `rain` / `water_freeze` |
+| `c9fbef6` | 只读传感器：气压、流量、土壤湿度、空气质量与 10 种浓度、烟雾 / CO 报警、电量计、电池详情；传感器改为表驱动（`Sensors.ts`） |
+| `ee76161` | C-exposes：`bridge/devices` 增加 z2m 的 `definition.exposes`、`power_source` 等字段 |
+| `70a291a` | B2 窗帘；`/set` 改为按 endpoint 能力分派，支持写属性 |
+| `456ec6c` | B2 门锁、温控（climate） |
+| `f3a7eaf` | B2 风扇、水阀、ModeSelect、水泵模式、烟雾报警器自检与灵敏度 |
+| `a292f0f` | B3 按键 action（Switch 事件 → `<node>/action`，HA event 实体与 device trigger） |
+| `caa1475` | B4 灯的通用参数：`power_on_behavior`、`color_temp_startup`、`level_config`、`color_options`、`on_time`、`effect` / `identify` |
+| `3ee3542` | B7 Matter 网桥拆分：网桥后面的每个设备单独成为 `<node>_<endpoint>` 设备 |
+| `e302b5c` | C `bridge/event`、`last_seen`（`--mqtt-last-seen`）、`health_check` |
+| `faf9650` | C `device/bind` / `device/unbind`（Binding + 目标 ACL） |
+| `3fea9b7` | C `bridge/logging`（`--mqtt-log-level`） |
+| `04ac906` | C `device/options`：retain、debounce、transition、invert_cover |
+| `189d66a` | C `networkmap`（raw、graphviz） |
+| `9d71a65` | C groups（软件组，z2m 组接口） |
+| `81ef559` | 真机实测修复（3 盏 ThirdReality 夜灯）：identify 每个设备只出一份、启动色温超范围视为未知、照度 0 发布为 0 lx |
 
 ## 问题
 
