@@ -314,7 +314,8 @@ bridge 自身只增加不到 1 s。
 - [ ] **真机测试发现**（[2026-11-05 记录](history/2026-11-05-real-device-commissioning.zh-CN.md) 第 4、5 节）
   - [ ] `/set` 成功但状态没变时也发布一次状态（对齐 z2m）
   - [ ] `color_temp_startup` 以 ColorControl 的 CT 特性为准
-  - [ ] BLE 代理：连接前停止扫描；BTP 分段按设备回退（installer 补丁）
+  - [x] BLE 代理：连接前停止扫描（installer `matter_ble_proxy_pause_scan.patch`，2026-11-06 真机验证）
+  - [ ] BLE 代理：BTP 分段按设备回退
 
 每批：单独提交、带测试、同步 `docs/mqtt_api.md` 与 `docs/mqtt_api.zh-CN.md`，构建与测试通过 `/root/lowmem-run.sh` 运行。
 

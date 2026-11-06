@@ -88,6 +88,11 @@ BlueZ 随后**自己**每约 10.4 s 开始新一轮 LE 发现（`Start Service D
 三次抓包一致：**发现进行中，LE 连接请求要等当前这一轮发现结束才发出**，最长约 10 s；而 bleak 的连接超时也是 10 s，
 晚一点就会失败（06:50 那次很可能就是这样，但没有抓包）。Matter 的 C++ SDK 在 Linux 上是先停止扫描再连接的。
 
+**已修复（2026-11-06）**：installer 新增 `matter_ble_proxy_pause_scan.patch`（LinuxBox-Installer `563e586`），
+连接期间暂停扫描，连接结束后恢复（matter.js 在 PASE 之前一直扫描）。按常规流程（移除、长按重置、点配网）
+重新配网灯带验证（`hci-20261106-015928.snoop`）：`Stop Discovery` 之后 0.1 s 就发出 LE Create Connection；
+从发起 PASE 到连上 1.4 s（之前 11.0 s），从开始发现到设备上线约 33 s（之前约 42 s）。灯带入网为 node 15。
+
 另外，链路建立偶尔失败：06:55–06:57 直接连接 6 次，有 2 次是 `Connection Failed to be Established (0x3E)`。
 
 ### 改动
@@ -175,7 +180,7 @@ MultiPressOngoing(2) → ShortRelease → MultiPressComplete(2)。这说明双�
 
 ## 5. BLE 代理待改（TODO）
 
-1. 连接前停止扫描，消除最长 10 s 的连接推迟（第 2 节）。
+1. ~~连接前停止扫描，消除最长 10 s 的连接推迟（第 2 节）。~~ 已完成，见第 2 节。
 2. MTU 按设备回退（第 1 节）。
 3. 根源修法：`ProxyBleClient` 实现 `listeningTime`，让 matter.js 自己淘汰不再广播的记录。这是上游 OHF 的代码，
    按约定等上游处理，可以把本记录整理成材料报给他们。
