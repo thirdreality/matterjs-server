@@ -328,6 +328,8 @@ bridge 自身只增加不到 1 s。
   - [ ] `color_temp_startup` 以 ColorControl 的 CT 特性为准
   - [x] BLE 代理：连接前停止扫描（installer `matter_ble_proxy_pause_scan.patch`，2026-11-06 真机验证）
   - [x] BLE 代理：BTP 分段——停用 MTU 补丁，保持 20 字节（2026-11-06 决定）
+  - [x] BLE 代理：只连最近广播过的设备（2026-11-06 03:50 灯带重试时真机触发并生效）
+  - [ ] BLE 连接的监督超时：BlueZ 默认 420 ms，PASE 中设备运算停顿会断链（灯带一次）；Home Assistant 用 10 s
   - [ ] 夜灯颜色命令问题报固件团队（材料：[2026-11-06 记录](history/2026-11-06-night-light-color-commands.zh-CN.md)）
 
 每批：单独提交、带测试、同步 `docs/mqtt_api.md` 与 `docs/mqtt_api.zh-CN.md`，构建与测试通过 `/root/lowmem-run.sh` 运行。

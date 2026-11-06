@@ -142,6 +142,19 @@ BlueZ 随后**自己**每约 10.4 s 开始新一轮 LE 发现（`Start Service D
 设备 0.1 s 前刚广播过，日志里没有 `Waiting…`，所以只说明新补丁没有破坏正常配网，**它要处理的旧记录情况仍未在真机上验证**。
 要验证，需先让 matter.js 扫到设备但不连接（例如用鉴别码不匹配的配网码发起一次短发现），等 1–2 分钟后再正式配网。
 
+**2026-11-06 03:50 在真机上触发并生效**（`bleproxy-20261106-0350-strip-ok.log`）：灯带上一次配网失败后重试，matter.js 在代理
+扫到灯带之前就拿旧记录发起连接，代理记录 `Waiting up to 3 s for F0:82:C0:4B:83:08 to advertise before connecting`，0.7 s 后
+收到新广播，用新的设备对象连接，配网成功（node 23）。这正是 11-05 06:54、07:07 失败的场景。
+
+### 2026-11-06：20 字节分段下灯带的一次失败
+
+停用 MTU 补丁后，灯带第一次配网失败（03:45，`hci-20261106-033904.snoop`、`m2m-20261106-0345-strip-fail.log`）：
+BTP 握手（灯带接受 17 字节分段：matter.js 报 MTU 20，灯带再减 3）、PBKDFParamRequest/Response 都正常；发出 Pake1（92 字节，6 个分段）、
+灯带确认最后一个分段后不再有数据，约 1.9 s 后链路以 `Connection Timeout (0x08)` 断开。这正是灯带计算 Pake2（SPAKE2+）的时候。
+两次连接（244 字节成功的 02:02 与这次）的监督超时都是 BlueZ 默认的 **420 ms**，期间设备都没有请求修改；推断是灯带运算或射频切换期间
+停顿超过 420 ms。随后的重试同样是 20 字节，一次成功（03:50，node 23，约 66 s，PASE 8.4 s），所以按偶发处理；20 字节下 PASE
+往返更多、更久，可能更容易碰上。Home Assistant 在连接时把监督超时设为 10 s（见第 6 节），我们用的是默认值。
+
 ### 控制测试（`full-strip-20261105-072126.log`）
 
 45 项过 43 项。失败的 `hue_step`、`saturation_step` 是测试预期写错：bridge 把步长按 ColorControl 原始单位
@@ -202,7 +215,8 @@ MultiPressOngoing(2) → ShortRelease → MultiPressComplete(2)。这说明双�
 2. ~~MTU 按设备回退（第 1 节）。~~ 改为停用 MTU 补丁，见第 1 节。
 3. 根源修法：`ProxyBleClient` 实现 `listeningTime`，让 matter.js 自己淘汰不再广播的记录。这是上游 OHF 的代码，
    按约定等上游处理，可以把本记录整理成材料报给他们。
-4. 连接时设置连接参数（第 6 节），尤其是建立阶段的监督超时，需要真机验证。
+4. 连接时设置连接参数（第 6 节），尤其是建立阶段的监督超时：BlueZ 默认 420 ms，灯带 11-06 03:45 因此断开过一次。
+   可以在 `/etc/bluetooth/main.conf` 的 `[LE]` 设 `ConnectionSupervisionTimeout`（单位 10 ms），影响整台机器的 BLE 连接，需真机验证。
 
 ## 6. 与 Home Assistant 内置 BLE 代理的对比
 
