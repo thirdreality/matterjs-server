@@ -182,9 +182,9 @@ Matter 的 AccessControl ACL 与 Binding 都只能整张表写入，没有"追�
 
 详见 [2026-11-05 真机测试记录](history/2026-11-05-real-device-commissioning.zh-CN.md)。
 
-- **BTP 分段不是越大越好。** 有的设备每个链路层包只收 27 字节，ATT 写入一旦需要链路层分片，链路就断
-  （ThirdReality Thread 开关）。而 WiFi 夜灯又靠大分段才配得上。分段大小要按设备的链路层接收能力来定，
-  不能全局写死。
+- **BTP 分段用 20 字节默认值。** 用协商后的 ATT MTU 做大分段（244 字节）配网快约 4 倍，但有的设备处理不了链路层分片，
+  握手后第一个大包就断（ThirdReality Thread 开关、IKEA GRILLPLATS 插座）；这类设备在链路层参数上和正常设备无法区分。
+  上游 matterjs-server、Home Assistant、Python Matter Server 都用 20 字节。我们 2026-11-06 起同样不用大分段。
 - **设备地址不能当长期标识。** 用随机静态地址的设备每次进入配网模式都会换地址；按设备记住的东西要用 VID/PID。
 - **只连接最近广播过的设备。** 控制器会记住以前发现的设备（matter.js 保留 15 分钟），新的配网请求一开始就去连
   上一轮的记录；而地址可能已经轮换作废，BlueZ 也可能已经删除了这个设备对象。连接前先确认它最近几秒广播过，
@@ -327,7 +327,7 @@ bridge 自身只增加不到 1 s。
   - [ ] `/set` 成功但状态没变时也发布一次状态（对齐 z2m）
   - [ ] `color_temp_startup` 以 ColorControl 的 CT 特性为准
   - [x] BLE 代理：连接前停止扫描（installer `matter_ble_proxy_pause_scan.patch`，2026-11-06 真机验证）
-  - [ ] BLE 代理：BTP 分段按设备回退
+  - [x] BLE 代理：BTP 分段——停用 MTU 补丁，保持 20 字节（2026-11-06 决定）
   - [ ] 夜灯颜色命令问题报固件团队（材料：[2026-11-06 记录](history/2026-11-06-night-light-color-commands.zh-CN.md)）
 
 每批：单独提交、带测试、同步 `docs/mqtt_api.md` 与 `docs/mqtt_api.zh-CN.md`，构建与测试通过 `/root/lowmem-run.sh` 运行。
