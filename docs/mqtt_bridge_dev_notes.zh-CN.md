@@ -3,7 +3,7 @@
 记录 `tr/feature/mqtt-bridge` 在合并上游 1.5.5、对齐 zigbee2mqtt 过程中遇到的问题，以及留给后来者的教训。
 其中「踩坑记录」一节与实现语言无关，C++ 版 matter2mqtt 同样适用。
 
-最后更新：2026-11-05。按时间记录的真机测试见 [history/](history/)。
+最后更新：2026-11-06。按时间记录的真机测试见 [history/](history/)。
 
 ## 目标
 
@@ -190,6 +190,18 @@ Matter 的 AccessControl ACL 与 Binding 都只能整张表写入，没有"追�
   上一轮的记录；而地址可能已经轮换作废，BlueZ 也可能已经删除了这个设备对象。连接前先确认它最近几秒广播过，
   没有就在扫描中短暂等一下，等不到就直接报找不到，不要拿旧记录去连。
 - **BLE 代理是串行处理命令的**（matter-ble-proxy 0.7.1）。任何在连接里长时间等待或扫描的做法，都会卡住其他所有命令。
+
+### 19. 设备回 Success、属性也变了，灯不一定真的变了
+
+详见 [2026-11-06 夜灯颜色命令测试记录](history/2026-11-06-night-light-color-commands.zh-CN.md)。
+
+- ThirdReality 夜灯（WiFi 与 Thread）对 `moveToColor`（XY）回 Success、更新 XY 属性，灯光却不变；普通色相 / XY 命令之后
+  `EnhancedCurrentHue` 不同步，增强色相命令的目标若等于这个过期值就被跳过。几组颜色属性互不同步，控制器读回的颜色可能是错的。
+- **对比两台设备前，先把它们置于相同的已知状态**，目标值避开当前值和可能过期的属性值；否则会把状态差异误判为设备差异。
+- **测颜色要看实际灯光**，只看回报的状态会把失败判成通过。
+- Home Assistant 对支持 HS 的灯只发普通色相命令、只读 `CurrentHue`，所以"在 HA 上没问题"不能说明设备支持 XY 或增强色相。
+  拿 HA 做对照时，要用它实际发出的命令。
+- 设备声明支持的命令，bridge 照常使用（与 zigbee2mqtt 一致），**不为单个型号绕开**，问题交给固件修。
 - **扫描期间，BlueZ 会把 LE 连接请求推迟到扫描间隙才发。** 连接前应先停止扫描，否则 10 s 左右的连接超时很容易被耗光。
 - **排查要以 HCI 抓包为主证据**（`btmon -w` 写文件）。BLE 代理的 DEBUG 日志会把 journald 刷爆，轮转掉要看的部分。
 - **不要用 `bluetoothctl` 碰正在配网的设备**，它操作的是同一个 BlueZ 设备对象，会直接断开配网连接。
@@ -316,6 +328,7 @@ bridge 自身只增加不到 1 s。
   - [ ] `color_temp_startup` 以 ColorControl 的 CT 特性为准
   - [x] BLE 代理：连接前停止扫描（installer `matter_ble_proxy_pause_scan.patch`，2026-11-06 真机验证）
   - [ ] BLE 代理：BTP 分段按设备回退
+  - [ ] 夜灯颜色命令问题报固件团队（材料：[2026-11-06 记录](history/2026-11-06-night-light-color-commands.zh-CN.md)）
 
 每批：单独提交、带测试、同步 `docs/mqtt_api.md` 与 `docs/mqtt_api.zh-CN.md`，构建与测试通过 `/root/lowmem-run.sh` 运行。
 
