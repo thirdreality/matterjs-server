@@ -71,7 +71,7 @@ PASE 用 5 s，整个配网 67 s。两次的链路层参数完全一样。
 |---|---|---|
 | WiFi 夜灯 | 约 17 s（02:43，node 16） | 约 66 s（03:12，node 19）；PASE 5.4 s，证书校验约 15 s |
 | Thread 夜灯 | 约 19 s（03:01，node 18） | 约 64 s（03:39，node 20）；PASE 4.8 s |
-| Thread 开关 | 配网失败 | 约 67 s（11-05 06:44，node 6） |
+| Thread 开关 | 配网失败 | 约 67 s（11-05 06:44，node 6；11-06 03:42 按方案 B 配置重测同为 67 s，node 21） |
 
 同类问题不止一家方案：IKEA GRILLPLATS 插座握手后卡住，matter.js 在 noble 路径上为此加了"用 20 字节重新握手"的变通做法
 （[matter.js #4269](https://github.com/matter-js/matter.js/pull/4269)，自称不是规范行为），matterjs-server 的 BLE 代理通道
